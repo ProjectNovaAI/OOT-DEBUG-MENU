@@ -8,7 +8,9 @@
 #include "layout.h"
 #include "platform/platform.h"
 
-#define SCAN_CAP (1u << 21)
+#define SCAN_CAP (1u << 25)   // 33 M hits: a common number like 24 matches millions of words
+#define SCAN_FROM 0x100000000ull   // the game's heap lies between these; the rest is the host's and the GPU's
+#define SCAN_TO 0x700000000ull
 
 static uint64_t *hit_addr;
 static int32_t *hit_val;
@@ -29,10 +31,10 @@ int dbg_scan_first(int32_t value) {
     if (!ensure()) return 0;
     hits = 0;
     truncated = 0;
-    uint64_t addr = 0x10000;
-    while (addr < (1ull << 47)) {
+    uint64_t addr = SCAN_FROM;
+    while (addr < SCAN_TO) {
         uint64_t end = 0;
-        int st = plat_mem_state(addr, 1ull << 47, &end);
+        int st = plat_mem_state(addr, SCAN_TO, &end);
         if (end <= addr) break;
         if (st == PLAT_PROT_RW) {
             enum { CHUNK = 1 << 20 };

@@ -162,6 +162,56 @@ static void health_tick(void) {
     if (c != want) health_write(atomic_load(&health_addr), (uint32_t)want);
 }
 
+// ---- counted item nodes
+
+#define NODE_MAX 2048
+static uint64_t node_addr[NODE_MAX];
+static _Atomic int node_n, node_busy;
+
+static void nodes_thread(void *arg) {
+    (void)arg;
+    enum { CHUNK = 1 << 20 };
+    static uint32_t buf[CHUNK / 4 + 16];
+    const uint32_t lo = (uint32_t)(MOD_MAIN_BASE + 0x4c20718ull), hi = (uint32_t)(MOD_MAIN_BASE >> 32);
+    uint64_t addr = 0x100000000ull;
+    while (addr < 0x700000000ull) {
+        uint64_t end = 0;
+        int st = plat_mem_state(addr, 0x700000000ull, &end);
+        if (end <= addr) break;
+        if (st == PLAT_PROT_RW) {
+            for (uint64_t at = addr; at < end; at += CHUNK) {
+                uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 4;
+                uint64_t rn = end - at >= (n + 16) * 4 ? n + 16 : n;
+                if (!plat_mem_read(at, buf, rn * 4)) continue;
+                for (uint64_t i = 0; i + 9 < rn && i < n; i++)
+                    if (buf[i] == lo && buf[i + 1] == hi && buf[i + 7] == buf[i + 8] && buf[i + 7] > 0 && buf[i + 7] < 1000) {
+                        int k = atomic_load(&node_n);
+                        if (k < NODE_MAX) { node_addr[k] = at + (i + 7) * 4; atomic_store(&node_n, k + 1); }
+                    }
+            }
+        }
+        addr = end;
+    }
+    atomic_store(&node_busy, 0);
+}
+
+int dbg_nodes_busy(void) { return atomic_load(&node_busy); }
+int dbg_nodes_scan(void) {
+    if (!dbg_available()) return 0;
+    int zero = 0;
+    if (!atomic_compare_exchange_strong(&node_busy, &zero, 1)) return 0;
+    atomic_store(&node_n, 0);
+    if (!plat_thread_spawn(nodes_thread, NULL, "debug-nodes", 0)) { atomic_store(&node_busy, 0); return 0; }
+    return 1;
+}
+uint64_t dbg_nodes_get(int i, int *value) {
+    if (i < 0 || i >= atomic_load(&node_n)) return 0;
+    uint32_t v = 0;
+    if (!guest_read(node_addr[i], &v, 4)) return 0;
+    if (value) *value = (int)v;
+    return node_addr[i];
+}
+
 // ---- speed
 
 static float last_pos[3];

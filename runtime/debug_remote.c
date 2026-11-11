@@ -452,6 +452,17 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "lock") && a1) {
         dbg_health_lock(atoi(a1));
         out_put("lock %d\n", dbg_health_lock_value());
+    } else if (!strcmp(cmd, "nodes")) {
+        if (a1 && !strcmp(a1, "scan")) out_put("nodes scan %s\n", dbg_nodes_scan() ? "started" : "not started");
+        else {
+            int v, want = a1 ? atoi(a1) : -1, shown = 0;
+            out_put("nodes busy=%d\n", dbg_nodes_busy());
+            for (int i = 0; shown < 60; i++) {
+                uint64_t a = dbg_nodes_get(i, &v);
+                if (!a) break;
+                if (want < 0 || v == want) { out_put("  %llx = %d\n", (unsigned long long)a, v); shown++; }
+            }
+        }
     } else if (!strcmp(cmd, "god") && a1) {
         dbg_invulnerable(atoi(a1));
         out_put("god %d\n", dbg_invulnerable_on());

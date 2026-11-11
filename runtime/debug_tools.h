@@ -79,6 +79,12 @@ int dbg_health_set_max(int max);      // quarter hearts, 4..80
 // after any damage or healing. 0 switches the lock off. With both a lock and the invulnerable switch on, the lock wins.
 void dbg_health_lock(int quarters);
 int dbg_health_lock_value(void);
+// Counted item values (arrows, bombs, rupees...) are heap nodes that start with a pointer to one class (main+0x4c20718) and keep the
+// value twice, at +0x1c and +0x20. dbg_nodes_scan starts a background scan of the heap for them (about half a minute);
+// dbg_nodes_get returns the address of the i-th node found (0 past the end) and its value.
+int dbg_nodes_scan(void);
+int dbg_nodes_busy(void);
+uint64_t dbg_nodes_get(int i, int *value);
 void dbg_invulnerable(int on);
 int dbg_invulnerable_on(void);
 
