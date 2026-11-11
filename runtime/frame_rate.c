@@ -48,6 +48,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "debug_tools.h"
 #include "gfx.h"
 #include "host.h"
 #include "layout.h"
@@ -445,6 +446,11 @@ static void ocarina_step_write(double dt) {
         on = !(e && !strcmp(e, "0"));
     }
     if (!on || dt <= 0) return;
+    float debug_scale = dbg_time_scale();   // the debug menu's game speed
+    if (debug_scale != 1.0f) {
+        dt *= debug_scale;
+        if (dt < OSTEP_MIN_S) dt = OSTEP_MIN_S;   // under this the solver step count reaches 0 (see OSTEP_MIN_S)
+    }
     if (ostep_page) {   // the set ostep: the game makes its whole nominal frame from this, the interface's included
         if (dt < 1.0 / 1000) dt = 1.0 / 1000;
         if (dt > STEP_MAX_S) dt = STEP_MAX_S;
