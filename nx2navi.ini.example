@@ -618,6 +618,9 @@
 # cheat_0123abcd = 1
 
 [debug]
+# 1: no volumetric fog. The fog's first compute pass writes every froxel as empty (vk_pipeline.c spirv_fog_off); the
+# switch applies at once. Default: 0.
+# debug_fog_off = 0
 # Speedrun timer of the debug menu (F1, Debug tab; docs/debug-menu.md), game build 1.1.1: in-game time without the
 # loading screens, real time and splits, drawn at the top right. 1 shows it. Default: 0.
 # debug_igt = 0

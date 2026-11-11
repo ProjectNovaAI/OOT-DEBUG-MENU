@@ -123,3 +123,12 @@ Health is stored in quarter hearts in the player's heap data as 16-byte records 
 - Settings (nx2navi.ini `[debug]`, live): `debug_igt` shows the panel (top right, under the item buttons), `debug_igt_autosplit`, `debug_igt_autostart` (starts when a save's player first appears). The menu's switches write them.
 - Hotkeys (with the hotkeys on): F2 start/stop, F3 split, F4 reset. Console: `igt [toggle|split|reset]`.
 - Tested: auto-start on loading a save; a warp's 4.7 s load left out of IGT; the auto split on an area change; a second run's split shown 25.5 s ahead in green.
+
+### Fog off (working, tested in game 2026-11-11)
+- The game has no fog flag; the haze is a volumetric fog computed on the GPU. The renderer already recognises that fog's first compute pass by its shape (`vk_pipeline.c` `fog_find`: a branch whose false side writes the froxel empty with five image writes and returns). With `debug_fog_off` set, `vk_pipeline_compute` gives that shader a second pipeline (key `compute = 2`) built from `spirv_fog_off`, in which the branch's condition is a new `OpConstantFalse`, so every froxel is written empty and the fog pass adds nothing. The switch takes effect on the next dispatch: no restart, no area reload.
+- Setting (nx2navi.ini `[debug]`, live): `debug_fog_off`. Menu: Debug tab, View, "Fog off". Console: `fog 0|1`, or any setting with `cfg KEY [VALUE]`.
+- Tested in Kokiri Forest (the haze between the trees disappears, the houses across the village show clearly) and in Hyrule Field (the distance haze over the field goes, the mountains and the far trees show sharp); switching back brings it back at once. The scene is a little darker without fog, because the fog also scatters light.
+
+### Render distance (searched, not built)
+- `System/GameGraphics/ModelLodParam/Default` is one live object (vtable main+0x4b87a88, found with `findptr`): DynamicOffsetForNormal 0x38, DynamicOffsetForStaticDemo 0x3c, FovyScaleForNoraml 0x40, FovyScaleForTimeline 0x44, LodStartDistCoefForConsole 0x48 (1.0), LodStartDistCoefForHandheld 0x4c (0.8), MaxLevelDistScale 0x50 (1.0), StaticOffset 0x54, flags 0x58-0x5f (field visitor `f_70031a2560`). Writing 0.02, 10 or 0 to the coefficients, then reloading Hyrule Field, changed nothing visible, so it is not the lever for the distant scenery.
+- Models also carry their own `GameModelController_LodMaxLevelDistScale` / `GameModelController_LodStartDistCoef` (BYML keys read in `f_7000089540`, 1.0 when missing). Foliage shapes have an `ExtendDrawDist` field (`f_7002bf4740`).

@@ -4287,27 +4287,27 @@ static int fog_skip_block(const uint32_t *w, uint64_t n, uint64_t at, const uint
 // Returns the patched copy of that shader, NULL for any other. Found by its shape rather than a hash, so it holds across
 // translator updates: a branch whose other side is that exit, taken on !(distance > table) || flag.
 // NX2NAVI_FOG_CULL=1 keeps the game's skip.
-static uint32_t *spirv_fog_keep_froxels(const uint32_t *w, uint64_t n) {
-    const char *e = cfg_get("NX2NAVI_FOG_CULL");
-    if (n < 6 || (e && !strcmp(e, "1"))) return NULL;
+// fog_find: 1 when w is that shader, with *cmp the word of the comparison and *br that of the OpBranchConditional.
+static int fog_find(const uint32_t *w, uint64_t n, uint64_t *cmp_out, uint64_t *br_out) {
+    if (n < 6) return 0;
     uint32_t bound = w[3];
     int writes = 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t len = w[i] >> 16;
-        if (!len || i + len > n) return NULL;
+        if (!len || i + len > n) return 0;
         writes += (w[i] & 0xffff) == 99;
         i += len;
     }
-    if (writes < 5) return NULL;
+    if (writes < 5) return 0;
     uint64_t *def = calloc(bound, sizeof *def);   // word of each id's definition, for the instructions looked at below
-    if (!def) return NULL;
+    if (!def) return 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         if (op == 248 && len >= 2 && w[i + 1] < bound) def[w[i + 1]] = i;   // OpLabel
         else if ((op == 43 || op == 80 || op == 166 || op == 168 || op == 186) && len >= 3 && w[i + 2] < bound) def[w[i + 2]] = i;
         i += len;
     }
-    uint64_t cmp = 0, prev = 0;
+    uint64_t cmp = 0, br = 0, prev = 0;
     int found = 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
@@ -4319,14 +4319,24 @@ static uint32_t *spirv_fog_keep_froxels(const uint32_t *w, uint64_t n) {
                 uint64_t no = a < bound ? def[a] : 0;
                 if (!no || (w[no] & 0xffff) != 168 || w[no + 3] >= bound) continue;                  // OpLogicalNot
                 uint64_t gt = def[w[no + 3]];
-                if (gt && (w[gt] & 0xffff) == 186) cmp = gt, found++;                                // OpFOrdGreaterThan
+                if (gt && (w[gt] & 0xffff) == 186) cmp = gt, br = i, found++;                        // OpFOrdGreaterThan
             }
         }
         prev = i;
         i += len;
     }
     free(def);
-    uint32_t *o = found == 1 ? malloc(n * 4) : NULL;
+    if (found != 1) return 0;
+    if (cmp_out) *cmp_out = cmp;
+    if (br_out) *br_out = br;
+    return 1;
+}
+
+static uint32_t *spirv_fog_keep_froxels(const uint32_t *w, uint64_t n) {
+    const char *e = cfg_get("NX2NAVI_FOG_CULL");
+    uint64_t cmp;
+    if ((e && !strcmp(e, "1")) || !fog_find(w, n, &cmp, NULL)) return NULL;
+    uint32_t *o = malloc(n * 4);
     if (!o) return NULL;
     memcpy(o, w, n * 4);
     o[cmp + 4] = o[cmp + 3];
@@ -4334,17 +4344,81 @@ static uint32_t *spirv_fog_keep_froxels(const uint32_t *w, uint64_t n) {
     return o;
 }
 
+// Fog off (the debug menu, NX2NAVI_DEBUG_FOG_OFF): the same shader with every froxel taking the skip's exit, which
+// writes it empty, so the volume holds no fog and the fog pass adds none. The branch's condition becomes a new
+// OpConstantFalse (the exit is its false side), put just before the first OpFunction; *words gets the new length.
+static uint32_t *spirv_fog_off(const uint32_t *w, uint64_t n, uint64_t *words) {
+    uint64_t br;
+    if (!fog_find(w, n, NULL, &br)) return NULL;
+    uint32_t cond = w[br + 1], bool_type = 0;
+    uint64_t fn = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) return NULL;
+        if (op == 166 && len >= 3 && w[i + 2] == cond) bool_type = w[i + 1];   // its OpLogicalOr gives the type
+        if (op == 54 && !fn) fn = i;                             // OpFunction
+        i += len;
+    }
+    if (!bool_type || !fn || fn > br) return NULL;
+    uint32_t *o = malloc((n + 3) * 4);
+    if (!o) return NULL;
+    uint32_t id = w[3];
+    memcpy(o, w, fn * 4);
+    o[fn] = 3u << 16 | 42, o[fn + 1] = bool_type, o[fn + 2] = id;   // OpConstantFalse
+    memcpy(o + fn + 3, w + fn, (n - fn) * 4);
+    o[3] = id + 1;
+    o[br + 3 + 1] = id;
+    *words = n + 3;
+    LOG_ONCE("vk_pipeline: fog: the fog-off variant of the volumetric fog shader was built");
+    return o;
+}
+
+// The volumetric fog's first compute pass, by shader (fog_find), so a dispatch of it can take the fog-off variant.
+#define FOG_CS_MAX 8
+static const GfxShader *volatile fog_cs[FOG_CS_MAX];
+
+static void fog_cs_note(const GfxShader *cs) {
+    for (int i = 0; i < FOG_CS_MAX; i++) {
+        const void *was = plat_casp((void *volatile *)&fog_cs[i], (void *)cs, NULL);   // the slot's old value
+        if (!was || was == cs) return;
+    }
+}
+
+static int fog_cs_is(const GfxShader *cs) {
+    for (int i = 0; i < FOG_CS_MAX && fog_cs[i]; i++)
+        if (fog_cs[i] == cs) return 1;
+    return 0;
+}
+
+// NX2NAVI_DEBUG_FOG_OFF, parsed again when cfg_version changes.
+static int fog_off_now(void) {
+    static volatile unsigned seen = ~0u;
+    static volatile int off;
+    unsigned v = cfg_version();
+    if (v != seen) off = cfg_bool("NX2NAVI_DEBUG_FOG_OFF"), seen = v;
+    return off;
+}
+
 // A compute pipeline for cs in layout l; VK_NULL_HANDLE on failure. No lock needed (P.cache is driver-synchronised).
 // cached_only (needs P.cache_control): from P.cache or the driver's own disk cache, never compiled; VK_NULL_HANDLE when
 // neither holds it (the driver returns VK_PIPELINE_COMPILE_REQUIRED, a success code, with no pipeline).
-static VkPipeline compute_create(const GfxShader *cs, const Layout *l, int cached_only) {
+// fog_off: the fog-off variant of the volumetric fog shader (spirv_fog_off); VK_NULL_HANDLE for any other shader.
+static VkPipeline compute_create_as(const GfxShader *cs, const Layout *l, int cached_only, int fog_off) {
     uint64_t words;
     const uint32_t *code = gfx_shader_spirv(cs, &words);
     uint64_t ow = 0;
     uint32_t *over = spv_override(code, words, &ow);
     if (over) code = over, words = ow;
-    uint32_t *fog = spirv_fog_keep_froxels(code, words);
-    if (fog) free(over), over = fog, code = fog;
+    if (fog_off) {
+        uint64_t fw = 0;
+        uint32_t *off = spirv_fog_off(code, words, &fw);
+        if (!off) return free(over), VK_NULL_HANDLE;
+        free(over), over = off, code = off, words = fw;
+    } else {
+        if (fog_find(code, words, NULL, NULL)) fog_cs_note(cs);
+        uint32_t *fog = spirv_fog_keep_froxels(code, words);
+        if (fog) free(over), over = fog, code = fog;
+    }
     VkShaderModule m = make_module(code, words, 0);
     if (!m) return free(over), VK_NULL_HANDLE;
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rqc;
@@ -4379,6 +4453,10 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l, int cache
     vkDestroyShaderModule(P.device, m, NULL);
     free(over);
     return pipe;
+}
+
+static VkPipeline compute_create(const GfxShader *cs, const Layout *l, int cached_only) {
+    return compute_create_as(cs, l, cached_only, 0);
 }
 
 // The layout of a compute shader in *B; NULL with *why on failure. Caller holds P.lock.
@@ -4871,7 +4949,9 @@ static struct {
 VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info) {
     if (info) *info = NULL;
     if (!cs || !ensure_init()) return VK_NULL_HANDLE;
-    struct { const GfxShader *cs; uint64_t compute; } k = {cs, 1};   // no padding: the key is hashed and compared as bytes
+    // compute 2: the fog-off variant of the volumetric fog shader (NX2NAVI_DEBUG_FOG_OFF)
+    int fog_off = fog_off_now() && fog_cs_is(cs);
+    struct { const GfxShader *cs; uint64_t compute; } k = {cs, fog_off ? 2u : 1u};   // no padding: the key is hashed and compared as bytes
     uint64_t h = key_hash(&k, sizeof k);
     plat_mutex_lock(&P.lock);
     Pipe *p = pipe_find(&k, sizeof k, h);
@@ -4907,7 +4987,7 @@ VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info) {
             plat_mutex_unlock(&P.lock);   // the compile runs without the lock
             uint64_t p0 = perf_begin();
             double c0 = now_ms();
-            pipe = compute_create(cs, l, 0);
+            pipe = compute_create_as(cs, l, 0, fog_off);
             double cms = now_ms() - c0;
             int hit = cc_hit;
             perf_end(PERF_PIPE, p0);

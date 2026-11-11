@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "debug_remote.h"
 #include "debug_scan.h"
 #include "debug_tools.h"
@@ -544,6 +545,16 @@ static void run_command(char *line) {
         if (a1) (cmd[0] == 'f' ? dbg_fly : !strcmp(cmd, "hover") ? dbg_hover : dbg_hover_boots)(atoi(a1));
         if (a2 && cmd[0] == 'f') dbg_set_fly_speed((float)atof(a2));   // fly 1 SPEED
         out_put("fly %d (%.1f m/s), hover %d, infinite hover boots %d\n", dbg_fly_on(), dbg_fly_speed(), dbg_hover_on(), dbg_hover_boots_on());
+    } else if (!strcmp(cmd, "fog")) {   // fog [0|1]: 1 shows the volumetric fog, 0 removes it (NX2NAVI_DEBUG_FOG_OFF)
+        if (a1) cfg_set("NX2NAVI_DEBUG_FOG_OFF", atoi(a1) ? "0" : "1");
+        out_put("fog %s\n", cfg_bool("NX2NAVI_DEBUG_FOG_OFF") ? "off" : "on");
+    } else if (!strcmp(cmd, "cfg") && a1) {   // cfg KEY [VALUE]: a setting (KEY without NX2NAVI_), set for this run
+        char k[96];
+        snprintf(k, sizeof k, "NX2NAVI_%s", a1);
+        for (char *q = k; *q; q++) *q = (char)toupper((unsigned char)*q);
+        if (a2) cfg_set(k, a2);
+        const char *v = cfg_get(k);
+        out_put("%s = %s\n", k, v ? v : "(unset)");
     } else if (!strcmp(cmd, "igt")) {   // igt [toggle|split|reset]: the speedrun timer and its splits
         if (a1 && !strcmp(a1, "toggle")) dbg_igt_toggle();
         if (a1 && !strcmp(a1, "split")) dbg_igt_split();
@@ -602,7 +613,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots igt area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots igt fog cfg area perf gcall gres\n");
     }
 }
 

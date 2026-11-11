@@ -353,6 +353,23 @@ extern "C" void tab_debug(float scale) {
         if (r == 2) dbg_set_time_scale(1.0f);
     }
 
+    opt_group_text("View");
+    {
+        // Settings (nx2navi.ini [debug]) that the renderer reads at once.
+        static const struct { const char *key, *id, *label, *desc; } sw[] = {
+            {"NX2NAVI_DEBUG_FOG_OFF", "##dbg_fog_off", "Fog off",
+             "Removes the volumetric fog: the haze of the Lost Woods, Kokiri Forest's mist and the distance fog over "
+             "Hyrule Field. Saved in the settings."},
+        };
+        for (const auto &s : sw) {
+            bool on = cfg_bool(s.key) != 0;
+            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
+                cfg_set(s.key, on ? "0" : "1");
+                opt_save_soon();
+            }
+        }
+    }
+
     opt_group_text("Timer");
     {
         char t[32], ticks[32];
