@@ -1,5 +1,27 @@
 <p align="center"><img src="docs/images/navi.png" alt="NX2navi" width="160"></p>
 
+# OOT-DEBUG-MENU
+
+> [!NOTE]
+> **This is a fork of [NX2navi / OOT-PC](https://github.com/ProjectNovaAI/OOT-PC) that adds a live in-game debug menu** for speedrun
+> practice, testing and bug hunting. The game, build and licence are otherwise unchanged. Everything below the line is the
+> original project's README. Details: [docs/debug-menu.md](docs/debug-menu.md).
+
+### What this fork adds
+
+<!-- DEBUG-MENU-FEATURES:START (keep this list current whenever a feature is added) -->
+- **Debug tab** in the in-game menu (usable live while playing)
+- **Player**: live position readout, teleport, 4 saved position slots
+- **Game speed**: slow motion and fast forward from 0.05x to 8x
+- **Timer** with laps, and a **speed** readout
+- **On-screen overlay**: position, speed, timer, and a live **input display** (buttons and sticks)
+- **Keyboard hotkeys** with the menu closed: F5 save, F6 load, F7/F8 game speed, F9 timer
+- **Memory scanner** (find and edit values) and a **remote console** for inspecting the running game (`NX2NAVI_DEBUG_REMOTE=1`), with hardware watchpoints and execution breakpoints
+- *In progress*: collision/invisible-wall/death-barrier visibility (with a solid-colour option), warp, items and flags, child/adult switch
+<!-- DEBUG-MENU-FEATURES:END -->
+
+---
+
 # NX2navi
 
 **Join the official NX2navi update discord server: https://discord.com/invite/uf6gSrsPpq** 
