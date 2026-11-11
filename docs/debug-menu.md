@@ -50,3 +50,12 @@ Lifted functions are `void f_<addr>(Cpu *c)`; at an execution breakpoint the hos
 
 ## Hotkeys and input display (tested in game 2026-11-10)
 Debug tab > On-screen readout > Show inputs draws the merged keyboard and pad state (Switch button bits from `input_poll_ui`) bottom left, and Keyboard hotkeys (off by default) turns on F5 save slot 1, F6 go to slot 1, F7/F8 game speed, F9 timer, each with a short on-screen message. The overlay now draws with the perf overlay off (menu_overlay_frame used to skip the frame). Remote console: `overlay MASK` and `hotkeys 0|1` set them without the menu.
+
+## hknpBody layout (Havok 2025.2, from the reflection table at 0x7004895c40)
+
+Entries are 5 qwords: `{0x70000, type*, name*, packed, owner*}`; the offset is the low 16 bits of `packed`
+(which follows the name). Offsets: transform 0x0, flags 0x50, index 0x58, collisionControl 0x5c, timAngle 0x5e,
+aabb 0x60, shape 0x78, motionId 0x80, nextAttachedBodyIndex 0x84, firstAttachedConstraint 0x88, flags2 0x8c,
+qualityId 0x8d, materialId 0x8e, collisionFilterInfo 0x90, maxContactDistance 0x94, userData 0xb8.
+collisionFilterInfo carries the layer, which is what separates AirWall / Barrier bodies from ordinary ones.
+Still to find: the world's body array and the camera matrix, needed before any collision shape can be drawn.
