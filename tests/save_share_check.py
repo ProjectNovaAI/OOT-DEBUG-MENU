@@ -99,20 +99,20 @@ def main():
         (ready / name).write_bytes(data)
     (ready / 'prod.keys').write_bytes(b'secret')   # a stray key file in a save folder never goes into a zip
     (work / 'nx2navi.ini').write_bytes(b'[graphics]\nfps_limit = 60\n')
-    (work / 'game.log').write_bytes(b'version: NX2navi 9.9.9-check\n')
+    (work / 'game.log').write_bytes(b'version: OOT-DEBUG-MENU 9.9.9-check\n')
     line = run('export', profile, out, 'bug', log=work / 'game.log')
     m = re.match(r'result 0 path (.+)$', line)
     check(m is not None, f'export: {line}')
     if m:
         path = Path(m.group(1))
-        check(re.fullmatch(r'NX2navi-save-\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d-bug-report\.zip', path.name) is not None,
+        check(re.fullmatch(r'OOT-DEBUG-MENU-save-\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d-bug-report\.zip', path.name) is not None,
               f'export name {path.name}')
         with zipfile.ZipFile(path) as z:
             check(z.testzip() is None, 'export zip CRCs')
             got = {n[len('save/'):]: z.read(n) for n in z.namelist() if n.startswith('save/')}
             # the start moved the finished commit in (swap_in) before the export read it
             check(got == newer, f'export holds the newest save: {sorted(got)}')
-            check(z.read('bug-report/nx2navi.log').startswith(b'version: NX2navi') and
+            check(z.read('bug-report/nx2navi.log').startswith(b'version: OOT-DEBUG-MENU') and
                   z.read('bug-report/nx2navi.ini').startswith(b'[graphics]'), 'bug report files')
             check(not any(b'secret' in z.read(n) for n in z.namelist()), 'no key file')
             man = json.loads(z.read('manifest.json'))

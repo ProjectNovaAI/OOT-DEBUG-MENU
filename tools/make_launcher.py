@@ -1,4 +1,4 @@
-"""Build a release of the NX2navi launcher (docs/launcher.md, "Releases").
+"""Build a release of the OOT-DEBUG-MENU launcher (docs/launcher.md, "Releases").
 
     python tools/make_launcher.py --xlate build/xlate [--ffx amd_fidelityfx_vk.dll] [--dlss nvngx_dlss.dll | --no-dlss]
                                   [--ffx4 FOLDER]
@@ -13,8 +13,8 @@ checked against the sha256 in PINS.
 
 The release folder (--out) holds:
 
-    NX2navi/                      the launcher folder exactly as NX2navi-Setup.exe installs it:
-      NX2navi.exe                 launcher/native/nx2navi.c with the Navi icon (launcher/ui/art.py)
+    OOT-DEBUG-MENU/               the launcher folder exactly as OOT-DEBUG-MENU-Setup.exe installs it:
+      OOT-DEBUG-MENU.exe          launcher/native/nx2navi.c with the Navi icon (launcher/ui/art.py)
       python/                     python.org's embeddable Python 3.14.9, tkinter and Tcl/Tk 9.0 from its tcltk.msi,
                                   the packages of tools/requirements-launcher.txt, runtime-id.txt
       app/current.txt, app/<version>/   launcher/ (without native/), runtime/, recomp/, the tools make_game.py uses,
@@ -32,11 +32,11 @@ The release folder (--out) holds:
                                   PlayStation, Steam Deck and keyboard and mouse prompts from, tools/prompt_art.py art_files),
                                   toolchain.lock.json (the MSYS2 packages of today, pinned), feed.json, VERSION, the
                                   licence files
-    NX2navi-Setup-<version>.exe   launcher/native/setup.c with the folder above appended as a zip: the one file
+    OOT-DEBUG-MENU-Setup-<version>.exe   launcher/native/setup.c with the folder above appended as a zip: the one file
                                   players download
-    NX2navi-app-<version>.zip     app/<version> alone: what the launcher downloads to update itself
-    NX2navi-runtime-<id>.zip      python/ alone: downloaded only when a release changes the Python
-    NX2navi-update.json           the manifest the launcher reads (launcher/feed.py)
+    OOT-DEBUG-MENU-app-<version>.zip     app/<version> alone: what the launcher downloads to update itself
+    OOT-DEBUG-MENU-runtime-<id>.zip      python/ alone: downloaded only when a release changes the Python
+    OOT-DEBUG-MENU-update.json           the manifest the launcher reads (launcher/feed.py)
 
 --prompt-art names the button art: folders that hold XGamepad, P5Gamepad and Keyboard_Mouse, or those three folders
 themselves. Only the pictures tools/pad_prompts.py reads are copied; the art stays out of the repository. Without it
@@ -85,7 +85,7 @@ TOP = ('LICENSE', 'LICENSE-ADDITIONS', 'THIRD_PARTY_NOTICES.md', 'nx2navi.ini.ex
 SKIP_DIRS = {'__pycache__', '.pytest_cache', 'native'}
 SKIP_SUFFIXES = {'.o', '.obj', '.pyc', '.exe', '.dll', '.a', '.lib'}
 TCLTK_FILES = ('_tkinter.pyd', 'tcl90.dll', 'tcl9tk90.dll', 'zlib1.dll', 'libtommath.dll')
-DEFAULT_FEED = 'tangerineturtle1/NX2navi'
+DEFAULT_FEED = 'ProjectNovaAI/OOT-DEBUG-MENU'
 
 
 def say(msg):
@@ -281,7 +281,7 @@ def build_native(work, cc, windres):
     env = dict(os.environ, PATH=str(Path(windres[0]).parent) + os.pathsep + os.environ.get('PATH', ''))
     run([*windres, *pp, '-I', '.', 'res.rc', '-O', 'coff', '-o', res], env=env, cwd=work)
     flags = ['-municode', '-mwindows', '-O2', '-Wall', '-static', '-s']
-    stub = work / 'NX2navi.exe'
+    stub = work / 'OOT-DEBUG-MENU.exe'
     setup = work / 'setup-stub.exe'
     run([*cc, *flags, ROOT / 'launcher' / 'native' / 'nx2navi.c', res, '-o', stub, '-lshell32', '-lole32', '-luuid'])
     run([*cc, *flags, ROOT / 'launcher' / 'native' / 'setup.c', res, '-o', setup, '-l:libz.a', '-lshell32',
@@ -359,7 +359,7 @@ def main():
         prompt_art.art_files(a.prompt_art)   # the art is all there before anything is downloaded or built
     out = a.out
     shutil.rmtree(out, ignore_errors=True)
-    folder = out / 'NX2navi'
+    folder = out / 'OOT-DEBUG-MENU'
     t0 = time.time()
     lock = (json.loads(a.lock.read_text(encoding='utf-8')) if a.lock
             else toolchain.make_lock(fast_repo=toolchain.FAST_REPO))
@@ -382,26 +382,26 @@ def main():
     cc, windres = native_compiler(lock)
     build_runtime_lib(folder, ver, out, a.wine)
     stub, setup_stub = build_native(out / 'native', cc, windres)
-    shutil.copy2(stub, folder / 'NX2navi.exe')
+    shutil.copy2(stub, folder / 'OOT-DEBUG-MENU.exe')
     check_folder(folder)
-    app_zip = zip_dir(folder / 'app' / ver, out / f'NX2navi-app-{ver}.zip')
-    rt_zip = zip_dir(folder / 'python', out / f'NX2navi-runtime-{runtime_id()}.zip')
+    app_zip = zip_dir(folder / 'app' / ver, out / f'OOT-DEBUG-MENU-app-{ver}.zip')
+    rt_zip = zip_dir(folder / 'python', out / f'OOT-DEBUG-MENU-runtime-{runtime_id()}.zip')
     payload = zip_dir(folder, out / 'native' / 'payload.zip')
-    setup = make_setup(setup_stub, payload, out / f'NX2navi-Setup-{ver}.exe', ver)
+    setup = make_setup(setup_stub, payload, out / f'OOT-DEBUG-MENU-Setup-{ver}.exe', ver)
     notes = a.notes.read_text(encoding='utf-8') if a.notes else ''
     manifest = {'format': 1, 'version': ver, 'build': build, 'notes': notes,
                 'app': entry(app_zip), 'runtime': {'id': runtime_id(), **entry(rt_zip)},
                 'toolchain': toolchain.lock_digest(lock), 'setup': entry(setup),
                 'made': time.strftime('%Y-%m-%d %H:%M')}
-    man = out / 'NX2navi-update.json'
+    man = out / 'OOT-DEBUG-MENU-update.json'
     man.write_text(json.dumps(manifest, indent=1), encoding='utf-8')
     for p in (setup, app_zip, rt_zip, man):
         say(f'{p.name}: {p.stat().st_size / 1e6:.1f} MB')
     say(f'release folder {out} in {time.time() - t0:.0f} s')
     if a.publish:
         cmd = ['gh', 'release', 'create', f'v{ver}', setup, app_zip, rt_zip, man, '--repo', a.feed,
-               '--title', f'NX2navi {ver}']
-        cmd += ['--notes-file', a.notes] if a.notes else ['--notes', f'NX2navi {ver}']
+               '--title', f'OOT-DEBUG-MENU {ver}']
+        cmd += ['--notes-file', a.notes] if a.notes else ['--notes', f'OOT-DEBUG-MENU {ver}']
         if a.draft:
             cmd.append('--draft')
         run(cmd)

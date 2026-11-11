@@ -47,7 +47,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_AFTER_RESTART] = "after restart", [UI_MENU_SET_BY_ENV] = "set by environment variable",
     [UI_MENU_SAVE_FAILED] = "could not save settings",
     [UI_MENU_INI_UNKNOWN] = "nx2navi.ini: not settings of this version, ignored: %s",
-    [UI_MENU_VERSION] = "NX2navi %s, game %s",
+    [UI_MENU_VERSION] = "OOT-DEBUG-MENU %s, game %s",
 
     [UI_MENU_FULLSCREEN] = "Fullscreen", [UI_MENU_FULLSCREEN_DESC] = "Play in fullscreen. F11 switches it.",
     [UI_MENU_WINDOW_SIZE] = "Window size", [UI_MENU_WINDOW_SIZE_DESC] = "Window size outside fullscreen.",
@@ -534,7 +534,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_EXPORT_BUG_DESC] = "The same zip with this run's log and your settings (nx2navi.ini) added, which "
                                      "show what happened and with which settings. Attach it to your bug report.",
     [UI_MENU_SAVE_IMPORT] = "Import a save",
-    [UI_MENU_SAVE_IMPORT_DESC] = "Choose a save someone shared (an NX2navi-save zip). It replaces your save, every slot, "
+    [UI_MENU_SAVE_IMPORT_DESC] = "Choose a save someone shared (an OOT-DEBUG-MENU-save zip). It replaces your save, every slot, "
                                  "at the next start: the game keeps your progress in memory and would write it back "
                                  "over a save replaced now. Your current save is copied to the saves folder first.",
     [UI_MENU_SAVE_IMPORT_WAITING] = "at next start",
@@ -542,7 +542,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_IMPORT_CANCEL_DESC] = "Keeps your save as it is: the save waiting for the next start is dropped.",
     [UI_MENU_SAVE_BUSY] = "working…",
     [UI_MENU_SAVE_EXPORTED] = "Saved as %s",
-    [UI_MENU_SAVE_IMPORT_READY] = "The save (NX2navi %s) loads at the next start: select Restart below. Your current "
+    [UI_MENU_SAVE_IMPORT_READY] = "The save (OOT-DEBUG-MENU %s) loads at the next start: select Restart below. Your current "
                                   "save is copied to the saves folder first.",
     [UI_MENU_SAVE_IMPORT_CANCELLED] = "Import cancelled; your save stays as it is.",
     [UI_MENU_SAVE_IMPORTED] = "A shared save was imported at this start. Your old save is in %s",
@@ -552,9 +552,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_E_WRITE] = "The zip could not be written into %s.",
     [UI_MENU_SAVE_E_READ] = "%s could not be read.",
     [UI_MENU_SAVE_E_STAGE] = "The save could not be prepared for the next start; the log says why.",
-    [UI_MENU_SAVE_E_NOT_SAVE] = "%s is not a save NX2navi exported.",
+    [UI_MENU_SAVE_E_NOT_SAVE] = "%s is not a save OOT-DEBUG-MENU exported.",
     [UI_MENU_SAVE_E_OTHER_GAME] = "%s is a save of another game.",
-    [UI_MENU_SAVE_E_NEWER] = "%s was made by a newer NX2navi: update NX2navi first.",
+    [UI_MENU_SAVE_E_NEWER] = "%s was made by a newer OOT-DEBUG-MENU: update OOT-DEBUG-MENU first.",
     [UI_MENU_SAVE_E_DAMAGED] = "%s is damaged: download it again.",
     [UI_MENU_SAVE_E_UNSAFE] = "%s was refused: it holds files outside a save, links, or far more than a save.",
     [UI_MENU_TAB_COOP] = "Co-op",
@@ -762,7 +762,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_AFTER_RESTART] = "после перезапуска", [UI_MENU_SET_BY_ENV] = "задано переменной окружения",
     [UI_MENU_SAVE_FAILED] = "не удалось сохранить настройки",
     [UI_MENU_INI_UNKNOWN] = "nx2navi.ini: не настройки этой версии, пропущены: %s",
-    [UI_MENU_VERSION] = "NX2navi %s, игра %s",
+    [UI_MENU_VERSION] = "OOT-DEBUG-MENU %s, игра %s",
 
     [UI_MENU_FULLSCREEN] = "Полный экран", [UI_MENU_FULLSCREEN_DESC] = "Игра на весь экран. F11 переключает.",
     [UI_MENU_WINDOW_SIZE] = "Размер окна", [UI_MENU_WINDOW_SIZE_DESC] = "Размер окна вне полноэкранного режима.",
@@ -1248,7 +1248,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_EXPORT_BUG_DESC] = "Тот же zip с журналом этого запуска и вашими настройками (nx2navi.ini): по ним "
                                      "видно, что произошло и с какими настройками. Приложите его к сообщению об ошибке.",
     [UI_MENU_SAVE_IMPORT] = "Импорт сохранения",
-    [UI_MENU_SAVE_IMPORT_DESC] = "Выберите сохранение, которым с вами поделились (zip NX2navi-save). Оно заменит ваше "
+    [UI_MENU_SAVE_IMPORT_DESC] = "Выберите сохранение, которым с вами поделились (zip OOT-DEBUG-MENU-save). Оно заменит ваше "
                                  "сохранение, все слоты, при следующем запуске: игра держит прогресс в памяти и "
                                  "записала бы его поверх сохранения, заменённого сейчас. Текущее сохранение сначала "
                                  "копируется в папку saves.",
@@ -1258,7 +1258,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                         "удаляется.",
     [UI_MENU_SAVE_BUSY] = "выполняется…",
     [UI_MENU_SAVE_EXPORTED] = "Сохранено: %s",
-    [UI_MENU_SAVE_IMPORT_READY] = "Сохранение (NX2navi %s) загрузится при следующем запуске: выберите «Перезапустить» "
+    [UI_MENU_SAVE_IMPORT_READY] = "Сохранение (OOT-DEBUG-MENU %s) загрузится при следующем запуске: выберите «Перезапустить» "
                                   "внизу. Текущее сохранение сначала копируется в папку saves.",
     [UI_MENU_SAVE_IMPORT_CANCELLED] = "Импорт отменён, ваше сохранение не изменилось.",
     [UI_MENU_SAVE_IMPORTED] = "При этом запуске импортировано сохранение. Прежнее сохранение лежит в %s",
@@ -1268,9 +1268,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_E_WRITE] = "Не удалось записать zip в %s.",
     [UI_MENU_SAVE_E_READ] = "Не удалось прочитать %s.",
     [UI_MENU_SAVE_E_STAGE] = "Не удалось подготовить сохранение к следующему запуску; причина указана в журнале.",
-    [UI_MENU_SAVE_E_NOT_SAVE] = "%s — не сохранение, экспортированное NX2navi.",
+    [UI_MENU_SAVE_E_NOT_SAVE] = "%s — не сохранение, экспортированное OOT-DEBUG-MENU.",
     [UI_MENU_SAVE_E_OTHER_GAME] = "%s — сохранение другой игры.",
-    [UI_MENU_SAVE_E_NEWER] = "%s создан более новой версией NX2navi: сначала обновите NX2navi.",
+    [UI_MENU_SAVE_E_NEWER] = "%s создан более новой версией OOT-DEBUG-MENU: сначала обновите OOT-DEBUG-MENU.",
     [UI_MENU_SAVE_E_DAMAGED] = "%s повреждён: скачайте его заново.",
     [UI_MENU_SAVE_E_UNSAFE] = "%s отклонён: в нём файлы вне сохранения, ссылки или слишком много данных.",
     [UI_MENU_TAB_COOP] = "Кооператив",
@@ -1474,7 +1474,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_AFTER_RESTART] = "após reiniciar", [UI_MENU_SET_BY_ENV] = "definido por variável de ambiente",
     [UI_MENU_SAVE_FAILED] = "não foi possível salvar as configurações",
     [UI_MENU_INI_UNKNOWN] = "nx2navi.ini: não são configurações desta versão, ignoradas: %s",
-    [UI_MENU_VERSION] = "NX2navi %s, jogo %s",
+    [UI_MENU_VERSION] = "OOT-DEBUG-MENU %s, jogo %s",
 
     [UI_MENU_FULLSCREEN] = "Tela cheia", [UI_MENU_FULLSCREEN_DESC] = "Jogar em tela cheia. F11 alterna.",
     [UI_MENU_WINDOW_SIZE] = "Tamanho da janela",
@@ -1952,7 +1952,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_EXPORT_BUG_DESC] = "O mesmo zip com o log desta execução e suas configurações (nx2navi.ini), que "
                                      "mostram o que aconteceu e com quais configurações. Anexe-o ao seu relato de bug.",
     [UI_MENU_SAVE_IMPORT] = "Importar save",
-    [UI_MENU_SAVE_IMPORT_DESC] = "Escolha um save que alguém compartilhou (um zip NX2navi-save). Ele substitui seu save, "
+    [UI_MENU_SAVE_IMPORT_DESC] = "Escolha um save que alguém compartilhou (um zip OOT-DEBUG-MENU-save). Ele substitui seu save, "
                                  "todos os slots, na próxima inicialização: o jogo mantém seu progresso na memória e o "
                                  "gravaria por cima de um save substituído agora. Seu save atual é copiado antes para a "
                                  "pasta saves.",
@@ -1962,7 +1962,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                         "descartado.",
     [UI_MENU_SAVE_BUSY] = "trabalhando…",
     [UI_MENU_SAVE_EXPORTED] = "Salvo como %s",
-    [UI_MENU_SAVE_IMPORT_READY] = "O save (NX2navi %s) é carregado na próxima inicialização: selecione Reiniciar abaixo. "
+    [UI_MENU_SAVE_IMPORT_READY] = "O save (OOT-DEBUG-MENU %s) é carregado na próxima inicialização: selecione Reiniciar abaixo. "
                                   "Seu save atual é copiado antes para a pasta saves.",
     [UI_MENU_SAVE_IMPORT_CANCELLED] = "Importação cancelada; seu save continua como estava.",
     [UI_MENU_SAVE_IMPORTED] = "Um save compartilhado foi importado nesta inicialização. Seu save anterior está em %s",
@@ -1972,9 +1972,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_E_WRITE] = "Não foi possível gravar o zip em %s.",
     [UI_MENU_SAVE_E_READ] = "Não foi possível ler %s.",
     [UI_MENU_SAVE_E_STAGE] = "Não foi possível preparar o save para a próxima inicialização; o log diz o motivo.",
-    [UI_MENU_SAVE_E_NOT_SAVE] = "%s não é um save exportado pelo NX2navi.",
+    [UI_MENU_SAVE_E_NOT_SAVE] = "%s não é um save exportado pelo OOT-DEBUG-MENU.",
     [UI_MENU_SAVE_E_OTHER_GAME] = "%s é um save de outro jogo.",
-    [UI_MENU_SAVE_E_NEWER] = "%s foi feito por um NX2navi mais novo: atualize o NX2navi primeiro.",
+    [UI_MENU_SAVE_E_NEWER] = "%s foi feito por um OOT-DEBUG-MENU mais novo: atualize o OOT-DEBUG-MENU primeiro.",
     [UI_MENU_SAVE_E_DAMAGED] = "%s está danificado: baixe-o de novo.",
     [UI_MENU_SAVE_E_UNSAFE] = "%s foi recusado: contém arquivos fora de um save, links ou dados demais.",
     [UI_MENU_TAB_COOP] = "Cooperativo",
@@ -2186,7 +2186,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SET_BY_ENV] = "由环境变量设定",
     [UI_MENU_SAVE_FAILED] = "无法保存设置",
     [UI_MENU_INI_UNKNOWN] = "nx2navi.ini：以下不是此版本的设置，已忽略：%s",
-    [UI_MENU_VERSION] = "NX2navi %s，游戏 %s",
+    [UI_MENU_VERSION] = "OOT-DEBUG-MENU %s，游戏 %s",
     [UI_MENU_FULLSCREEN] = "全屏",
     [UI_MENU_FULLSCREEN_DESC] = "全屏运行。按 F11 切换。",
     [UI_MENU_WINDOW_SIZE] = "窗口大小",
@@ -2749,7 +2749,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_EXPORT_BUG_DESC] = "同样的 zip，另附本次运行的日志和你的设置（nx2navi.ini），可看出发生了什么以及使用了哪些"
                                      "设置。请将其附在错误报告中。",
     [UI_MENU_SAVE_IMPORT] = "导入存档",
-    [UI_MENU_SAVE_IMPORT_DESC] = "选择别人分享的存档（NX2navi-save zip）。它会在下次启动时替换你的存档（所有存档位）：游戏"
+    [UI_MENU_SAVE_IMPORT_DESC] = "选择别人分享的存档（OOT-DEBUG-MENU-save zip）。它会在下次启动时替换你的存档（所有存档位）：游戏"
                                  "把进度保存在内存中，若现在替换，游戏会把进度写回并覆盖它。你当前的存档会先复制到 saves "
                                  "文件夹。",
     [UI_MENU_SAVE_IMPORT_WAITING] = "下次启动时",
@@ -2757,7 +2757,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_IMPORT_CANCEL_DESC] = "保留你的存档不变：丢弃等待下次启动的存档。",
     [UI_MENU_SAVE_BUSY] = "处理中…",
     [UI_MENU_SAVE_EXPORTED] = "已保存为 %s",
-    [UI_MENU_SAVE_IMPORT_READY] = "该存档（NX2navi %s）将在下次启动时载入：请选择下方的“重启”。你当前的存档会先复制到 saves "
+    [UI_MENU_SAVE_IMPORT_READY] = "该存档（OOT-DEBUG-MENU %s）将在下次启动时载入：请选择下方的“重启”。你当前的存档会先复制到 saves "
                                   "文件夹。",
     [UI_MENU_SAVE_IMPORT_CANCELLED] = "已取消导入，你的存档保持不变。",
     [UI_MENU_SAVE_IMPORTED] = "本次启动时已导入分享的存档。你原来的存档在 %s",
@@ -2767,9 +2767,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_SAVE_E_WRITE] = "无法将 zip 写入 %s。",
     [UI_MENU_SAVE_E_READ] = "无法读取 %s。",
     [UI_MENU_SAVE_E_STAGE] = "无法为下次启动准备存档；原因见日志。",
-    [UI_MENU_SAVE_E_NOT_SAVE] = "%s 不是 NX2navi 导出的存档。",
+    [UI_MENU_SAVE_E_NOT_SAVE] = "%s 不是 OOT-DEBUG-MENU 导出的存档。",
     [UI_MENU_SAVE_E_OTHER_GAME] = "%s 是其他游戏的存档。",
-    [UI_MENU_SAVE_E_NEWER] = "%s 由更新版本的 NX2navi 制作：请先更新 NX2navi。",
+    [UI_MENU_SAVE_E_NEWER] = "%s 由更新版本的 OOT-DEBUG-MENU 制作：请先更新 OOT-DEBUG-MENU。",
     [UI_MENU_SAVE_E_DAMAGED] = "%s 已损坏：请重新下载。",
     [UI_MENU_SAVE_E_UNSAFE] = "%s 被拒绝：其中含有存档以外的文件、链接或过多的数据。",
     [UI_MENU_TAB_COOP] = "合作",

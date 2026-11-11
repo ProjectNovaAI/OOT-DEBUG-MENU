@@ -192,7 +192,7 @@ def certificate_problem(url, refused, version='dev'):
     clock = (f"This PC's clock agrees with {host}'s." if theirs is not None else
              f"Check that this PC's date, time and time zone are right ({where}).")
     return (f'{text} {clock} Security software that scans encrypted connections (HTTPS or SSL scanning) or a proxy '
-            'may be replacing the certificate: let NX2navi through it or turn that scanning off, then try again.')
+            'may be replacing the certificate: let OOT-DEBUG-MENU through it or turn that scanning off, then try again.')
 
 
 def _check_eof(response):

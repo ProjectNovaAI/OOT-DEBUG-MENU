@@ -456,8 +456,8 @@ class UninstallTest(Tmp):
 
     def test_plan_keeps_the_game_and_what_is_not_ours(self):
         from types import SimpleNamespace
-        root = self.tmp / 'NX2navi'
-        self.tree(root, ('NX2navi.exe', 'app/current.txt', 'python.old-3/x', 'game/profile/save/1/a.sav', 'mine.txt'))
+        root = self.tmp / 'OOT-DEBUG-MENU'
+        self.tree(root, ('OOT-DEBUG-MENU.exe', 'app/current.txt', 'python.old-3/x', 'game/profile/save/1/a.sav', 'mine.txt'))
         layout = SimpleNamespace(root=root, toolchain=root / 'toolchain')
         gone, empty = winsys.uninstall_plan(layout)
         self.assertNotIn(root / 'game', gone)
@@ -466,8 +466,8 @@ class UninstallTest(Tmp):
         self.assertEqual(empty, [root])
         gone, _ = winsys.uninstall_plan(layout, str(root / 'game'))
         self.assertEqual(gone[0], root / 'game')
-        # the toolchain moved to C:\NX2navi: that folder goes only when nothing else is left in it
-        other = self.tmp / 'C NX2navi' / 'toolchain'
+        # the toolchain moved to C:\OOT-DEBUG-MENU: that folder goes only when nothing else is left in it
+        other = self.tmp / 'C OOT-DEBUG-MENU' / 'toolchain'
         gone, empty = winsys.uninstall_plan(SimpleNamespace(root=root, toolchain=other))
         self.assertIn(other, gone)
         self.assertNotIn(other.parent, gone)
@@ -476,8 +476,8 @@ class UninstallTest(Tmp):
     @unittest.skipUnless(os.name == 'nt', 'runs the cmd.exe script')
     def test_script_on_windows(self):
         from types import SimpleNamespace
-        root = self.tmp / 'NX2navi ÿ x'   # spaces and a character outside ASCII
-        self.tree(root, ('NX2navi.exe', 'app/1/VERSION', 'python/pythonw.exe', 'python.old-12/x', 'pydeps/z',
+        root = self.tmp / 'OOT-DEBUG-MENU ÿ x'   # spaces and a character outside ASCII
+        self.tree(root, ('OOT-DEBUG-MENU.exe', 'app/1/VERSION', 'python/pythonw.exe', 'python.old-12/x', 'pydeps/z',
                          'data/launcher.json', 'toolchain/msys64/a', 'game/profile/save/1/a.sav', 'mine.txt'))
         layout = SimpleNamespace(root=root, toolchain=root / 'toolchain')
         script = winsys.uninstall_script(*winsys.uninstall_plan(layout)).replace('ping -n 3 127.0.0.1 >nul', 'echo')
@@ -746,7 +746,7 @@ def make_app_zip(folder, ver, extra=None):
     (app / 'launcher').mkdir(parents=True)
     (app / 'launcher' / 'start.pyw').write_text('# test\n')
     (app / 'VERSION').write_text(ver + '\n')
-    z = folder / f'NX2navi-app-{ver}.zip'
+    z = folder / f'OOT-DEBUG-MENU-app-{ver}.zip'
     with zipfile.ZipFile(z, 'w') as zf:
         for p in app.rglob('*'):
             if p.is_file():
@@ -937,7 +937,7 @@ class BackgroundUpdateTest(Tmp):
         z = make_app_zip(self.tmp, ver)
         m = manifest_for(z, ver)
         if runtime:
-            r = self.tmp / f'NX2navi-runtime-{runtime}.zip'
+            r = self.tmp / f'OOT-DEBUG-MENU-runtime-{runtime}.zip'
             with zipfile.ZipFile(r, 'w') as zf:
                 zf.writestr('python.exe', 'MZ')
                 zf.writestr('runtime-id.txt', runtime + '\n')
@@ -3911,7 +3911,7 @@ class SaveShareTest(unittest.TestCase):
                         'work/option.sav': b'not committed'})
         self.files(self.game, {'logs/nx2navi.log': b'log', 'nx2navi.ini': b'[graphics]'})
         r = saves.export_save(self.game, self.out, version='0.6.1', log=lambda m: None)
-        self.assertRegex(r['path'].name, r'^NX2navi-save-\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.zip$')
+        self.assertRegex(r['path'].name, r'^OOT-DEBUG-MENU-save-\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d\.zip$')
         self.assertEqual(r['extras'], [])
         self.assertEqual([p.name for p in self.out.iterdir()], [r['path'].name])   # no .part left behind
         with zipfile.ZipFile(r['path']) as z:
@@ -3982,7 +3982,7 @@ class SaveShareTest(unittest.TestCase):
                 saves.account_dir(self.game).mkdir(parents=True)
             with self.subTest(account=account):
                 r = saves.export_save(self.game, self.out, bug_report=True, version='0.7.1', log=lambda m: None)
-                self.assertRegex(r['path'].name, r'^NX2navi-log-.*-bug-report( \(\d+\))?\.zip$')   # (2): the same second
+                self.assertRegex(r['path'].name, r'^OOT-DEBUG-MENU-log-.*-bug-report( \(\d+\))?\.zip$')   # (2): the same second
                 self.assertEqual((r['files'], r['extras']), (0, ['nx2navi.log', 'nx2navi.ini']))
                 with zipfile.ZipFile(r['path']) as z:
                     self.assertEqual(sorted(z.namelist()), ['bug-report/nx2navi.ini', 'bug-report/nx2navi.log',
@@ -4469,9 +4469,9 @@ class SteamTest(Tmp):
         self.assertEqual(b[-4:], b'\x08\x08\x08\x08')   # tags, the shortcut, shortcuts, the file
         self.assertEqual(steam.vdf_dump(steam.vdf_load(b)), b)
         self.assertFalse(steam.has_shortcut(b))
-        new, sid = steam.add_shortcut(b, '"C:\\NX2navi\\python\\pythonw.exe"', '"C:\\NX2navi"',
-                                      '"C:\\NX2navi\\data\\steam_play.pyw"', 'C:\\grid\\x_icon.png')
-        self.assertEqual(sid, steam.appid('"C:\\NX2navi\\python\\pythonw.exe"', steam.NAME))
+        new, sid = steam.add_shortcut(b, '"C:\\OOT-DEBUG-MENU\\python\\pythonw.exe"', '"C:\\OOT-DEBUG-MENU"',
+                                      '"C:\\OOT-DEBUG-MENU\\data\\steam_play.pyw"', 'C:\\grid\\x_icon.png')
+        self.assertEqual(sid, steam.appid('"C:\\OOT-DEBUG-MENU\\python\\pythonw.exe"', steam.NAME))
         self.assertTrue(sid & 0x80000000)
         self.assertTrue(new.startswith(b[:-2]))   # the other shortcut stays byte for byte
         self.assertTrue(steam.has_shortcut(new))
@@ -4480,12 +4480,12 @@ class SteamTest(Tmp):
         ours = {k: v for _, k, v in items[1][2]}
         self.assertEqual(ours['AppName'], 'The Legend of Zelda Ocarina of Time')
         self.assertEqual(struct.unpack('<I', ours['appid'])[0], sid)
-        self.assertEqual(ours['LaunchOptions'], '"C:\\NX2navi\\data\\steam_play.pyw"')
+        self.assertEqual(ours['LaunchOptions'], '"C:\\OOT-DEBUG-MENU\\data\\steam_play.pyw"')
         self.assertEqual(ours['AllowOverlay'], struct.pack('<I', 1))
-        again, _ = steam.add_shortcut(new, '"D:\\NX2navi\\python\\pythonw.exe"', '"D:\\NX2navi"', '', 'x')
+        again, _ = steam.add_shortcut(new, '"D:\\OOT-DEBUG-MENU\\python\\pythonw.exe"', '"D:\\OOT-DEBUG-MENU"', '', 'x')
         items = steam.vdf_load(again)[0][2]
         self.assertEqual(len(items), 2)   # moved launcher: the same shortcut, updated
-        self.assertEqual({k: v for _, k, v in items[1][2]}['StartDir'], '"D:\\NX2navi"')
+        self.assertEqual({k: v for _, k, v in items[1][2]}['StartDir'], '"D:\\OOT-DEBUG-MENU"')
         with self.assertRaises(steam.SteamError):
             steam.vdf_load(b[:-5])
 
@@ -4680,7 +4680,7 @@ class ForcedCheckTest(Tmp):
             a.check_started = time.time() - 10
             App.check_now(a, force=True)
             check.assert_not_called()
-            self.assertEqual(a.message, 'NX2navi looked for updates less than a minute ago.')
+            self.assertEqual(a.message, 'OOT-DEBUG-MENU looked for updates less than a minute ago.')
             a.show.assert_called_once_with('home', a.focus)
             a.check_started = time.time() - app.FORCED_CHECK_PAUSE - 1
             App.check_now(a, force=True)

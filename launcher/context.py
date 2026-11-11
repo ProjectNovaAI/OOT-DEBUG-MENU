@@ -27,7 +27,7 @@ class Context:
             self._file = open(path, 'a', encoding='utf-8', errors='replace')
         except OSError:
             self._file = None
-        self.log(f'--- NX2navi launcher {self.version} ({"checkout" if self.layout.dev else "release"}) in '
+        self.log(f'--- OOT-DEBUG-MENU launcher {self.version} ({"checkout" if self.layout.dev else "release"}) in '
                  f'{self.layout.root}')
         if self.settings.unreadable:
             self.log(f'{self.layout.settings} is not valid JSON: the settings start from their defaults; the file as '

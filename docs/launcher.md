@@ -1,17 +1,17 @@
 # Launcher
 
-NX2navi's launcher installs everything the build needs, builds the game from the player's own dump, starts it, and
-keeps the port up to date. Players download one file, `NX2navi-Setup-<version>.exe`; nothing of the game ships with
+OOT-DEBUG-MENU's launcher installs everything the build needs, builds the game from the player's own dump, starts it, and
+keeps the port up to date. Players download one file, `OOT-DEBUG-MENU-Setup-<version>.exe`; nothing of the game ships with
 it. The code is `launcher/`, the release is made by `tools/make_launcher.py`, and the build itself is
 `tools/make_game.py` (the build kit's script, [README-BuildKit.md](README-BuildKit.md)).
 
 ## What the player does
 
-1. Starts `NX2navi-Setup.exe` (from the folder that holds their `.nup` dump, ideally). It installs the launcher into
-   `%LOCALAPPDATA%\Programs\NX2navi` without administrator rights, adds Start menu and Desktop shortcuts and an entry
+1. Starts `OOT-DEBUG-MENU-Setup.exe` (from the folder that holds their `.nup` dump, ideally). It installs the launcher into
+   `%LOCALAPPDATA%\Programs\OOT-DEBUG-MENU` without administrator rights, adds Start menu and Desktop shortcuts and an entry
    in Settings > Apps, and opens the launcher. Windows SmartScreen warns once: the programs are not signed.
 2. The launcher finds the dump by itself in the setup's folder, Downloads, Desktop, Documents or the top of each
-   drive, and proposes `<launcher>\game` as the install folder (or `X:\Games\NX2navi` on the drive with the most
+   drive, and proposes `<launcher>\game` as the install folder (or `X:\Games\OOT-DEBUG-MENU` on the drive with the most
    free space when that drive has less than 40 GB). Both rows can be changed.
 3. Selects **Begin Installation**. The launcher downloads the build tools (about 170 MB, once), checks the dump,
    unpacks it, translates and compiles the game: 20 to 45 minutes. It keeps the PC awake meanwhile.
@@ -79,10 +79,10 @@ Customize Launcher (on the home screen) makes the look the player's own:
 The choices are `theme`, `custom_background`, `custom_panel`, `custom_buttons`, `background`, `background_dim`,
 `animations` and `sounds` in `data/launcher.json`.
 
-Navi (`art.NAVI`, 22 x 21 pixels, drawn in whole pixels at every size) is also the icon of `NX2navi.exe`,
-`NX2navi-Setup.exe`, the window and its taskbar button (`art.navi_ico`, written into the release by
+Navi (`art.NAVI`, 22 x 21 pixels, drawn in whole pixels at every size) is also the icon of `OOT-DEBUG-MENU.exe`,
+`OOT-DEBUG-MENU-Setup.exe`, the window and its taskbar button (`art.navi_ico`, written into the release by
 `tools/make_launcher.py`). The window sets that icon on itself, and the setup's shortcuts carry the window's taskbar
-identity (`NX2navi.Launcher`), so the taskbar groups and pins it under NX2navi rather than Python.
+identity (`OOT-DEBUG-MENU.Launcher`), so the taskbar groups and pins it under OOT-DEBUG-MENU rather than Python.
 
 Screens (`launcher/ui/app.py`): first run (dump, install folder, Desktop Shortcut, Check for Updates at Start,
 Update Channel, Begin Installation); the steps of an install, update or rebuild with their progress, the build log's
@@ -102,7 +102,7 @@ for updates); an XInput gamepad (d-pad or left stick, A, B, Y) while the window 
 ## The launcher's folder
 
 ```
-NX2navi.exe              launcher/native/nx2navi.c: swaps in a staged Python, starts app\<current>\launcher\start.pyw
+OOT-DEBUG-MENU.exe       launcher/native/nx2navi.c: swaps in a staged Python, starts app\<current>\launcher\start.pyw
 python/                  python.org's embeddable Python 3.14.9 with tkinter, numpy, lz4, zstandard, fonttools, pillow
                          and truststore
 app/current.txt          the version the stub starts; app/previous.txt the one before it
@@ -122,7 +122,7 @@ game/                    the built game, unless another folder was chosen (its l
 ```
 
 A path the Windows ANSI code page cannot hold breaks the MSYS2 tools, so the toolchain then goes to
-`C:\NX2navi\toolchain` instead (`launcher/paths.py`).
+`C:\OOT-DEBUG-MENU\toolchain` instead (`launcher/paths.py`).
 
 ## Installing
 
@@ -183,11 +183,11 @@ A path the Windows ANSI code page cannot hold breaks the MSYS2 tools, so the too
 
 ## Updating
 
-A release carries `NX2navi-update.json` (version, notes, and the size and sha256 of each file). The feed
+A release carries `OOT-DEBUG-MENU-update.json` (version, notes, and the size and sha256 of each file). The feed
 (`app/<version>/feed.json`) names a GitHub repository: the launcher reads its newest release (or pre-release, on the
 Preview channel) that has the manifest. A private repository answers only with a token (`github_token` in
 `data/launcher.json`); players need a public one. `feed_repo` in `data/launcher.json` points one launcher at another
-repository for testing; `{"type": "url", "url": ".../NX2navi-update.json"}` in feed.json reads one manifest
+repository for testing; `{"type": "url", "url": ".../OOT-DEBUG-MENU-update.json"}` in feed.json reads one manifest
 directly. Every address is https (plain http only to this PC), a redirect to http is refused, and the token is not
 sent on when a redirect leaves the host it was meant for (`launcher/net.py`). A manifest that does not give a file's
 size and sha256 is refused.
@@ -237,9 +237,9 @@ repository: it stages and installs nothing.
 Without a staged release (its staging failed, it is the version the stub rolled back from, or the launcher runs from a
 checkout), selecting Updates runs `jobs.UpdateDownloadJob`, before the restart (`launcher/updater.py`):
 
-1. **Download** `NX2navi-app-<version>.zip` (about 3 MB plus the shader translator) to `data/downloads`, resuming a cut
+1. **Download** `OOT-DEBUG-MENU-app-<version>.zip` (about 3 MB plus the shader translator) to `data/downloads`, resuming a cut
    download, and check its size and sha256. When the manifest names a Python other than `python/runtime-id.txt`, also
-   `NX2navi-runtime-<id>.zip`, unpacked into `python.next`.
+   `OOT-DEBUG-MENU-runtime-<id>.zip`, unpacked into `python.next`.
 2. **Verify**: the archive unpacks into `app/<version>.part`, refusing names that leave the folder, holds the expected
    `VERSION` and a launcher, and becomes `app/<version>`.
 3. `app/previous.txt` gets the running version, `app/current.txt` the new one, and the launcher starts the stub with
@@ -302,16 +302,16 @@ A bug report from a place in the game the developer has not reached yet is quick
 save. Saves (home, under Game Folder; `launcher/saves.py`) and the Saves rows of the game's settings menu (Game tab;
 `runtime/save_share.c`) write and read the same zip.
 
-**Export.** Export Save writes `NX2navi-save-<date>_<time>.zip` into the Downloads folder (Export To chooses another
+**Export.** Export Save writes `OOT-DEBUG-MENU-save-<date>_<time>.zip` into the Downloads folder (Export To chooses another
 folder) and opens the folder with the zip selected, ready to drag into a bug report. With Add Log and Settings on (the
 default) it is `...-bug-report.zip` and also holds the game's latest log and its `nx2navi.ini`; while the game has no
-save yet (it stopped before its first one) the launcher then writes `NX2navi-log-<date>_<time>-bug-report.zip` with
+save yet (it stopped before its first one) the launcher then writes `OOT-DEBUG-MENU-log-<date>_<time>-bug-report.zip` with
 those two alone, which an import refuses as a zip without a save. In the game, Export
 save and Export save for a bug report write the same two zips into Downloads; the second holds the log of the run in
 progress. The zip:
 
 ```
-manifest.json   format "nx2navi-save", format_version 1, the game, its title id and version (1.1.1), the NX2navi
+manifest.json   format "nx2navi-save", format_version 1, the game, its title id and version (1.1.1), the OOT-DEBUG-MENU
                 version, the export time (UTC), exported_by (launcher or game), the number of save files, bug_report
 save/           the save the game would load next (a finished commit still waiting in profile/save-tx, else
                 profile/save/<account>): account.sav, option.sav, slot_00 to slot_05
@@ -322,7 +322,7 @@ Key files (any `*.keys`, also one left in a save folder) and game files never go
 
 **Import.** Import a Save takes such a zip: put it into the game folder's `saves` folder (the row then reads "From the
 Saves Folder", and the home's Saves row "Import Waiting") or select the row and choose it. Before anything changes it
-checks the manifest (the format, a format version it knows, the game's title id: a newer NX2navi's zip or another
+checks the manifest (the format, a format version it knows, the game's title id: a newer OOT-DEBUG-MENU's zip or another
 game's save is refused), every path (inside the save, no links), the size (4,000 files, 256 MB), that the save is
 this game's (`account.sav`, `option.sav` or a `slot_NN/progress.sav`), and each file's CRC as it unpacks. Then the
 zip's save replaces the whole save, every slot, as a save folder does (below): the save the game would load now goes
@@ -342,7 +342,7 @@ one still waiting from the menu.
 Import a Save Folder (Saves) makes another save the game's own. A save put into the game folder's `saves` folder (its
 files, or the folder that holds them) is taken first by Import a Save; otherwise this row asks for the folder. It
 recognises a Switch save backup (the save's files), an emulator's save folder (nested folders named by user and title
-ids), and another NX2navi game folder or its profile folder (the account folder inside). A folder with `progress.sav`
+ids), and another OOT-DEBUG-MENU game folder or its profile folder (the account folder inside). A folder with `progress.sav`
 at its top is one save slot: it replaces that slot (`slot_00` to `slot_05`, by the folder's name, else `slot_00`) and
 the rest of the current save stays. A folder with more than 4,000 files or 1 GB is refused as picked by mistake.
 
@@ -365,9 +365,9 @@ it), and what to check: the date, time and time zone, or security software that 
 
 ## Uninstalling
 
-Settings > Uninstall NX2navi, or Settings > Apps > NX2navi (which runs `NX2navi.exe --uninstall`): what the launcher
-put in its folder (`NX2navi.exe`, `python`, `app`, `pydeps`, `data`, `toolchain`; `launcher/winsys.py` `OWNED`), the
-toolchain in `C:\NX2navi` when it went there, the shortcuts and the Apps entry go; the launcher's folder itself goes
+Settings > Uninstall OOT-DEBUG-MENU, or Settings > Apps > OOT-DEBUG-MENU (which runs `OOT-DEBUG-MENU.exe --uninstall`): what the launcher
+put in its folder (`OOT-DEBUG-MENU.exe`, `python`, `app`, `pydeps`, `data`, `toolchain`; `launcher/winsys.py` `OWNED`), the
+toolchain in `C:\OOT-DEBUG-MENU` when it went there, the shortcuts and the Apps entry go; the launcher's folder itself goes
 only when that leaves it empty. The built game and its saves stay unless "Remove the Built Game" is On, also when the
 game folder is the default `<launcher>\game`. The dump is never touched.
 
@@ -375,8 +375,8 @@ game folder is the default `<launcher>\game`. The dump is never touched.
 
 `launcher/cli.py` runs the same jobs without the window (`python -m launcher.cli`, or in an installed launcher
 `python\python.exe app\<version>\launcher\cli.py`): `check`, `update`, `tools`, `install --dump F --game D`,
-`rebuild [--game D]`, `fonts`. `NX2navi.exe --desktop-shortcut on|off` and `--shortcuts on|off` are the stub's own.
-`NX2navi-Setup.exe` takes `--dest DIR`, `--no-shortcuts`, `--no-launch` and `--quiet`.
+`rebuild [--game D]`, `fonts`. `OOT-DEBUG-MENU.exe --desktop-shortcut on|off` and `--shortcuts on|off` are the stub's own.
+`OOT-DEBUG-MENU-Setup.exe` takes `--dest DIR`, `--no-shortcuts`, `--no-launch` and `--quiet`.
 
 ## Releases
 
@@ -418,10 +418,10 @@ game folder is the default `<launcher>\game`. The dump is never touched.
    `tools/make_kit.py` takes the same option for the build kit.
 
    On Linux it cross-compiles the two programs with clang, lld and llvm-windres against the same MSYS2 packages and
-   unpacks Tcl/Tk with msiextract (msitools). It writes into `build/launcher-release`: `NX2navi-Setup-<version>.exe`
-   (the setup program with the launcher folder appended as a zip), `NX2navi-app-<version>.zip` (with the prebuilt
+   unpacks Tcl/Tk with msiextract (msitools). It writes into `build/launcher-release`: `OOT-DEBUG-MENU-Setup-<version>.exe`
+   (the setup program with the launcher folder appended as a zip), `OOT-DEBUG-MENU-app-<version>.zip` (with the prebuilt
    runtime),
-   `NX2navi-runtime-<id>.zip` and `NX2navi-update.json`. `check_content` runs over the folder first.
+   `OOT-DEBUG-MENU-runtime-<id>.zip` and `OOT-DEBUG-MENU-update.json`. `check_content` runs over the folder first.
 3. Upload those four files to GitHub release `v<version>` of the feed repository, by hand or with `--publish`
    (`gh release create`; add `--draft` to look before it goes out). Launchers see it at their next start.
 

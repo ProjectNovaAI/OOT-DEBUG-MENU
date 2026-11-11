@@ -68,10 +68,10 @@ jobs:
         run: |
           # make_release.py uploads the zip with the release; wait for it if the release was published first
           for i in $(seq 1 20); do
-            gh release download "$TAG" -p 'NX2navi-app-*.zip' -D "$RUNNER_TEMP/app" && break
+            gh release download "$TAG" -p 'OOT-DEBUG-MENU-app-*.zip' -D "$RUNNER_TEMP/app" && break
             echo "no app zip on $TAG yet ($i)"; sleep 30
           done
-          unzip -q "$RUNNER_TEMP"/app/NX2navi-app-*.zip 'prompt-art/*' -d "$RUNNER_TEMP/app" || true
+          unzip -q "$RUNNER_TEMP"/app/OOT-DEBUG-MENU-app-*.zip 'prompt-art/*' -d "$RUNNER_TEMP/app" || true
           ls -d "$RUNNER_TEMP/app/prompt-art" 2>/dev/null || echo "::warning::no prompt-art in the app zip: the AppImage's builds keep the Switch prompts"
       - name: AppImage
         run: |
@@ -83,8 +83,8 @@ jobs:
           art=(); [ -d "$RUNNER_TEMP/app/prompt-art" ] && art=(--prompt-art "$RUNNER_TEMP/app/prompt-art")
           APPIMAGE_EXTRACT_AND_RUN=1 .venv/bin/python tools/make_appimage.py --python "$py" \
             --appimagetool "$RUNNER_TEMP/appimagetool" --out dist "${art[@]}"
-          appimage=$(ls dist/NX2navi-Linux-*-x86_64.AppImage)
+          appimage=$(ls dist/OOT-DEBUG-MENU-Linux-*-x86_64.AppImage)
           APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --help | head -3
-          (cd dist && sha256sum NX2navi-Linux-*-x86_64.AppImage > SHA256SUMS-linux.txt && cat SHA256SUMS-linux.txt)
+          (cd dist && sha256sum OOT-DEBUG-MENU-Linux-*-x86_64.AppImage > SHA256SUMS-linux.txt && cat SHA256SUMS-linux.txt)
       - name: Attach to the release
-        run: gh release upload "$TAG" --clobber dist/NX2navi-Linux-*-x86_64.AppImage dist/SHA256SUMS-linux.txt
+        run: gh release upload "$TAG" --clobber dist/OOT-DEBUG-MENU-Linux-*-x86_64.AppImage dist/SHA256SUMS-linux.txt

@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/navi.png" alt="NX2navi" width="160"></p>
+<p align="center"><img src="docs/images/navi.png" alt="OOT-DEBUG-MENU" width="160"></p>
 
 # OOT-DEBUG-MENU
 
@@ -7,6 +7,21 @@
 > practice, testing and bug hunting. The game, build and licence are otherwise unchanged. Everything below the line is the
 > original NX2navi README from before the fork: it describes the port itself and is not part of this fork's debug menu
 > changes. Details of the debug menu: [docs/debug-menu.md](docs/debug-menu.md).
+
+### Download and play
+
+1. Download `OOT-DEBUG-MENU-Setup-<version>.exe` from the
+   [Releases](https://github.com/ProjectNovaAI/OOT-DEBUG-MENU/releases) page. It is the only file you need.
+2. Put it in the folder that holds your own `.nup` dump of the game, then start it. It installs the launcher into
+   `%LOCALAPPDATA%\Programs\OOT-DEBUG-MENU` without administrator rights, with its own Start menu entry and its own
+   entry in Settings > Apps. Windows SmartScreen warns once: the programs are not signed.
+3. The launcher finds your dump. Select **Begin Installation**: it downloads the build tools (about 170 MB, once) and
+   builds the game on your PC, which takes 20 to 45 minutes. Then select **Play**, press F1 (or D-pad right) in the
+   game and open the Debug tab.
+
+OOT-DEBUG-MENU installs beside an NX2navi install and never touches it: each has its own folder, game, saves and updates.
+The launcher looks for new versions on this repository's Releases page. No game files are in the download: the game is
+built from your own dump.
 
 ### What this fork adds
 

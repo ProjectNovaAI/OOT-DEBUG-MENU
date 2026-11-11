@@ -1,4 +1,4 @@
-"""What NX2navi.exe runs: python\\pythonw.exe app\\<version>\\launcher\\start.pyw [arguments].
+"""What OOT-DEBUG-MENU.exe runs: python\\pythonw.exe app\\<version>\\launcher\\start.pyw [arguments].
 
 The embeddable Python puts only its ._pth entries on sys.path, so the release folder (the parent of launcher/) goes
 first here. A failure before the window is up is written to data/logs/crash.log and ends the process with exit code
@@ -76,7 +76,7 @@ def crash(text, box=True):
         return
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, 'NX2navi could not start.\n\n' + text[-1500:], 'NX2navi', 0x10)
+        ctypes.windll.user32.MessageBoxW(None, 'OOT-DEBUG-MENU could not start.\n\n' + text[-1500:], 'OOT-DEBUG-MENU', 0x10)
     except Exception:
         print(text, file=sys.stderr)
 

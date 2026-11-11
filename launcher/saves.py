@@ -17,7 +17,7 @@ report, and whoever fixes it imports it to reach the same place in the game. The
 imports the same zip; its import waits in <game>/profile/save-import for the game's next start.
 
 A save folder can come from a Switch save backup (the save's files), an emulator (nested folders named by user and
-title ids, gone down while each holds only one folder), another NX2navi game folder or its profile folder (the
+title ids, gone down while each holds only one folder), another OOT-DEBUG-MENU game folder or its profile folder (the
 account folder inside).
 
 A whole save is account.sav, option.sav and the folders slot_00 to slot_05, each with progress.sav and caption.sav. A
@@ -47,14 +47,14 @@ def _rmtree(path):
     if Path(path).exists():
         shutil.rmtree(path, onexc=writable)
 
-README = '''NX2navi saves folder
+README = '''OOT-DEBUG-MENU saves folder
 
-To import a save, put it here and select Saves, then Import a Save, in the NX2navi launcher:
-- a save someone shared: the NX2navi-save-....zip that NX2navi exported
+To import a save, put it here and select Saves, then Import a Save, in the OOT-DEBUG-MENU launcher:
+- a save someone shared: the OOT-DEBUG-MENU-save-....zip that OOT-DEBUG-MENU exported
 - the files of a Switch save backup, or the folder that holds them
 - one save slot (a folder such as slot_00): only that slot is replaced
 - an emulator's save folder for the game
-- the profile folder (or the whole game folder) of another NX2navi install
+- the profile folder (or the whole game folder) of another OOT-DEBUG-MENU install
 
 You can also select Import a Save and choose the zip or the folder instead.
 
@@ -348,8 +348,8 @@ def _replace(game, src, files, slot, stamp, log):
 
 # ---- sharing a save: one zip with the save and a manifest (export_save, import_zip)
 #
-# NX2navi-save-<date>_<time>[-bug-report].zip:
-#   manifest.json         FORMAT, FORMAT_VERSION, the game's title id and version, the NX2navi version, the export time
+# OOT-DEBUG-MENU-save-<date>_<time>[-bug-report].zip:
+#   manifest.json         FORMAT, FORMAT_VERSION, the game's title id and version, the OOT-DEBUG-MENU version, the export time
 #   save/...              the save's files as the game keeps them (account.sav, option.sav, slot_00/progress.sav, ...)
 #   bug-report/...        with bug_report: the game's latest log and nx2navi.ini; an import leaves them out
 # The game's own menu writes and reads the same zip (runtime/save_share.c), with the same manifest keys.
@@ -425,14 +425,14 @@ def _add_report_file(z, f):
 
 
 def _export_log(game, dest, version, log):
-    """The bug report of a game without a save (it stopped before its first one): NX2navi-log-<date>_<time>-bug-report.zip
+    """The bug report of a game without a save (it stopped before its first one): OOT-DEBUG-MENU-log-<date>_<time>-bug-report.zip
     with the game's latest log, nx2navi.ini and a manifest that counts no save files; import_zip refuses it as a zip
     without a save. SaveError when the game has written no log either: then there is nothing to report with."""
     extras = [f for f in (game / 'logs' / 'nx2navi.log', game / 'nx2navi.ini') if f.is_file()]
     if not extras or extras[0].name != 'nx2navi.log':
         raise SaveError(NO_SAVE)
     dest.mkdir(parents=True, exist_ok=True)
-    out = _fresh_file(dest, time.strftime('NX2navi-log-%Y-%m-%d_%H-%M-%S') + '-bug-report', '.zip')
+    out = _fresh_file(dest, time.strftime('OOT-DEBUG-MENU-log-%Y-%m-%d_%H-%M-%S') + '-bug-report', '.zip')
     tmp = out.with_name(out.name + '.part')
     manifest = {'format': FORMAT, 'format_version': FORMAT_VERSION, 'game': GAME, 'title_id': _title_hex(),
                 'game_version': GAME_VERSION, 'nx2navi': version,
@@ -465,7 +465,7 @@ def export_save(game, dest=None, bug_report=False, version='', log=print):
         raise SaveError(NO_SAVE)
     account = account_dir(game)
     dest.mkdir(parents=True, exist_ok=True)
-    stem = time.strftime('NX2navi-save-%Y-%m-%d_%H-%M-%S') + ('-bug-report' if bug_report else '')
+    stem = time.strftime('OOT-DEBUG-MENU-save-%Y-%m-%d_%H-%M-%S') + ('-bug-report' if bug_report else '')
     extras = [f for f in (game / 'logs' / 'nx2navi.log', game / 'nx2navi.ini') if bug_report and f.is_file()]
     for attempt in range(3):
         # a running game may swap a commit in while its files are read (runtime/fs_host.c swap_in): read again
@@ -512,14 +512,14 @@ def _member_path(name):
 
 
 def check_manifest(m):
-    """SaveError unless m is the manifest of an NX2navi save of this game that this version can read."""
+    """SaveError unless m is the manifest of an OOT-DEBUG-MENU save of this game that this version can read."""
     if not isinstance(m, dict) or m.get('format') != FORMAT:
-        raise SaveError(f'its {MANIFEST} is not an NX2navi save manifest')
+        raise SaveError(f'its {MANIFEST} is not an OOT-DEBUG-MENU save manifest')
     v = m.get('format_version')
     if type(v) is not int or v < 1:
         raise SaveError(f'its {MANIFEST} has no format version')
     if v > FORMAT_VERSION:
-        raise SaveError(f'it was made by a newer NX2navi ({m.get("nx2navi") or "format " + str(v)}): update NX2navi '
+        raise SaveError(f'it was made by a newer OOT-DEBUG-MENU ({m.get("nx2navi") or "format " + str(v)}): update OOT-DEBUG-MENU '
                         'first')
     if str(m.get('title_id', '')).lower() != _title_hex():
         raise SaveError(f'it is a save of another game ({m.get("game") or m.get("title_id") or "not named"})')
@@ -538,7 +538,7 @@ def read_zip(path):
         try:
             info = z.getinfo(MANIFEST)
         except KeyError:
-            raise SaveError(f'{name} is not a save exported by NX2navi (it has no {MANIFEST}); to import a save '
+            raise SaveError(f'{name} is not a save exported by OOT-DEBUG-MENU (it has no {MANIFEST}); to import a save '
                             'folder, unpack the zip and choose the folder') from None
         try:
             if info.file_size > 1 << 16:
@@ -585,7 +585,7 @@ def import_zip(game, path, log=print, stamp=None):
         account, backup = _replace(game, stage, files, None, stamp or time.strftime('%Y-%m-%d %H.%M.%S'), log)
     finally:
         _rmtree(stage)
-    log(f'saves: imported {len(files)} files from {path} (exported {m.get("exported", "?")} by NX2navi '
+    log(f'saves: imported {len(files)} files from {path} (exported {m.get("exported", "?")} by OOT-DEBUG-MENU '
         f'{m.get("nx2navi") or "?"}, game {m.get("game_version", "?")}) into {account}' +
         (f'; the old save is in {backup}' if backup else ''))
     return {'files': len(files), 'source': Path(path), 'backup': backup, 'slot': None, 'manifest': m}

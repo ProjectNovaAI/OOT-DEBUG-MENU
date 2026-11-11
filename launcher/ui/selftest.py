@@ -88,7 +88,7 @@ def ahead_of(version):
 
 
 def fake_release(version='0.3.11'):
-    m = {'format': 1, 'version': version, 'app': {'name': f'NX2navi-app-{version}.zip', 'size': 1, 'sha256': '0'}}
+    m = {'format': 1, 'version': version, 'app': {'name': f'OOT-DEBUG-MENU-app-{version}.zip', 'size': 1, 'sha256': '0'}}
     notes = ('- Each program module comes from the .nup package that holds it whole.\n'
              '- The PC stays awake while the game builds.\n- This launcher: one-click install, updates and play.')
     return feed.Release(m, notes)
@@ -98,7 +98,7 @@ def states(app):
     ctx = app.ctx
     s = app.settings
     s['dump'] = s.get('dump') or str(Path.home() / 'Downloads' / 'Ocarina of Time.nup')
-    s['game_dir'] = s.get('game_dir') or ('D:\\Games\\NX2navi' if os.name == 'nt' else '/games/NX2navi')
+    s['game_dir'] = s.get('game_dir') or ('D:\\Games\\OOT-DEBUG-MENU' if os.name == 'nt' else '/games/OOT-DEBUG-MENU')
     app.dumps = [Path(s['dump'])]
 
     def first_run():
@@ -172,14 +172,14 @@ def states(app):
 
     def import_saves():
         app.release, app.message, app.export_message = None, '', ''
-        app.save_message = ('Save imported from NX2navi-save-2026-11-09_17-30-05.zip (exported 2026-11-09 with NX2navi '
+        app.save_message = ('Save imported from OOT-DEBUG-MENU-save-2026-11-09_17-30-05.zip (exported 2026-11-09 with OOT-DEBUG-MENU '
                             '0.6.1). Your old save is in saves' + chr(92) + 'backup 2026-11-09 18.02.44.')
         app.show('saves', next(i for i, r in enumerate(app.rows_saves()) if r.label == 'Import a Save'))
 
     def export_save():
         app.save_message = ''
         app.export_message = ('Exported 14 files with the game' + chr(39) + 's log and settings to '
-                              + str(Path.home() / 'Downloads' / 'NX2navi-save-2026-11-09_17-30-05-bug-report.zip')
+                              + str(Path.home() / 'Downloads' / 'OOT-DEBUG-MENU-save-2026-11-09_17-30-05-bug-report.zip')
                               + '.')
         app.show('saves', 0)
 

@@ -188,7 +188,7 @@ static SaveShareResult export_zip(const char *dir, const char *exact, int bug_re
     }
     plat_file_mkdir_p(dir);
     char stem[64];
-    snprintf(stem, sizeof stem, "NX2navi-save-%04d-%02d-%02d_%02d-%02d-%02d%s", t.tm_year + 1900, t.tm_mon + 1,
+    snprintf(stem, sizeof stem, "OOT-DEBUG-MENU-save-%04d-%02d-%02d_%02d-%02d-%02d%s", t.tm_year + 1900, t.tm_mon + 1,
              t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, bug_report ? "-bug-report" : "");
     int ok = 0;
     for (int k = 1; k < 100 && !ok; k++) {   // two exports in one second: "(2)" as the launcher names them
@@ -234,7 +234,7 @@ static const SzEntry *find_member(const SzEntry *e, int count, const char *name)
     return NULL;
 }
 
-// The manifest's verdict on the zip; detail gets its NX2navi version and export date.
+// The manifest's verdict on the zip; detail gets its OOT-DEBUG-MENU version and export date.
 static SaveShareResult check_manifest(const uint8_t *zip, size_t n, const SzEntry *e, int count, char *detail,
                                       size_t cap) {
     const SzEntry *m = find_member(e, count, "manifest.json");
@@ -312,9 +312,9 @@ SaveShareResult save_share_import(const char *zip_path, char *detail, size_t cap
     for (int i = 0; i < k; i++) free(data[i]);
     free(rels), free(data), free(sizes), free(e), free(zip);
     static const char *const why[] = {"waits for the next start", "", "the zip cannot be read", "its save cannot be put in place",
-                                      "not a zip of an NX2navi save", "a save of another game",
-                                      "made by a newer NX2navi", "damaged", "paths outside the save, links or too large"};
-    rt_log("save share: import of %s (NX2navi %s): %s", zip_path, *detail ? detail : "?", why[r]);
+                                      "not a zip of an OOT-DEBUG-MENU save", "a save of another game",
+                                      "made by a newer OOT-DEBUG-MENU", "damaged", "paths outside the save, links or too large"};
+    rt_log("save share: import of %s (OOT-DEBUG-MENU %s): %s", zip_path, *detail ? detail : "?", why[r]);
     return r;
 }
 

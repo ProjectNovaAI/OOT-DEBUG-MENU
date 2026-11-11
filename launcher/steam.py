@@ -16,7 +16,7 @@ shortcut nor keep it: Steam is asked to close (steam.exe -shutdown), the files a
 The shortcut starts the launcher's pythonw.exe on data/steam_play.pyw, which starts this launcher with --play: the game
 runs from its own folder with its console hidden, and the Python process waits for it, so Steam shows the game as
 running for as long as it is (the game's own Restart included). Starting ocarina.exe directly would open a console
-window beside the game, and NX2navi.exe ends a few seconds after it started the launcher.
+window beside the game, and OOT-DEBUG-MENU.exe ends a few seconds after it started the launcher.
 """
 import os
 import shutil
@@ -31,7 +31,7 @@ PLAY_SCRIPT = 'steam_play.pyw'
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 STEAM64_BASE = 76561197960265728
 
-PLAY_TEXT = '''"""Written by the NX2navi launcher (Customize Launcher > Add to Steam): Steam starts the game through this file.
+PLAY_TEXT = '''"""Written by the OOT-DEBUG-MENU launcher (Customize Launcher > Add to Steam): Steam starts the game through this file.
 It runs the launcher of app/current.txt with --play, which starts the game and waits for it."""
 import os
 import runpy

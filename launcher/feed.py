@@ -1,16 +1,16 @@
 """Where updates come from.
 
-Every release carries NX2navi-update.json (tools/make_launcher.py writes it):
+Every release carries OOT-DEBUG-MENU-update.json (tools/make_launcher.py writes it):
 
     {"format": 1, "version": "0.3.11", "build": "0.3.11+abc1234", "notes": "...",
-     "app":     {"name": "NX2navi-app-0.3.11.zip", "size": n, "sha256": "..."},
-     "runtime": {"id": "py3.14.9-1", "name": "NX2navi-runtime-py3.14.9-1.zip", "size": n, "sha256": "..."},
+     "app":     {"name": "OOT-DEBUG-MENU-app-0.3.11.zip", "size": n, "sha256": "..."},
+     "runtime": {"id": "py3.14.9-1", "name": "OOT-DEBUG-MENU-runtime-py3.14.9-1.zip", "size": n, "sha256": "..."},
      "toolchain": "<lock digest>"}
 
 The feed (app/<version>/feed.json, or the player's override in settings) is either
     {"type": "github", "repo": "owner/name"}   the newest GitHub release (or pre-release, on the preview channel)
                                                   that has the manifest; a token reads a private repository
-    {"type": "url", "url": "https://.../NX2navi-update.json"}   one manifest; its files sit beside it
+    {"type": "url", "url": "https://.../OOT-DEBUG-MENU-update.json"}   one manifest; its files sit beside it
 """
 import json
 import re
@@ -20,8 +20,8 @@ from pathlib import Path
 
 from . import net, versions
 
-MANIFEST = 'NX2navi-update.json'
-DEFAULT = {'type': 'github', 'repo': 'tangerineturtle1/NX2navi'}
+MANIFEST = 'OOT-DEBUG-MENU-update.json'
+DEFAULT = {'type': 'github', 'repo': 'ProjectNovaAI/OOT-DEBUG-MENU'}
 GITHUB_API = 'https://api.github.com'
 
 
@@ -74,7 +74,7 @@ def load(layout, settings):
 
 def _check_manifest(m, where):
     if not isinstance(m, dict) or m.get('format') != 1 or 'version' not in m or 'app' not in m:
-        raise FeedError(f'{where}: not an NX2navi update manifest')
+        raise FeedError(f'{where}: not an OOT-DEBUG-MENU update manifest')
     versions.parse(m['version'])
     return m
 

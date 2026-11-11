@@ -1,5 +1,5 @@
-"""Build NX2navi-Linux-<version>-x86_64.AppImage: the Linux build kit as one file, which builds Ocarina of Time on the
-player's PC from their own dump with tools/make_game.py, as NX2navi-Setup.exe does on Windows. Started without
+"""Build OOT-DEBUG-MENU-Linux-<version>-x86_64.AppImage: the Linux build kit as one file, which builds Ocarina of Time on the
+player's PC from their own dump with tools/make_game.py, as OOT-DEBUG-MENU-Setup.exe does on Windows. Started without
 arguments on a desktop it opens a window to install, update and play (tools/appimage_gui.py, which runs AppRun
 with --events and reads its progress lines).
 
@@ -38,7 +38,7 @@ TOOLS_SKIP = ('vendor', 'xlate', '__pycache__')   # the translator ships built (
 PACKAGES = ('numpy==2.5.4', 'lz4==4.4.5', 'zstandard==0.25.0', 'fonttools==4.68.0', 'pillow==12.3.0')
 
 APPRUN = r'''#!/bin/bash
-# NX2navi build kit for Linux: builds Ocarina of Time (Switch 2, game 1.1.1) from the player's own dump.
+# OOT-DEBUG-MENU build kit for Linux: builds Ocarina of Time (Switch 2, game 1.1.1) from the player's own dump.
 HERE="$(dirname "$(readlink -f "$0")")"
 PY="$HERE/usr/python/bin/python3"
 KIT="$HERE/usr/kit"
@@ -48,7 +48,7 @@ unset PYTHONPATH PYTHONHOME
 
 usage() {
     cat <<EOF
-NX2navi $(cat "$KIT/VERSION") - build Ocarina of Time (Switch 2, game 1.1.1) natively for Linux from your own dump.
+OOT-DEBUG-MENU $(cat "$KIT/VERSION") - build Ocarina of Time (Switch 2, game 1.1.1) natively for Linux from your own dump.
 
   $(basename "${APPIMAGE:-$0}")                                     a window to install, update and play (on a desktop)
   $(basename "${APPIMAGE:-$0}") <your game.nup> [game folder]       build (default folder: ~/Games/Ocarina)
@@ -167,7 +167,7 @@ echo "Done. Start the game with: $OUT/play.sh"
 
 DESKTOP = '''[Desktop Entry]
 Type=Application
-Name=NX2navi
+Name=OOT-DEBUG-MENU
 Comment=Build Ocarina of Time natively for Linux from your own dump
 Exec=AppRun
 Icon=nx2navi
@@ -204,7 +204,7 @@ def main():
     import dlss_pin
     dlss = None if a.no_dlss else dlss_pin.resolve(a.dlss, ROOT / 'build' / 'dl', linux=True)
 
-    app = ROOT / 'build' / 'appimage' / 'NX2navi.AppDir'
+    app = ROOT / 'build' / 'appimage' / 'OOT-DEBUG-MENU.AppDir'
     shutil.rmtree(app, ignore_errors=True)
     kit = app / 'usr' / 'kit'
     kit.mkdir(parents=True)
@@ -257,7 +257,7 @@ def main():
         ico.convert('RGBA').save(app / 'nx2navi.png')
 
     a.out.mkdir(parents=True, exist_ok=True)
-    target = a.out / f'NX2navi-Linux-{version}-x86_64.AppImage'
+    target = a.out / f'OOT-DEBUG-MENU-Linux-{version}-x86_64.AppImage'
     env = dict(os.environ, ARCH='x86_64')
     subprocess.run([a.appimagetool, '--no-appstream', app, target], check=True, env=env)
     target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

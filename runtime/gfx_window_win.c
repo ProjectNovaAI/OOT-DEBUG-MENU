@@ -696,7 +696,7 @@ static void window_main(void *arg) {
     // for F11. If that fails, g_fs_pending retries at the first activation (wnd_proc, WM_ACTIVATEAPP).
     // NX2NAVI_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
     int background = g_background = cfg_get("NX2NAVI_BACKGROUND_WINDOW") && atoi(cfg_get("NX2NAVI_BACKGROUND_WINDOW"));
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"NX2navi", WND_STYLE, x, y, ow, oh, NULL, NULL,
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"OOT-DEBUG-MENU", WND_STYLE, x, y, ow, oh, NULL, NULL,
                              inst, NULL);
     if (!g_hwnd) {
         rt_log("gfx: CreateWindowEx failed (%lu)", GetLastError());

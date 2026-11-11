@@ -5,7 +5,7 @@
 typedef enum {
     // Software keyboard
     UI_SWKBD_TITLE,          // caption of the text-entry window
-    UI_SWKBD_PROMPT,         // prompt when the game gives no header, guide or sub text (NX2navi names a horse)
+    UI_SWKBD_PROMPT,         // prompt when the game gives no header, guide or sub text (OOT-DEBUG-MENU names a horse)
     UI_SWKBD_DEFAULT_NAME,   // text the entry starts with when the game gives none, so a controller can confirm it
     UI_SWKBD_OK,
     UI_SWKBD_CANCEL,
@@ -23,7 +23,7 @@ typedef enum {
     UI_MENU_SET_BY_ENV,       // note on a setting an environment variable fixes
     UI_MENU_SAVE_FAILED,
     UI_MENU_INI_UNKNOWN,      // "...: %s": the keys of nx2navi.ini that are no settings of this version (cfg_unknown_keys)
-    UI_MENU_VERSION,          // "NX2navi %s, game %s": the port version and the game update, beside the title
+    UI_MENU_VERSION,          // "OOT-DEBUG-MENU %s, game %s": the port version and the game update, beside the title
 
     // Screen
     UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC,
@@ -252,7 +252,7 @@ typedef enum {
     UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
     // the Game tab's Saves group (ui/menu.cpp rows_saves, save_share.c): export the save into a zip, import a shared
     // one at the next start. UI_MENU_SAVE_EXPORTED to UI_MENU_SAVE_E_UNSAFE are printf formats with at most one "%s"
-    // (a path, or the zip's NX2navi version and date)
+    // (a path, or the zip's OOT-DEBUG-MENU version and date)
     UI_MENU_SAVES,
     UI_MENU_SAVE_EXPORT, UI_MENU_SAVE_EXPORT_DESC, UI_MENU_SAVE_EXPORT_BUG, UI_MENU_SAVE_EXPORT_BUG_DESC,
     UI_MENU_SAVE_IMPORT, UI_MENU_SAVE_IMPORT_DESC,
@@ -260,7 +260,7 @@ typedef enum {
     UI_MENU_SAVE_IMPORT_CANCEL, UI_MENU_SAVE_IMPORT_CANCEL_DESC,
     UI_MENU_SAVE_BUSY,               // note on the rows while an export or import runs
     UI_MENU_SAVE_EXPORTED,           // "%s": the zip's path
-    UI_MENU_SAVE_IMPORT_READY,       // "%s": "<NX2navi version>, <export date>" of the zip
+    UI_MENU_SAVE_IMPORT_READY,       // "%s": "<OOT-DEBUG-MENU version>, <export date>" of the zip
     UI_MENU_SAVE_IMPORT_CANCELLED,
     UI_MENU_SAVE_IMPORTED,           // "%s": the folder the replaced save was copied to, at this start
     UI_MENU_SAVE_IMPORTED_NEW,       // the same with no save to replace
