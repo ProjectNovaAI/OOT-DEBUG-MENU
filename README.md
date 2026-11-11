@@ -3,7 +3,7 @@
 # OOT-DEBUG-MENU
 
 > [!NOTE]
-> **This is a fork of [NX2navi / OOT-PC](https://github.com/ProjectNovaAI/OOT-PC) that adds a live in-game debug menu** for speedrun
+> **This is a fork of [NX2navi](https://github.com/tangerineturtle1/NX2navi) that adds a live in-game debug menu** for speedrun
 > practice, testing and bug hunting. The game, build and licence are otherwise unchanged. Everything below the line is the
 > original project's README. Details: [docs/debug-menu.md](docs/debug-menu.md).
 
