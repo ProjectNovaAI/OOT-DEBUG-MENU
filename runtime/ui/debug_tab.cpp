@@ -63,6 +63,111 @@ extern "C" void tab_debug(float scale) {
                  "loading screen) is not counted.",
                  false);
 
+    opt_group_text("Warp");
+    {
+        // Areas are the stage file names without the age suffix; each has entrances in one or both ages' files.
+        struct Area { char name[48]; };
+        static std::vector<Area> areas;
+        auto base_of = [](const char *banc, char *out, size_t n) {
+            size_t k = strlen(banc);
+            if (k > 6 && (!strcmp(banc + k - 6, "_Child") || !strcmp(banc + k - 6, "_Adult"))) k -= 6;
+            snprintf(out, n, "%.*s", (int)k, banc);
+        };
+        if (areas.empty())
+            for (int i = 0; i < dbg_warp_count(); i++) {
+                Area a;
+                base_of(dbg_warp_banc(i), a.name, sizeof a.name);
+                bool seen = false;
+                for (auto &x : areas) seen |= !strcmp(x.name, a.name);
+                if (!seen) areas.push_back(a);
+            }
+        static int area_i = 0, entrance_k = 0, want_child = -1;
+        char cur[64] = "";
+        int child = dbg_is_child();
+        if (want_child < 0 && child >= 0) want_child = child;
+        if (dbg_current_area(cur))
+            snprintf(value, sizeof value, "%s (%s)", cur, child == 1 ? "child" : child == 0 ? "adult" : "?");
+        else
+            snprintf(value, sizeof value, "%s", dbg_flags_locating() ? "searching the game's memory (about half a minute)..." : "not found: load a save");
+        opt_text_row("##dbg_area", "Current area", value, nullptr, "The stage file the game has loaded, and the player's age.", false);
+        int sw = dbg_age_switch_target();
+        snprintf(value, sizeof value, "A: %s", sw < 0 ? "-" : dbg_warp_age(sw) == DBG_AGE_CHILD ? "become a child" : "become an adult");
+        if (opt_text_row("##dbg_wswitch", "Switch age here", value, nullptr,
+                         "An instant warp into this area's version for the other age, at the entrance the player last came in "
+                         "by (or the first one). Areas made for one age only (dungeons, most interiors) have no other version: "
+                         "warp to an area that has one.",
+                         false) == 2 && sw >= 0)
+            dbg_age_switch();
+        int hold = dbg_warp_get_age();
+        int rf = opt_text_row("##dbg_wflag", "Age flag on arrival",
+                         hold == DBG_AGE_CHILD ? "child" : hold == DBG_AGE_ADULT ? "adult" : "set by the area", nullptr,
+                         "For glitch hunting: after a warp, the game's age flag (Sequence_IsChildhood) is held at this value "
+                         "over the area's own choice. The player's body and items stay those of the area's age, so this "
+                         "mixes the two: what the game lets the player do follows the flag. Left and right choose.",
+                         false);
+        if (rf == -1 || rf == 1) dbg_warp_set_age((hold + rf + 3) % 3);
+        // The entrances of the chosen area in the chosen age (or the area's only file when it has no age suffix).
+        std::vector<int> ents;
+        bool has_age = false;
+        for (int i = 0; i < dbg_warp_count(); i++) {
+            char b[64];
+            base_of(dbg_warp_banc(i), b, sizeof b);
+            if (strcmp(b, areas[area_i].name)) continue;
+            int age = dbg_warp_age(i);
+            if (age != DBG_AGE_ANY) has_age = true;
+            if (age == DBG_AGE_ANY || (age == DBG_AGE_CHILD) == (want_child == 1)) ents.push_back(i);
+        }
+        if (ents.empty())   // this area has no file for the chosen age: offer the other one
+            for (int i = 0; i < dbg_warp_count(); i++) {
+                char b[64];
+                base_of(dbg_warp_banc(i), b, sizeof b);
+                if (!strcmp(b, areas[area_i].name)) ents.push_back(i);
+            }
+        if (entrance_k >= (int)ents.size()) entrance_k = 0;
+        int r = opt_text_row("##dbg_warea", "Destination", areas[area_i].name, nullptr,
+                             "The area to warp to. Left and right go through every area that has an entrance.", false);
+        int na = (int)areas.size();
+        if (r == -1 || r == 1) area_i = (area_i + r + na) % na, entrance_k = 0;
+        snprintf(value, sizeof value, "%s (%d of %d)", ents.empty() ? "-" : dbg_warp_start(ents[entrance_k]), entrance_k + 1, (int)ents.size());
+        r = opt_text_row("##dbg_went", "Entrance", value, nullptr,
+                         "Where in the area to arrive: the entrances other areas lead to. Left and right choose.", false);
+        int ne = (int)ents.size();
+        if (ne && (r == -1 || r == 1)) entrance_k = (entrance_k + r + ne) % ne;
+        int pick = ne ? ents[entrance_k] : -1;
+        const char *age_txt = !has_age ? (pick >= 0 ? "set by the area" : "-")
+                              : dbg_warp_age(pick) == DBG_AGE_CHILD ? "child" : "adult";
+        r = opt_text_row("##dbg_wage", "Age", age_txt, nullptr,
+                         "Child or adult at the destination. Areas with a child and an adult version switch the player's age; "
+                         "dungeons and other single-version areas keep the age the area itself asks for. Left and right switch.",
+                         false);
+        if (r == -1 || r == 1) {
+            want_child = want_child == 1 ? 0 : 1;
+            int other = dbg_warp_other_age(pick);
+            entrance_k = 0;
+            if (other >= 0) {
+                std::vector<int> e2;
+                for (int i = 0; i < dbg_warp_count(); i++)
+                    if (!strcmp(dbg_warp_banc(i), dbg_warp_banc(other))) e2.push_back(i);
+                for (int k = 0; k < (int)e2.size(); k++)
+                    if (e2[k] == other) entrance_k = k;
+            }
+        }
+        if (opt_text_row("##dbg_wnow", "Warp now", "A: go", nullptr,
+                         "Puts the player into the nearest loading zone of this area and sends that area change to the "
+                         "destination. Works while the player is free to move (not in a cutscene or a menu of the game).",
+                         false) == 2 && pick >= 0) {
+            if (dbg_warp_arm(pick)) dbg_warp_now();
+        }
+        if (opt_text_row("##dbg_wnext", "Warp at the next area change", "A: arm", nullptr,
+                         "The next area change the game makes on its own (a loading zone, a door, a warp song, Farore's "
+                         "Wind, a void out) goes to the destination instead.", false) == 2 && pick >= 0)
+            dbg_warp_arm(pick);
+        if (dbg_warp_armed() >= 0 &&
+            opt_text_row("##dbg_wcancel", "Cancel the warp", "A", nullptr, "Lets the next area change go where the game sends it.", false) == 2)
+            dbg_warp_cancel();
+        if (dbg_warp_note()[0]) opt_text_str(dbg_warp_note());
+    }
+
     opt_group_text("Health");
     {
         int c = 0, m = 0;
@@ -287,11 +392,6 @@ extern "C" void tab_debug(float scale) {
         }
         if (n > 12) opt_text_str("Only the first 12 hits are listed: narrow them further or save the file.");
     }
-
-    opt_group_text("Not built yet");
-    opt_text_str("Warping to any area, adding and removing items, switching between child and adult, flags, and showing "
-                 "death barriers and invisible walls (also as a solid colour) need the game's own save and scene functions "
-                 "found first. Notes on how far that got: docs/debug-menu.md.");
     opt_end();
 }
 

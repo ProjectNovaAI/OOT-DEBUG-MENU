@@ -1,6 +1,7 @@
 // File-based remote console to the running game (debug_remote.h). A helper thread polls debug_cmd.txt; when it exists the
 // commands in it run one per line and the answers go to debug_out.txt, which ends with "END". No socket is opened, so
 // nothing is reachable from the network: only whoever can write to the game's folder.
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -486,8 +487,92 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "speed") && a1) {
         dbg_set_time_scale(strtof(a1, NULL));
         out_put("speed %.3f\n", dbg_time_scale());
+    } else if (!strcmp(cmd, "fget") && a1) {   // fget NAME: any flag by name, from whichever store has it
+        uint32_t key = dbg_flag_key(a1), u = 0;
+        int t = dbg_flag_type(key);
+        char s[64];
+        float v[3];
+        if (t < 0) out_put("%s (key %08x): %s\n", a1, key, dbg_flags_locating() ? "searching" : "not found");
+        else if (t == DBG_FLAG_BOOL) out_put("%s bool = %d\n", a1, dbg_flag_get_bool(key));
+        else if (t == DBG_FLAG_STRING && dbg_flag_get_string(key, s)) out_put("%s string = \"%s\"\n", a1, s);
+        else if (t == DBG_FLAG_VEC3 && dbg_flag_get_vec3(key, v)) out_put("%s vec3 = %g %g %g\n", a1, v[0], v[1], v[2]);
+        else if (dbg_flag_get_u32(t, key, &u)) {
+            float f;
+            memcpy(&f, &u, 4);
+            out_put("%s %s = %d (0x%08x, float %g)\n", a1, t == DBG_FLAG_INT ? "int" : t == DBG_FLAG_ENUM ? "enum" : "float", (int)u, u, f);
+        }
+    } else if (!strcmp(cmd, "fset") && a1 && a2) {   // fset NAME VALUE: bool 0/1, int, float, enum hash or value name, string (- for empty), vec3 x,y,z
+        uint32_t key = dbg_flag_key(a1);
+        int t = dbg_flag_type(key), ok = 0;
+        if (t == DBG_FLAG_BOOL) ok = dbg_flag_set_bool(key, atoi(a2));
+        else if (t == DBG_FLAG_INT) ok = dbg_flag_set(key, atoi(a2));
+        else if (t == DBG_FLAG_FLOAT) {
+            float f = strtof(a2, NULL);
+            uint32_t u;
+            memcpy(&u, &f, 4);
+            ok = dbg_flag_set_u32(t, key, u);
+        } else if (t == DBG_FLAG_ENUM) {
+            ok = dbg_flag_set_u32(t, key, isdigit((unsigned char)a2[0]) ? (uint32_t)strtoul(a2, NULL, 0) : dbg_flag_key(a2));
+        } else if (t == DBG_FLAG_STRING) {
+            ok = dbg_flag_set_string(key, strcmp(a2, "-") ? a2 : "");
+        } else if (t == DBG_FLAG_VEC3) {
+            float v[3] = {0};
+            sscanf(a2, "%f,%f,%f", &v[0], &v[1], &v[2]);
+            ok = dbg_flag_set_vec3(key, v);
+        }
+        out_put("fset %s: %s\n", a1, ok ? "done" : t < 0 ? "flag not found" : "failed");
+    } else if (!strcmp(cmd, "warps")) {   // warps [FILTER]: the destinations
+        for (int i = 0; i < dbg_warp_count(); i++)
+            if (!a1 || strstr(dbg_warp_banc(i), a1) || strstr(dbg_warp_start(i), a1)) out_put("%3d %s %s\n", i, dbg_warp_banc(i), dbg_warp_start(i));
+    } else if (!strcmp(cmd, "warp") && a1) {   // warp INDEX [now]: arm a warp (and with now, start it)
+        int i = atoi(a1);
+        out_put("warp %d: %s\n", i, dbg_warp_arm(i) ? "armed" : "failed");
+        if (a2 && !strcmp(a2, "now")) out_put("instant: %s\n", dbg_warp_now() ? "requested" : "failed");
+        out_put("%s\n", dbg_warp_note());
+    } else if (!strcmp(cmd, "warpcancel")) {
+        dbg_warp_cancel();
+        out_put("%s\n", dbg_warp_note());
+    } else if (!strcmp(cmd, "agesw")) {   // agesw: switch between child and adult in this area
+        out_put("age switch to warp %d: %s\n%s\n", dbg_age_switch_target(), dbg_age_switch() ? "started" : "failed", dbg_warp_note());
+    } else if (!strcmp(cmd, "warpage")) {   // warpage [area|child|adult]: the age flag held after a warp
+        if (a1) dbg_warp_set_age(!strcmp(a1, "child") ? DBG_AGE_CHILD : !strcmp(a1, "adult") ? DBG_AGE_ADULT : DBG_AGE_ANY);
+        int age = dbg_warp_get_age();
+        out_put("warp age: %s\n", age == DBG_AGE_CHILD ? "child" : age == DBG_AGE_ADULT ? "adult" : "the area's");
+    } else if (!strcmp(cmd, "area")) {
+        char s[64] = "";
+        dbg_current_area(s);
+        out_put("area %s, child %d, warp armed %d, %s\n", s, dbg_is_child(), dbg_warp_armed(), dbg_warp_note());
+    } else if (!strcmp(cmd, "perf")) {   // the player actor and its event performer
+        out_put("player 0x%llx performer 0x%llx\n", (unsigned long long)dbg_player_actor(), (unsigned long long)dbg_player_performer());
+    } else if (!strcmp(cmd, "gcall") && a1) {
+        // gcall FN [ARG ...]: call a guest function on the game thread at the next frame. An argument is a number,
+        // s:TEXT (the address of TEXT), p:TEXT (the address of a pointer to TEXT), player or perf.
+        uint64_t a[8] = {0};
+        char *args[8] = {a2, a3};
+        int n = (a2 != NULL) + (a3 != NULL), slot = 0;
+        char *t;
+        while (n < 8 && (t = strtok(NULL, " \t\r\n"))) args[n++] = t;
+        for (int i = 0; i < n; i++) {
+            if (!strncmp(args[i], "s:", 2) || !strncmp(args[i], "p:", 2)) a[i] = dbg_guest_text(slot++ & 3, args[i] + 2, args[i][0] == 'p');
+            else if (!strcmp(args[i], "player")) a[i] = dbg_player_actor();
+            else if (!strcmp(args[i], "perf")) a[i] = dbg_player_performer();
+            else if (!strncmp(args[i], "buf", 3)) a[i] = dbg_guest_scratch() + num(args[i] + 3);
+            else a[i] = num(args[i]);
+        }
+        out_put("gcall 0x%llx: %s\n", (unsigned long long)num(a1), dbg_guest_call(num(a1), a) ? "queued" : "busy");
+        for (int i = 0; i < 50; i++) {
+            uint64_t r;
+            if (dbg_guest_result(&r)) { out_put("result 0x%llx\n", (unsigned long long)r); break; }
+            plat_sleep_ns(20000000ull);
+        }
+    } else if (!strcmp(cmd, "gbuf")) {   // the scratch buffer's address (gcall takes bufOFFSET for an address in it)
+        out_put("gbuf 0x%llx\n", (unsigned long long)dbg_guest_scratch());
+    } else if (!strcmp(cmd, "gres")) {
+        uint64_t r;
+        if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
+        else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag items item magic infmagic infitems\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage area perf gcall gres\n");
     }
 }
 

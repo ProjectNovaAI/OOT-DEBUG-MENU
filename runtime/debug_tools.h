@@ -18,9 +18,12 @@ int dbg_available(void);
 // Player actor. pos is metres, the world frame the game uses. 1 on success, 0 while no save is loaded (the actor does
 // not exist yet) or on an unsupported build.
 int dbg_player_pos(float pos[3]);
-// Moves the player actor to pos (the position fields only: velocity and the physics body are left to the game, which
-// may pull the actor back). 1 when written.
+// Moves the player actor to pos. With the debug frame hook running this is dbg_player_teleport; without it only the
+// position fields are written (the physics body is left to the game, which may pull the actor back). 1 when done.
 int dbg_player_set_pos(const float pos[3]);
+// The game's own warp of the player to pos at the next frame (debug_warp.c): the physics body moves too. 0 when the
+// debug frame hook is not running (patch set dbgframe) or there is no player.
+int dbg_player_teleport(const float pos[3]);
 
 // Once per presented frame (the overlay path): follows the position to estimate the speed.
 void dbg_tick(uint64_t now_ns);
@@ -88,6 +91,20 @@ uint32_t dbg_flag_key(const char *name);
 int dbg_flag_get(uint32_t key, int *value);
 int dbg_flag_set(uint32_t key, int value);
 int dbg_flags_locating(void);
+// The other flag stores work the same way, each its own array with its own entry class and table; one search finds them
+// all (the int store first, then the run of each other type nearest to it). Strings are the 64-byte kind; an enum's value
+// is the hash of its value's name.
+enum { DBG_FLAG_BOOL, DBG_FLAG_INT, DBG_FLAG_FLOAT, DBG_FLAG_STRING, DBG_FLAG_VEC3, DBG_FLAG_ENUM, DBG_FLAG_TYPES };
+uint64_t dbg_flag_addr(int type, uint32_t key);   // the value's address, 0 when unknown (or still being looked for)
+int dbg_flag_type(uint32_t key);                  // the store that has this key, -1 if none
+int dbg_flag_get_bool(uint32_t key);              // 0 or 1, -1 when unknown
+int dbg_flag_set_bool(uint32_t key, int on);
+int dbg_flag_get_u32(int type, uint32_t key, uint32_t *value);   // int, float (bits) and enum stores
+int dbg_flag_set_u32(int type, uint32_t key, uint32_t value);
+int dbg_flag_get_string(uint32_t key, char out[64]);
+int dbg_flag_set_string(uint32_t key, const char *text);
+int dbg_flag_get_vec3(uint32_t key, float v[3]);
+int dbg_flag_set_vec3(uint32_t key, const float v[3]);
 // Magic, in the game's units (the maximum is 0 before the meter is obtained). Infinite: refilled on every presented frame.
 int dbg_magic_get(int *cur, int *max);
 int dbg_magic_set(int value);         // clamps to 0..max; 1 when written
@@ -105,6 +122,43 @@ void dbg_items_infinite(int on);
 int dbg_items_infinite_on(void);
 void dbg_invulnerable(int on);
 int dbg_invulnerable_on(void);
+uint64_t dbg_player_actor(void);   // the player actor's address, 0 when there is none
+
+// Warps (debug_warp.c). Destination i is an area file, an entrance actor in it and the arrival event. A warp is armed:
+// the next area change the game makes (a loading zone, a door, a warp song, an instant warp) goes to the destination
+// instead. Areas with a child and an adult file have their age in the name; the area sets the age.
+enum { DBG_AGE_ANY, DBG_AGE_CHILD, DBG_AGE_ADULT };
+int dbg_warp_count(void);
+const char *dbg_warp_banc(int i);
+const char *dbg_warp_start(int i);
+int dbg_warp_age(int i);
+int dbg_warp_other_age(int i);         // the same entrance in the other age's file, -1 if none
+int dbg_warp_arm(int i);               // 1 when armed (0 while the flags are still being looked for)
+void dbg_warp_cancel(void);
+// With a warp armed: puts the player into the nearest loading zone of the area that starts a change (a helper thread
+// tries them in turn, the note says how it went). 1 when started.
+int dbg_warp_now(void);
+int dbg_warp_armed(void);              // the armed destination, -1 if none
+// Age on arrival for the warps: DBG_AGE_ANY lets the area choose (its file's age), child or adult is held over the
+// area's choice while it loads, so also in areas made for the other age.
+void dbg_warp_set_age(int age);
+int dbg_warp_get_age(void);
+// Child and adult switch: an instant warp into this area's file for the other age, at the entrance the player last came
+// in by when that file has it. dbg_age_switch_target is that warp, -1 when the area has one age only.
+int dbg_age_switch_target(void);
+int dbg_age_switch(void);
+const char *dbg_warp_note(void);       // what the warp did last, for the menu
+int dbg_current_area(char out[64]);    // Sequence_CurrentBanc
+int dbg_is_child(void);                // Sequence_IsChildhood: 1 child, 0 adult, -1 unknown
+// Guest calls on the game thread, made by the debug frame hook (debug_game.c) at the next frame. dbg_guest_text keeps
+// a string in one of four slots and returns its address, or with indirect the address of a pointer to it.
+uint64_t dbg_guest_text(int slot, const char *text, int indirect);
+int dbg_guest_call(uint64_t fn, const uint64_t a[8]);   // 0 when a call is still queued
+int dbg_guest_result(uint64_t *r);                      // 1 and x0 once the queued call ran
+uint64_t dbg_player_performer(void);
+uint64_t dbg_guest_scratch(void);   // 64 KiB the game may use, for structures passed to guest calls
+struct Cpu;
+void dbg_game_frame(struct Cpu *c);    // the frame hook, game thread
 
 #ifdef __cplusplus
 }

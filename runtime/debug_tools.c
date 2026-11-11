@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -38,6 +39,8 @@ static uint64_t player_actor(void) {
     return actor;
 }
 
+uint64_t dbg_player_actor(void) { return player_actor(); }
+
 int dbg_player_pos(float pos[3]) {
     uint64_t actor = player_actor();
     if (!actor || !guest_read(actor + ACTOR_POS_FIELD, pos, 12)) return 0;
@@ -46,6 +49,7 @@ int dbg_player_pos(float pos[3]) {
 
 int dbg_player_set_pos(const float pos[3]) {
     if (!isfinite(pos[0]) || !isfinite(pos[1]) || !isfinite(pos[2])) return 0;
+    if (dbg_player_teleport(pos)) return 1;
     uint64_t actor = player_actor();
     if (!actor) return 0;
     uint64_t at = actor + ACTOR_POS_FIELD, end;
@@ -162,20 +166,35 @@ static void health_tick(void) {
     if (c != want) health_write(atomic_load(&health_addr), (uint32_t)want);
 }
 
-// ---- int flags, magic and counted items
+// ---- flags, magic and counted items
 
-#define FLAG_ENTRY_CLASS 0x4c20718ull   // main+: the first 8 bytes of every int flag entry
-#define FLAG_ENTRY_SIZE 0x28
-#define FLAG_ENTRY_VALUE 0x1c           // the value, and the same value again 4 bytes later
-#define FLAG_ENTRY_MAX 8192
-#define FLAG_KEYS_SPAN 0x8000           // the {key, index} table lies in this many bytes before the first entry
+// The flag stores, one heap array per value type. Every entry starts with a pointer to its type's class in main; the
+// value sits at `value` (int, float and enum entries keep it again 4 bytes later). The array's {key, index} hash table,
+// about two slots per entry with empty slots zero, ends right where the entries start.
+static const struct StoreInfo {
+    uint32_t cls, size, value, min;   // class (main+), entry size, value offset, fewest entries a real store has
+} store_info[DBG_FLAG_TYPES] = {
+    [DBG_FLAG_BOOL] = {0x4c20658, 0x18, 0x16, 4000},
+    [DBG_FLAG_INT] = {0x4c20718, 0x28, 0x1c, 500},
+    [DBG_FLAG_FLOAT] = {0x4c207d8, 0x28, 0x1c, 40},
+    [DBG_FLAG_STRING] = {0x4c20c58, 0x108, 0x74, 30},
+    [DBG_FLAG_VEC3] = {0x4c20a18, 0x40, 0x28, 10},
+    [DBG_FLAG_ENUM] = {0x4c20898, 0x38, 0x1c, 60},
+};
+#define STORE_MAX 32768                 // more entries than any store has
+#define STORE_NEAR 0x1000000ull         // the other stores lie within this distance of the int store
 #define MAGIC_HASH 0x76B18200u          // PlayerStatus.MP
 #define MAGIC_MAX_HASH 0x12D63A97u      // PlayerStatus.MPMax
 #define MAGIC_LIMIT 2000
 
-static _Atomic uint64_t flag_base, magic_addr;
-static _Atomic int flag_count, flags_locating;
-static uint32_t flag_keys[FLAG_KEYS_SPAN / 4];   // a copy of the table, read once when the entries are found
+static struct Store {
+    _Atomic uint64_t base;
+    int count;
+    uint32_t *keys;    // a copy of the hash table (pairs), read when the store is found
+    size_t npairs;
+} stores[DBG_FLAG_TYPES];
+static _Atomic uint64_t magic_addr;
+static _Atomic int flags_locating;
 
 // MurmurHash3 (32 bit, seed 0) of a flag's name: the key the game stores the flag under.
 uint32_t dbg_flag_key(const char *name) {
@@ -194,59 +213,95 @@ uint32_t dbg_flag_key(const char *name) {
     return h;
 }
 
-// The index of a key in the copied table, -1 when it is not there. Entries are {key, index} pairs; empty slots are zero.
-static int flag_index(uint32_t key) {
-    int count = atomic_load(&flag_count);
-    for (size_t i = 0; i + 1 < FLAG_KEYS_SPAN / 4; i += 2)
-        if (flag_keys[i] == key && flag_keys[i + 1] < (uint32_t)count) return (int)flag_keys[i + 1];
+// The index of a key in a store's copied table, -1 when it is not there. The table is searched from its end (next to the
+// entries) back, so a pair of the table before it (whose index may also look valid) is never taken first.
+static int store_index(const struct Store *s, uint32_t key) {
+    if (!s->keys || !key) return -1;
+    for (size_t i = s->npairs; i-- > 0;)
+        if (s->keys[i * 2] == key && s->keys[i * 2 + 1] < (uint32_t)s->count) return (int)s->keys[i * 2 + 1];
     return -1;
 }
 
-// A run of entries starts at `base`: count it, copy the key table before it and accept it when the table knows the maximum
-// health key and that entry holds a plausible maximum.
-static int flags_try(uint64_t base) {
-    const uint64_t cls = MOD_MAIN_BASE + FLAG_ENTRY_CLASS;
+static int store_count(int t, uint64_t base) {
+    const uint64_t cls = MOD_MAIN_BASE + store_info[t].cls;
     int n = 0;
-    while (n < FLAG_ENTRY_MAX && guest_ptr(base + (uint64_t)n * FLAG_ENTRY_SIZE) == cls) n++;
-    if (n < 64 || !guest_read(base - FLAG_KEYS_SPAN, flag_keys, sizeof flag_keys)) return 0;
-    atomic_store(&flag_count, n);
-    int i = flag_index(HEALTH_MAX_HASH);
-    uint32_t v = 0;
-    if (i < 0 || !guest_read(base + (uint64_t)i * FLAG_ENTRY_SIZE + FLAG_ENTRY_VALUE, &v, 4) || v < 4 || v > 400) return 0;
-    atomic_store(&flag_base, base);
+    while (n < STORE_MAX && guest_ptr(base + (uint64_t)n * store_info[t].size) == cls) n++;
+    return n;
+}
+
+// Takes the run of entries at `base` as store t: copies its hash table (two slots per entry and some spare). The int
+// store is accepted only when its table knows the maximum health and that entry holds a plausible maximum.
+static int store_take(int t, uint64_t base, int n) {
+    struct Store *s = &stores[t];
+    size_t npairs = (size_t)n * 2 + 64;
+    uint32_t *keys = s->keys && s->npairs >= npairs ? s->keys : realloc(s->keys, npairs * 8);
+    if (!keys) return 0;
+    s->keys = keys;
+    if (!guest_read(base - npairs * 8, keys, npairs * 8)) return 0;
+    s->npairs = npairs;
+    s->count = n;
+    if (t == DBG_FLAG_INT) {
+        int i = store_index(s, HEALTH_MAX_HASH);
+        uint32_t v = 0;
+        if (i < 0 || !guest_read(base + (uint64_t)i * store_info[t].size + store_info[t].value, &v, 4) || v < 4 || v > 400) return 0;
+    }
+    atomic_store(&s->base, base);
     return 1;
 }
 
-// One pass over the heap finds both: the first entry of the int flag array (three entries in a row that start with the class
-// pointer, none before them) and the magic meter of the player, which keeps the two magic keys right before its value.
+// One pass over the heap finds the int store (the run of entries whose table knows the maximum health), the start of
+// every run of the other stores' entries and the magic meter of the player, which keeps the two magic keys right before
+// its value. The other stores are then taken from the runs nearest to the int store: the game allocates them together.
 static void flags_locate_thread(void *arg) {
     (void)arg;
-    enum { CHUNK = 1 << 20, OVER = 32 };
-    static uint32_t buf[CHUNK / 4 + OVER];
-    const uint64_t cls = MOD_MAIN_BASE + FLAG_ENTRY_CLASS;
-    const uint32_t lo = (uint32_t)cls, hi = (uint32_t)(cls >> 32);
-    const int step = FLAG_ENTRY_SIZE / 4;
+    enum { CHUNK = 1 << 20, OVER = 2, CAND = 16 };
+    static uint64_t buf[CHUNK / 8 + OVER];
+    static uint64_t cand[DBG_FLAG_TYPES][CAND];
+    int ncand[DBG_FLAG_TYPES] = {0};
     uint64_t addr = HEALTH_SCAN_FROM;
-    while (addr < HEALTH_SCAN_TO && !(atomic_load(&flag_base) && atomic_load(&magic_addr))) {
+    while (addr < HEALTH_SCAN_TO) {
         uint64_t end = 0;
         int st = plat_mem_state(addr, HEALTH_SCAN_TO, &end);
         if (end <= addr) break;
         if (st == PLAT_PROT_RW) {
             for (uint64_t at = addr; at < end; at += CHUNK) {
-                uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 4;
-                uint64_t rn = end - at >= (n + OVER) * 4 ? n + OVER : n;
-                if (!plat_mem_read(at, buf, rn * 4)) continue;
-                for (uint64_t i = 0; i < n && i + 2 * step + 1 < rn; i++) {
-                    if (!(i & 1) && buf[i] == lo && buf[i + 1] == hi && buf[i + step] == lo && buf[i + step + 1] == hi &&
-                        buf[i + 2 * step] == lo && buf[i + 2 * step + 1] == hi && !atomic_load(&flag_base) &&
-                        guest_ptr(at + i * 4 - FLAG_ENTRY_SIZE) != cls)
-                        flags_try(at + i * 4);
-                    if (buf[i] == MAGIC_HASH && buf[i + 1] == MAGIC_MAX_HASH && buf[i + 3] <= MAGIC_LIMIT && !atomic_load(&magic_addr))
-                        atomic_store(&magic_addr, at + (i + 3) * 4);
+                uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 8;
+                uint64_t rn = end - at >= (n + OVER) * 8 ? n + OVER : n;
+                if (!plat_mem_read(at, buf, rn * 8)) continue;
+                for (uint64_t i = 0; i < n; i++) {
+                    uint64_t v = buf[i];
+                    if (v - (MOD_MAIN_BASE + 0x4c20600ull) < 0x900ull) {
+                        for (int t = 0; t < DBG_FLAG_TYPES; t++) {
+                            uint64_t cls = MOD_MAIN_BASE + store_info[t].cls, e = at + i * 8;
+                            if (v != cls || ncand[t] >= CAND || guest_ptr(e - store_info[t].size) == cls) continue;
+                            if (guest_ptr(e + store_info[t].size) != cls) continue;
+                            cand[t][ncand[t]++] = e;
+                        }
+                    }
+                    const uint32_t *w = (const uint32_t *)&buf[i];   // the meter is 4-byte aligned: both halves
+                    for (int h = 0; h < 2 && i + 2 < rn; h++)
+                        if (w[h] == MAGIC_HASH && w[h + 1] == MAGIC_MAX_HASH && w[h + 3] <= MAGIC_LIMIT && !atomic_load(&magic_addr))
+                            atomic_store(&magic_addr, at + i * 8 + (uint64_t)(h + 3) * 4);
                 }
             }
         }
         addr = end;
+    }
+    uint64_t int_base = 0;
+    for (int k = 0; k < ncand[DBG_FLAG_INT] && !int_base; k++) {
+        int n = store_count(DBG_FLAG_INT, cand[DBG_FLAG_INT][k]);
+        if (n >= (int)store_info[DBG_FLAG_INT].min && store_take(DBG_FLAG_INT, cand[DBG_FLAG_INT][k], n)) int_base = cand[DBG_FLAG_INT][k];
+    }
+    for (int t = 0; t < DBG_FLAG_TYPES && int_base; t++) {
+        if (t == DBG_FLAG_INT) continue;
+        uint64_t best = 0, best_d = STORE_NEAR;
+        int best_n = 0;
+        for (int k = 0; k < ncand[t]; k++) {
+            uint64_t d = cand[t][k] > int_base ? cand[t][k] - int_base : int_base - cand[t][k];
+            int n = store_count(t, cand[t][k]);
+            if (d < best_d && n >= (int)store_info[t].min) best = cand[t][k], best_d = d, best_n = n;
+        }
+        if (best) store_take(t, best, best_n);
     }
     atomic_store(&flags_locating, 0);
 }
@@ -259,31 +314,89 @@ static void flags_locate(void) {
 
 int dbg_flags_locating(void) { return atomic_load(&flags_locating); }
 
-// The address of a flag's value, 0 when the array or the key is not known. A first entry that no longer starts with the
-// class pointer means the array moved (the game was restarted from the title): it is looked for again.
-static uint64_t flag_value_addr(uint32_t key) {
-    uint64_t base = atomic_load(&flag_base);
-    if (base && guest_ptr(base) != MOD_MAIN_BASE + FLAG_ENTRY_CLASS) atomic_store(&flag_base, 0), base = 0;
-    if (!base) {
-        flags_locate();
-        return 0;
-    }
-    int i = flag_index(key);
-    return i < 0 ? 0 : base + (uint64_t)i * FLAG_ENTRY_SIZE + FLAG_ENTRY_VALUE;
+// A first entry that no longer starts with its class pointer means the stores moved (the game went back to the title
+// and loaded again): all of them are looked for again.
+static int stores_ready(void) {
+    uint64_t base = atomic_load(&stores[DBG_FLAG_INT].base);
+    if (base && guest_ptr(base) == MOD_MAIN_BASE + store_info[DBG_FLAG_INT].cls) return 1;
+    if (base)
+        for (int t = 0; t < DBG_FLAG_TYPES; t++) atomic_store(&stores[t].base, 0);
+    flags_locate();
+    return 0;
+}
+
+uint64_t dbg_flag_addr(int type, uint32_t key) {
+    if (type < 0 || type >= DBG_FLAG_TYPES || !stores_ready()) return 0;
+    struct Store *s = &stores[type];
+    uint64_t base = atomic_load(&s->base);
+    int i = base ? store_index(s, key) : -1;
+    return i < 0 ? 0 : base + (uint64_t)i * store_info[type].size + store_info[type].value;
+}
+
+int dbg_flag_type(uint32_t key) {
+    for (int t = 0; t < DBG_FLAG_TYPES; t++)
+        if (dbg_flag_addr(t, key)) return t;
+    return -1;
 }
 
 int dbg_flag_get(uint32_t key, int *value) {
-    uint64_t a = flag_value_addr(key);
+    uint64_t a = dbg_flag_addr(DBG_FLAG_INT, key);
     uint32_t v = 0;
     if (!a || !guest_read(a, &v, 4)) return 0;
     if (value) *value = (int)v;
     return 1;
 }
 
+static int guest_write(uint64_t at, const void *src, size_t n) {
+    uint64_t end;
+    if (!at || plat_mem_state(at & ~0xFFFull, ((at + n) & ~0xFFFull) + 0x1000, &end) != PLAT_PROT_RW) return 0;
+    plat_mem_prepare_write(at, n);
+    memcpy((void *)(uintptr_t)at, src, n);
+    return 1;
+}
+
 int dbg_flag_set(uint32_t key, int value) {
-    uint64_t a = flag_value_addr(key);
+    uint64_t a = dbg_flag_addr(DBG_FLAG_INT, key);
     return a && health_write(a, (uint32_t)value) && health_write(a + 4, (uint32_t)value);
 }
+
+int dbg_flag_get_bool(uint32_t key) {
+    uint8_t v = 0;
+    uint64_t a = dbg_flag_addr(DBG_FLAG_BOOL, key);
+    return a && guest_read(a, &v, 1) ? v != 0 : -1;
+}
+
+int dbg_flag_set_bool(uint32_t key, int on) {
+    uint8_t v = on != 0;
+    return guest_write(dbg_flag_addr(DBG_FLAG_BOOL, key), &v, 1);
+}
+
+int dbg_flag_get_u32(int type, uint32_t key, uint32_t *value) {
+    uint64_t a = dbg_flag_addr(type, key);
+    return a && guest_read(a, value, 4);
+}
+
+int dbg_flag_set_u32(int type, uint32_t key, uint32_t value) { return guest_write(dbg_flag_addr(type, key), &value, 4); }
+
+int dbg_flag_get_string(uint32_t key, char out[64]) {
+    uint64_t a = dbg_flag_addr(DBG_FLAG_STRING, key);
+    if (!a || !guest_read(a, out, 64)) return 0;
+    out[63] = 0;
+    return 1;
+}
+
+int dbg_flag_set_string(uint32_t key, const char *text) {
+    char v[64] = {0};
+    strncpy(v, text, sizeof v - 1);
+    return guest_write(dbg_flag_addr(DBG_FLAG_STRING, key), v, strlen(v) + 1);
+}
+
+int dbg_flag_get_vec3(uint32_t key, float v[3]) {
+    uint64_t a = dbg_flag_addr(DBG_FLAG_VEC3, key);
+    return a && guest_read(a, v, 12);
+}
+
+int dbg_flag_set_vec3(uint32_t key, const float v[3]) { return guest_write(dbg_flag_addr(DBG_FLAG_VEC3, key), v, 12); }
 
 // The magic meter: the player's own copy is the one the game uses (it writes it over the flag on every frame), so that is
 // what is read and written. The maximum is only a flag.

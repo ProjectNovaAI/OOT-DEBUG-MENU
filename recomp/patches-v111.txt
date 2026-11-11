@@ -19,6 +19,7 @@ set res_fixed   NX2NAVI_PATCH_RES_FIXED   0
 set ostep       NX2NAVI_OCARINA_REALTIME  1
 set zstd        NX2NAVI_ZSTD_NATIVE       1
 set osolver     NX2NAVI_PHYSICS_STEPS     1
+set dbgframe    NX2NAVI_DEBUG_FRAME       1
 
 # Real-time step: the framework's per-frame update (main+0x6e6be0) gives the time manager **[main+0x4c7e890] its
 # nominal frame through main+0x3b4e300 (+0x10 frames per update, +0x14 the inverse, +0x18 seconds, +0x1c the rate),
@@ -122,3 +123,9 @@ site zstd main e910c  9400089d 9536dfb9   # bl ZSTD_decompressMultiFrame -> page
 site zstd main bf72e0 97d3d028 950aa744   # bl ZSTD_decompressMultiFrame -> page+0xff0
 site zstd main f50164 97c66c87 94fd43a3   # bl ZSTD_decompressMultiFrame -> page+0xff0
 site zstd main f5c2c  94000015 9536acd5   # bl the stream feed -> page+0xf80
+
+# Debug frame hook (runtime/debug_game.c): the framework's per-frame update (main+0x6e6be0) calls the host function on
+# the patch page at +0xf70 in place of its ldr x8, [x0, #0xa8], after the function has saved x30. The host function
+# makes the load and runs the debug tools' game-thread work (runtime/debug_warp.c dbg_game_frame), which saves every
+# register it may change. The lifted code reloads x8 after a call; a callee-saved register written there would not be.
+site dbgframe main 6e6bf8 f9405408 951ee8de   # ldr x8, [x0, #0xa8] -> bl page+0xf70
