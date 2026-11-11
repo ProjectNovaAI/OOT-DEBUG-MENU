@@ -16,6 +16,7 @@
 
 #include "cfg.h"
 #include "cheats.h"
+#include "debug_tools.h"
 #include "fs.h"
 #include "kernel.h"
 #include "ipc.h"
@@ -411,6 +412,7 @@ void rt_boot(void) {
     frame_step_init();
     res_init();
     wide_init();   // Ocarina's widescreen sets (recomp/patches-v111.txt)
+    dbg_draw_distance_init();   // before the guest copies the foliage distances (draw_distance.c)
     cheats_init();   // after the patch sets: a cheat's set follows its setting
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
     cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);

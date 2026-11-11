@@ -209,6 +209,10 @@ int dbg_area_is_loading_zone(uint64_t area);
 // The actor an Area trigger acts on (its link's target: an entrance, an event, another Area, a chest...), 0: none.
 uint64_t dbg_area_target(uint64_t area);
 
+// Foliage draw distance (draw_distance.c): multiplies the game's default grass, bush, flower and low tree distances by
+// NX2NAVI_DEBUG_DRAW_DISTANCE before the guest starts (boot.c rt_boot); a change applies at the next start.
+void dbg_draw_distance_init(void);
+
 // Volume overlay (debug_view.c): the placed volumes and objects the game does not draw, for the menu's overlay
 // (ui/debug_tab.cpp debug_overlay_draw). Kinds, as bits of the wanted set:
 enum {

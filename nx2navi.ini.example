@@ -644,6 +644,11 @@
 # debug_view_labels = 1
 # Volumes further from the player than this many metres are not drawn (10 to 1000). Default: 150.
 # debug_view_range = 150
+# Foliage draw distance (game build 1.1.1): multiplies how far out grass tufts, bushes, flowers and low trees are drawn
+# (the game's defaults: 40 and 60 m for undergrowth, 35 m for flowers and ornaments, 135 m for low trees), in the areas
+# that keep the defaults, which is most of them. 0.25 to 8; below 1 draws less, for speed. Applies at the next start.
+# Default: 1.
+# debug_draw_distance = 1
 # Speedrun timer of the debug menu (F1, Debug tab; docs/debug-menu.md), game build 1.1.1: in-game time without the
 # loading screens, real time and splits, drawn at the top right. 1 shows it. Default: 0.
 # debug_igt = 0

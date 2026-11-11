@@ -3,6 +3,7 @@
 // elsewhere the tab says so and offers nothing. The texts are English only, like the mods' cheat names: this is a
 // tool for testing, not part of the game's menus.
 #include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <vector>
@@ -427,6 +428,28 @@ extern "C" void tab_debug(float scale) {
             for (int i = 0; i < NQ; i++) keys[i] = q[i].key + 8;   // without NX2NAVI_
             cfg_reset(keys, NQ);
             opt_save_soon();
+        }
+        {
+            // Foliage draw distance (draw_distance.c): read before the game starts, so it applies at the next start.
+            static const char *const steps[] = {"0.25", "0.5", "1", "1.5", "2", "3", "4", "6", "8"};
+            enum { NS = sizeof steps / sizeof *steps };
+            double now = cfg_double("NX2NAVI_DEBUG_DRAW_DISTANCE");
+            int si = 0;
+            for (int i = 1; i < NS; i++)
+                if (fabs(atof(steps[i]) - now) < fabs(atof(steps[si]) - now)) si = i;
+            snprintf(value, sizeof value, "x%s (grass %.0f m)%s", steps[si], 40 * atof(steps[si]),
+                     cfg_pending("NX2NAVI_DEBUG_DRAW_DISTANCE") ? ", restart to apply" : "");
+            int r = opt_text_row("##dbg_drawdist", "Plant draw distance", value, nullptr,
+                                 "How far out grass tufts, bushes, flowers and low trees are drawn, as a multiple of the "
+                                 "game's distances (grass 40 m, low trees 135 m), in the areas that keep the game's own "
+                                 "(most of them). Higher shows "
+                                 "plants further away; lower draws less, for speed. Takes effect at the next start. "
+                                 "Left and right change it.",
+                                 false);
+            if (r == -1 || r == 1) {
+                si = si + r < 0 ? 0 : si + r >= NS ? NS - 1 : si + r;
+                opt_apply("NX2NAVI_DEBUG_DRAW_DISTANCE", steps[si]);
+            }
         }
 
         // The volume overlay (debug_overlay_draw): settings, so they stay as set.
