@@ -67,3 +67,7 @@ Still to find: the world's body array and the camera matrix, needed before any c
 - The position writes of the player actor come from `f_70006823b0` (called by `f_70006822f0` <- `f_7000af8520` / `f_70009501e0+0x8b0`).
 - Static analysis (Ghidra through rea) does not work here: it needs JDK 21 and a PE target, the game is ARM64.
 Next: break on the reads of a static body's collision filter instead of the player's.
+
+## Static collision from the game data (route to the wall overlay)
+`Phive/StaticCompoundBody/<Area>/<Area>.Nin_Ounce_NVN2.bphsc.zs` (1772 files) holds an area's static collision. The files are zstd with the dictionaries inside `Pack/ZsDic.pack.zs` (a SARC of `zs.zsdic`, `pack.zsdic`, ...); `tools/debug_romfs_extract.py` reads a file out of romfs.bin through `romfs/index.json` and decompresses it (`python tools/debug_romfs_extract.py PATH OUT`, run with the installed NX2navi python, which has zstandard).
+`Market_Adult` decompresses to 4.1 MB: a `Phive` header (offset table: 11 sections up to 0x13090, then 8 more up to 0x3eb7b0), the area name at 0xcf30, and a Havok tag file (`TAG0`, SDK 20250200) at 0x13090. Next: parse that tag file (type table, then the hknpStaticCompoundShape instances: transform, shape key, collision filter info) and the shapes in `Phive/Shape`.
