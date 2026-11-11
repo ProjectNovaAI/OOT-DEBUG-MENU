@@ -30,6 +30,13 @@
 #define ALIAS_PAGES (ALIAS_SIZE / PAGE)
 #define DEFAULT_POOL rt_app_pool_bytes  // retail application pool of the title (generated: NX2NAVI 0xCD500000, Switch 2 9809 MiB)
 #define SYSTEM_RESOURCE_BUDGET (32ull << 20)
+// Room past the pool for MapPhysicalMemory only. GetInfo still reports the pool, so the game sizes its heaps as it
+// would on the console: told 1 GiB more, Ocarina took 888 MiB of it for itself and kept the rest free, so a larger
+// reported pool does not leave more room. With the grown texture heap of a wider picture (res_heap_extra_bytes) its
+// reserve was about 130 MiB, and area loads went over it for a moment: those maps failed with LimitReached and the
+// area came in without some of its textures and ground (Gerudo Fortress at 3840x2160). Peaks of up to POOL_SLACK
+// now succeed; NX2NAVI_APP_POOL_SLACK sets it (bytes, 0 for the console's hard limit).
+#define POOL_SLACK GiB
 #define MAX_STACK_MAPS 4096
 #define REEXEC_LIMIT 20
 
@@ -49,7 +56,8 @@ enum { ATTR_PERMISSION_LOCKED = 16 };
 static RtGuestLayout L;
 static uint64_t mods_lo, mods_hi;   // fixed module window
 static PlatMutex lock = PLAT_MUTEX_INIT;
-static uint64_t heap_size, alias_bytes;
+static uint64_t pool_slack, slack_logged;
+static uint64_t heap_size, alias_bytes, used_peak;   // used_peak: the most image + heap + alias bytes so far
 static int heap_lazy;               // NX2NAVI_HEAP_LAZY, Windows: the heap is committed page run by page run on first use
 static uint64_t heap_lazy_faults, heap_lazy_bytes;   // accesses that committed heap pages, and the bytes they committed
 static uint64_t heap_lazy_ns, heap_lazy_max_ns;      // time in those faults, lock wait included, since the last report
@@ -952,6 +960,8 @@ void mem_init(void) {
         rt_log("mem: the heap is committed on first use (NX2NAVI_HEAP_LAZY)");
     }
 #endif
+    const char *slack = cfg_get("NX2NAVI_APP_POOL_SLACK");
+    pool_slack = slack ? strtoull(slack, NULL, 0) : POOL_SLACK;
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
@@ -977,6 +987,13 @@ int mem_start_note(int probe) {
            "larger page file gives it room (mem_need_mb = 0 in nx2navi.ini turns this warning off)",
            mem_need_room(proc, used, limit), need, used, limit, note[0] ? "; " : "", note);
     return 1;
+}
+
+uint64_t mem_used_peak(void) {
+    plat_mutex_lock_shared(&lock);
+    uint64_t v = used_peak;
+    plat_mutex_unlock_shared(&lock);
+    return v;
 }
 
 // A range inside one watched reservation (stack and heap block, or alias region) only.
@@ -1196,12 +1213,19 @@ static uint32_t alias_map(int unmap, uint64_t a, uint64_t n) {
     } else {
         uint64_t fresh = 0;
         for (uint64_t i = 0; i < count; i++) fresh += !alias_pages[first + i];
-        if (fresh * PAGE + alias_bytes + heap_size + image_bytes() > L.pool) {
+        uint64_t after = fresh * PAGE + alias_bytes + heap_size + image_bytes();
+        if (after > L.pool + pool_slack) {
             r = R_LIMIT_REACHED;   // the SDK maps LimitReached to its recoverable out-of-memory result
             goto out;
         }
+        if (after > L.pool && !slack_logged) {
+            slack_logged = 1;
+            rt_log("mem: the game maps past its pool of %llu MiB (%llu MiB in use); the slack lets it",
+                   (unsigned long long)(L.pool >> 20), (unsigned long long)(after >> 20));
+        }
         alias_runs(first, count, 0, 1);
         alias_bytes += fresh * PAGE;
+        if (alias_bytes + heap_size + image_bytes() > used_peak) used_peak = alias_bytes + heap_size + image_bytes();
     }
 out:
     __atomic_store_n(&map_gen, map_gen + 1, __ATOMIC_RELEASE);
@@ -1380,6 +1404,7 @@ int mem_info(uint32_t id, uint64_t *out) {
         plat_mutex_lock_shared(&lock);
         v = image_bytes() + heap_size + alias_bytes;
         plat_mutex_unlock_shared(&lock);
+        if (v > L.pool) v = L.pool;   // in the slack (POOL_SLACK): none free, never less than none
         break;
     case 12: v = L.aslr.base; break;
     case 13: v = L.aslr.size; break;

@@ -13,6 +13,7 @@
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "ui/menu.h"
 
 #define PLAYER_MANAGER_SLOT 0x4e371d0   // main+: pointer to the object that holds the player actor
 #define PLAYER_ACTOR_FIELD 0x480        // in that object
@@ -150,15 +151,59 @@ int dbg_health_set_max(int max) {
     return health_write(atomic_load(&health_addr) + 0x10, (uint32_t)max);
 }
 
-void dbg_invulnerable(int on) { atomic_store(&god_on, on != 0); }
-int dbg_invulnerable_on(void) { return atomic_load(&god_on); }
+// The Debug tab's settings stay as set from one start to the next: each is also a setting of nx2navi.ini [debug],
+// read on first use and written when it changes. Here: invulnerable, infinite magic and items, Lank (debug_god,
+// debug_inf_magic, debug_inf_items, debug_lank), the health hold (debug_health_lock), the game speed (debug_speed), the
+// on-screen readout (debug_readout) and the keyboard hotkeys (debug_hotkeys). Fly and hover are not kept: a start in
+// the air or inside a wall would surprise.
+static _Atomic int magic_hold, items_hold, lank_on;
+static void kept_load_rest(void);   // the values declared further down (game speed, readout, hotkeys)
+
+void dbg_keep(const char *key, const char *value) {
+    const char *now = cfg_get(key);
+    if (now && !strcmp(now, value)) return;
+    cfg_set(key, value);
+    menu_save_settings_soon();
+}
 
 static _Atomic int lock_val;
 
-void dbg_health_lock(int quarters) { atomic_store(&lock_val, quarters < 0 ? 0 : quarters > 80 ? 80 : quarters); }
-int dbg_health_lock_value(void) { return atomic_load(&lock_val); }
+static void kept_load(void) {
+    static _Atomic int done;
+    if (atomic_load_explicit(&done, memory_order_acquire) || atomic_exchange(&done, 1)) return;
+    atomic_store(&god_on, cfg_bool("NX2NAVI_DEBUG_GOD") != 0);
+    atomic_store(&magic_hold, cfg_bool("NX2NAVI_DEBUG_INF_MAGIC") != 0);
+    atomic_store(&items_hold, cfg_bool("NX2NAVI_DEBUG_INF_ITEMS") != 0);
+    atomic_store(&lank_on, cfg_bool("NX2NAVI_DEBUG_LANK") != 0);
+    int lock = cfg_int("NX2NAVI_DEBUG_HEALTH_LOCK");
+    atomic_store(&lock_val, lock < 0 ? 0 : lock > 80 ? 80 : lock);
+    kept_load_rest();
+}
+
+static void kept_set(_Atomic int *v, const char *key, int on) {
+    kept_load();
+    atomic_store(v, on != 0);
+    if (cfg_bool(key) != (on != 0)) {
+        cfg_set(key, on ? "1" : "0");
+        menu_save_settings_soon();
+    }
+}
+
+void dbg_invulnerable(int on) { kept_set(&god_on, "NX2NAVI_DEBUG_GOD", on); }
+int dbg_invulnerable_on(void) { kept_load(); return atomic_load(&god_on); }
+
+void dbg_health_lock(int quarters) {
+    kept_load();
+    quarters = quarters < 0 ? 0 : quarters > 80 ? 80 : quarters;
+    atomic_store(&lock_val, quarters);
+    char v[16];
+    snprintf(v, sizeof v, "%d", quarters);
+    dbg_keep("NX2NAVI_DEBUG_HEALTH_LOCK", v);
+}
+int dbg_health_lock_value(void) { kept_load(); return atomic_load(&lock_val); }
 
 static void health_tick(void) {
+    kept_load();
     int lock = atomic_load(&lock_val);
     if (!lock && !atomic_load(&god_on)) return;
     int c, m;
@@ -340,6 +385,25 @@ int dbg_flag_type(uint32_t key) {
     return -1;
 }
 
+int dbg_flag_store(int type, uint64_t *base, int *count, uint32_t *size, uint32_t *value_off) {
+    if (type < 0 || type >= DBG_FLAG_TYPES || !stores_ready()) return 0;
+    uint64_t b = atomic_load(&stores[type].base);
+    if (!b) return 0;
+    *base = b, *count = stores[type].count, *size = store_info[type].size, *value_off = store_info[type].value;
+    return 1;
+}
+
+// The pairs are taken in table order, so a later pair wins, as it does in store_index (searched from the end).
+void dbg_flag_store_keys(int type, uint32_t *key_of, int count) {
+    memset(key_of, 0, (size_t)count * sizeof *key_of);
+    if (type < 0 || type >= DBG_FLAG_TYPES) return;
+    const struct Store *s = &stores[type];
+    for (size_t i = 0; s->keys && i < s->npairs; i++) {
+        uint32_t k = s->keys[i * 2], at = s->keys[i * 2 + 1];
+        if (k && at < (uint32_t)count && at < (uint32_t)s->count) key_of[at] = k;
+    }
+}
+
 int dbg_flag_get(uint32_t key, int *value) {
     uint64_t a = dbg_flag_addr(DBG_FLAG_INT, key);
     uint32_t v = 0;
@@ -424,10 +488,8 @@ int dbg_magic_set(int value) {
     return health_write(atomic_load(&magic_addr), (uint32_t)value);
 }
 
-static _Atomic int magic_hold;
-
-void dbg_magic_infinite(int on) { atomic_store(&magic_hold, on != 0); }
-int dbg_magic_infinite_on(void) { return atomic_load(&magic_hold); }
+void dbg_magic_infinite(int on) { kept_set(&magic_hold, "NX2NAVI_DEBUG_INF_MAGIC", on); }
+int dbg_magic_infinite_on(void) { kept_load(); return atomic_load(&magic_hold); }
 
 static void magic_tick(void) {
     int c, m;
@@ -484,10 +546,8 @@ int dbg_item_set(int i, int value) {
     return dbg_flag_set(item_key(i), value);
 }
 
-static _Atomic int items_hold;
-
-void dbg_items_infinite(int on) { atomic_store(&items_hold, on != 0); }
-int dbg_items_infinite_on(void) { return atomic_load(&items_hold); }
+void dbg_items_infinite(int on) { kept_set(&items_hold, "NX2NAVI_DEBUG_INF_ITEMS", on); }
+int dbg_items_infinite_on(void) { kept_load(); return atomic_load(&items_hold); }
 
 static void items_tick(void) {
     if (!atomic_load(&items_hold)) return;
@@ -650,14 +710,14 @@ static _Atomic float ground_speed, vertical_speed;
 
 void dbg_tick(uint64_t now_ns) {
     static int remote_checked;
-    if (!remote_checked) {   // NX2NAVI_DEBUG_REMOTE=1 (environment or nx2navi.ini) starts the remote console without the menu
+    if (!remote_checked) {   // debug_remote = 1 (nx2navi.ini, kept by the Debug tab, or the environment) starts it
         remote_checked = 1;
-        char v[8];
-        if (plat_getenv("NX2NAVI_DEBUG_REMOTE", v, sizeof v) && v[0] && v[0] != '0') dbg_remote_set(1);
+        if (cfg_bool("NX2NAVI_DEBUG_REMOTE")) dbg_remote_set(1);
     }
     health_tick();
     magic_tick();
     items_tick();
+    dbg_any_age_items_tick();
     if (dbg_igt_enabled() || dbg_igt_running()) dbg_igt_tick(now_ns);
     float pos[3];
     if (!dbg_player_pos(pos)) {
@@ -717,13 +777,50 @@ int dbg_slot_used(int slot, float pos[3]) {
 
 static _Atomic float time_scale = 1.0f;
 
-float dbg_time_scale(void) { return atomic_load_explicit(&time_scale, memory_order_relaxed); }
+float dbg_time_scale(void) { kept_load(); return atomic_load_explicit(&time_scale, memory_order_relaxed); }
 
 void dbg_set_time_scale(float scale) {
     if (!isfinite(scale)) scale = 1.0f;
     if (scale < 0.05f) scale = 0.05f;
     if (scale > 8.0f) scale = 8.0f;
+    kept_load();
     atomic_store_explicit(&time_scale, scale, memory_order_relaxed);
+    char v[24];
+    snprintf(v, sizeof v, "%g", scale);
+    dbg_keep("NX2NAVI_DEBUG_SPEED", v);
+}
+
+// ---- pause and frame advance: the game thread waits in the frame hook (dbg_pause_wait, from debug_warp.c
+// dbg_game_frame) while paused; each step lets one frame through.
+
+static _Atomic int paused, steps;
+static _Atomic uint64_t paused_frames;   // frames stepped since the pause began
+
+int dbg_paused(void) { return atomic_load_explicit(&paused, memory_order_relaxed); }
+
+void dbg_pause_set(int on) {
+    atomic_store(&steps, 0);
+    if (on && !atomic_load(&paused)) atomic_store(&paused_frames, 0);
+    atomic_store(&paused, on != 0);
+}
+
+void dbg_step(int n) {
+    if (n < 1) n = 1;
+    if (!atomic_load(&paused)) dbg_pause_set(1);
+    atomic_fetch_add(&steps, n);
+}
+
+uint64_t dbg_paused_frames(void) { return atomic_load_explicit(&paused_frames, memory_order_relaxed); }
+
+void dbg_pause_wait(void) {
+    while (atomic_load_explicit(&paused, memory_order_relaxed)) {
+        int s = atomic_load(&steps);
+        if (s > 0 && atomic_compare_exchange_weak(&steps, &s, s - 1)) {
+            atomic_fetch_add(&paused_frames, 1);
+            return;
+        }
+        plat_sleep_ms(2);
+    }
 }
 
 // ---- timer
@@ -771,9 +868,15 @@ int dbg_timer_laps(uint64_t ns[DBG_LAPS]) {
 
 static _Atomic int overlay_mask;
 
-int dbg_overlay_mask(void) { return atomic_load_explicit(&overlay_mask, memory_order_relaxed); }
+int dbg_overlay_mask(void) { kept_load(); return atomic_load_explicit(&overlay_mask, memory_order_relaxed); }
 
-void dbg_overlay_set(int mask) { atomic_store_explicit(&overlay_mask, mask, memory_order_relaxed); }
+void dbg_overlay_set(int mask) {   // the Debug tab calls it on every frame it lays out: written only when it changed
+    kept_load();
+    if (atomic_exchange_explicit(&overlay_mask, mask, memory_order_relaxed) == mask) return;
+    char v[16];
+    snprintf(v, sizeof v, "%d", mask);
+    dbg_keep("NX2NAVI_DEBUG_READOUT", v);
+}
 
 // ---- hotkeys
 
@@ -781,8 +884,19 @@ static _Atomic int hotkeys_on;
 static char toast_text[64];
 static uint64_t toast_until;
 
-int dbg_hotkeys(void) { return atomic_load_explicit(&hotkeys_on, memory_order_relaxed); }
-void dbg_hotkeys_set(int on) { atomic_store_explicit(&hotkeys_on, on != 0, memory_order_relaxed); }
+int dbg_hotkeys(void) { kept_load(); return atomic_load_explicit(&hotkeys_on, memory_order_relaxed); }
+void dbg_hotkeys_set(int on) {
+    kept_load();
+    atomic_store_explicit(&hotkeys_on, on != 0, memory_order_relaxed);
+    dbg_keep("NX2NAVI_DEBUG_HOTKEYS", on ? "1" : "0");
+}
+
+static void kept_load_rest(void) {
+    float s = strtof(cfg_value("NX2NAVI_DEBUG_SPEED"), NULL);
+    atomic_store_explicit(&time_scale, isfinite(s) && s >= 0.05f && s <= 8.0f ? s : 1.0f, memory_order_relaxed);
+    atomic_store_explicit(&overlay_mask, cfg_int("NX2NAVI_DEBUG_READOUT"), memory_order_relaxed);
+    atomic_store_explicit(&hotkeys_on, cfg_bool("NX2NAVI_DEBUG_HOTKEYS") != 0, memory_order_relaxed);
+}
 
 static void toast(const char *s) {
     strncpy(toast_text, s, sizeof toast_text - 1);
@@ -791,10 +905,25 @@ static void toast(const char *s) {
 }
 
 const char *dbg_toast(uint64_t now_ns) { return now_ns < toast_until ? toast_text : NULL; }
+void dbg_toast_show(const char *text) { toast(text); }
+
+// The game speed one step down (dir -1) or up (1) the list F7 and F8 go through; the new speed.
+float dbg_speed_step(int dir) {
+    static const float scales[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
+    float s = dbg_time_scale();
+    int idx = 0, n = (int)(sizeof scales / sizeof *scales);
+    for (int i = 1; i < n; i++)
+        if (fabsf(scales[i] - s) < fabsf(scales[idx] - s)) idx = i;
+    idx += dir > 0 ? 1 : -1;
+    if (idx < 0) idx = 0;
+    if (idx >= n) idx = n - 1;
+    dbg_set_time_scale(scales[idx]);
+    return dbg_time_scale();
+}
 
 int dbg_hotkey(int fkey) {
-    static const float scales[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
-    if (!dbg_hotkeys() || !dbg_available() || fkey < 2 || (fkey > 9 && fkey != 12)) return 0;
+    if (!dbg_hotkeys() || !dbg_available()) return 0;
+    if (fkey != DBG_SHIFT + 2 && fkey != DBG_SHIFT + 3 && (fkey < 2 || (fkey > 9 && fkey != 12))) return 0;
     char t[64];
     switch (fkey) {
     case 2:
@@ -810,17 +939,18 @@ int dbg_hotkey(int fkey) {
     case 5: toast(dbg_slot_save(0) ? "Position saved to slot 1" : "No player to save"); break;
     case 6: toast(dbg_slot_load(0) ? "Moved to slot 1" : "Slot 1 is empty or no player"); break;
     case 12: toast(dbg_reload_area() ? "Reloading the area" : "This area has no entrance to reload at"); break;
+    case DBG_SHIFT + 2:
+        dbg_pause_set(!dbg_paused());
+        toast(dbg_paused() ? "Paused: Shift+F3 steps one frame, Shift+F2 resumes" : "Resumed");
+        break;
+    case DBG_SHIFT + 3:
+        dbg_step(1);
+        snprintf(t, sizeof t, "Frame +%llu", (unsigned long long)dbg_paused_frames() + 1);
+        toast(t);
+        break;
     case 7:
     case 8: {
-        float s = dbg_time_scale();
-        int idx = 0, n = (int)(sizeof scales / sizeof *scales);
-        for (int i = 1; i < n; i++)
-            if (fabsf(scales[i] - s) < fabsf(scales[idx] - s)) idx = i;
-        idx += fkey == 8 ? 1 : -1;
-        if (idx < 0) idx = 0;
-        if (idx >= n) idx = n - 1;
-        dbg_set_time_scale(scales[idx]);
-        snprintf(t, sizeof t, "Game speed %.3gx", dbg_time_scale());
+        snprintf(t, sizeof t, "Game speed %.3gx", dbg_speed_step(fkey == 8 ? 1 : -1));
         toast(t);
         break;
     }
@@ -830,4 +960,120 @@ int dbg_hotkey(int fkey) {
         break;
     }
     return 1;
+}
+
+// Lank changes the local skeleton's lengths before its world matrices are calculated. The model and its animation
+// rotations stay the same; the other age's bind translations give the stretched or shortened proportions. Both
+// skeletons are read from the user's model resources, so the executable contains no game bone data.
+#define LANK_BONES 512
+#define LANK_NAME 64
+typedef struct { char name[LANK_NAME]; float t[3]; } LankBone;
+static LankBone lank_bones[2][LANK_BONES];
+static int lank_count[2];
+static float lank_delta[2][LANK_BONES][3];
+static _Atomic int lank_loaded;
+static _Thread_local struct { uint64_t local; int count; float old[LANK_BONES][3]; uint32_t flags[LANK_BONES]; } lank_restore;
+
+static uint64_t lank_u64(const uint8_t *p) { uint64_t v; memcpy(&v, p, 8); return v; }
+static unsigned lank_u16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
+static int lank_range(size_t n, uint64_t off, size_t len) { return off <= n && len <= n - (size_t)off; }
+static int lank_read_skeleton(int adult) {
+    size_t n = 0;
+    uint8_t *b = dbg_romfs_unzs(adult ? "Model/Player_Adult.Player_Adult.bfres.zs" :
+                                     "Model/Player_Child.Player_Child.bfres.zs", "zs.zsdic", &n);
+    int ok = 0;
+    if (!b || n < 64 || memcmp(b, "FRES", 4)) goto done;
+    for (size_t at = 0; at + 64 <= n; at += 8) {
+        if (memcmp(b + at, "FSKL", 4)) continue;
+        uint64_t bones = lank_u64(b + at + 0x10);
+        unsigned count = lank_u16(b + at + 0x38);
+        if (!count || count > LANK_BONES || !lank_range(n, bones, count * 0x58)) continue;
+        for (unsigned i = 0; i < count; i++) {
+            const uint8_t *bone = b + bones + i * 0x58;
+            uint64_t name = lank_u64(bone);
+            if (!lank_range(n, name, 2)) goto done;
+            unsigned len = lank_u16(b + name);
+            if (!len || len >= LANK_NAME || !lank_range(n, name + 2, len)) goto done;
+            memcpy(lank_bones[adult][i].name, b + name + 2, len);
+            memcpy(lank_bones[adult][i].t, bone + 0x4c, 12);
+            for (int k = 0; k < 3; k++) if (!isfinite(lank_bones[adult][i].t[k])) goto done;
+        }
+        lank_count[adult] = (int)count;
+        ok = 1;
+        break;
+    }
+done:
+    free(b);
+    return ok;
+}
+static void lank_load(void *arg) {
+    (void)arg;
+    int ok = lank_read_skeleton(0) && lank_read_skeleton(1);
+    if (ok) {
+        for (int age = 0; age < 2; age++) for (int i = 0; i < lank_count[age]; i++) {
+            const LankBone *src = &lank_bones[age][i];
+            if (!strcmp(src->name, "Root") || !strncmp(src->name, "Ph_Pred_", 8)) continue;
+            for (int j = 0; j < lank_count[!age]; j++) {
+                const LankBone *dst = &lank_bones[!age][j];
+                if (strcmp(src->name, dst->name)) continue;
+                for (int k = 0; k < 3; k++) lank_delta[age][i][k] = dst->t[k] - src->t[k];
+                break;
+            }
+        }
+    }
+    atomic_store_explicit(&lank_loaded, ok ? 2 : -1, memory_order_release);
+    rt_log("debug Lank: %s", ok ? "both player skeletons are ready" : "cannot read the player skeletons");
+}
+static void lank_prepare(void) {
+    int zero = 0;
+    if (atomic_compare_exchange_strong(&lank_loaded, &zero, 1) && !plat_thread_spawn(lank_load, NULL, "debug-lank", 0))
+        atomic_store(&lank_loaded, -1);
+}
+void dbg_lank(int on) { kept_set(&lank_on, "NX2NAVI_DEBUG_LANK", on); if (on) lank_prepare(); }
+int dbg_lank_on(void) { kept_load(); return atomic_load(&lank_on); }
+
+// The model at the head of the player's model group. Only this model is changed, never other actors or equipment.
+static uint64_t lank_player_model(void) {
+    uint64_t a = player_actor(), components = a ? guest_ptr(a + 0x270) : 0;
+    uint64_t component = components ? guest_ptr(components + 8) : 0;
+    uint64_t group = component ? guest_ptr(component + 0x18) : 0;
+    uint64_t models = group ? guest_ptr(group + 0x18) : 0;
+    return models ? guest_ptr(models) : 0;
+}
+int dbg_lank_before(uint64_t model) {
+    if (lank_restore.local || !dbg_available() || !dbg_lank_on() || !model || model != lank_player_model()) return 0;
+    lank_prepare();
+    if (atomic_load_explicit(&lank_loaded, memory_order_acquire) != 2) return 0;
+    uint64_t skel = guest_ptr(model + 0xf8), resource = skel ? guest_ptr(skel) : 0;
+    uint16_t count = 0;
+    if (!resource || !guest_read(resource + 0x38, &count, 2)) return 0;
+    int age = count == lank_count[0] ? 0 : count == lank_count[1] ? 1 : -1;
+    uint64_t local = skel ? guest_ptr(skel + 0x18) : 0;
+    if (age < 0 || !local || !plat_mem_readable(local, (size_t)count * 0x60)) return 0;
+    // Back up before changing anything. The paired after hook restores every translation, including when disabled
+    // during the calculation, so repeated calculations and paused animations cannot accumulate the deformation.
+    for (int i = 0; i < count; i++) {
+        uint64_t at = local + (uint64_t)i * 0x60;
+        if (!guest_read(at + 0x50, lank_restore.old[i], 12) || !guest_read(at, &lank_restore.flags[i], 4)) return 0;
+    }
+    lank_restore.local = local, lank_restore.count = count;
+    plat_mem_prepare_write(local, (size_t)count * 0x60);
+    for (int i = 0; i < count; i++) {
+        float t[3];
+        for (int k = 0; k < 3; k++) t[k] = lank_restore.old[i][k] + lank_delta[age][i][k];
+        uint64_t at = local + (uint64_t)i * 0x60;
+        uint32_t flags = lank_restore.flags[i] & 0xf0ffffffu;
+        memcpy((void *)(uintptr_t)at, &flags, 4);
+        memcpy((void *)(uintptr_t)(at + 0x50), t, 12);
+    }
+    return 1;
+}
+void dbg_lank_after(void) {
+    if (!lank_restore.local) return;
+    for (int i = 0; i < lank_restore.count; i++) {
+        uint64_t at = lank_restore.local + (uint64_t)i * 0x60;
+        memcpy((void *)(uintptr_t)(at + 0x50), lank_restore.old[i], 12);
+        memcpy((void *)(uintptr_t)at, &lank_restore.flags[i], 4);
+    }
+    lank_restore.local = 0;
 }

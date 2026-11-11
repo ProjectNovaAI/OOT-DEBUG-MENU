@@ -195,7 +195,10 @@ const RtConfig *rt_config(void) { return &cfg; }
 
 // ---- runtime services the generated code calls (cpu.h)
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
-void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)lr, res_fn_hit(addr, x0); }
+void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
+    (void)lr;
+    res_fn_hit(addr, x0);
+}
 
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
     char at[128], lr[128];
@@ -464,10 +467,10 @@ static void check_memory(void) {
     CHECK(q.state == 0 && q.base == g->alias.base && q.size == g->alias.size, "QueryMemory on the free alias region");
     CHECK(mem_map_physical(a, 0x1000) == 0 && LD64(a + 0x10) == 0 && mem_unmap_physical(a, 0x1000) == 0,
           "remapped physical memory is not zeroed");
-    // One page more than the whole pool (GetInfo 6), so the request is over the limit whatever the title's pool is.
-    mem_info(6, &v);
-    CHECK(mem_map_physical(a, ((v + 0xFFFull) & ~0xFFFull) + 0x1000) == 0x10801,
-          "MapPhysicalMemory beyond the pool is not LimitReached");
+    // The remaining alias address range is much larger than the physical pool, including its mapping slack.
+    // A page above GetInfo 6 is allowed by that slack and is no longer an over-budget request.
+    CHECK(mem_map_physical(a, g->alias.size - (a - g->alias.base)) == 0x10801,
+          "MapPhysicalMemory beyond the mapping budget is not LimitReached");
     mem_query(RT_HOSTFN_BASE + 0x40, &q);
     CHECK(q.state == 0x10 && q.base == RT_HOSTFN_BASE, "QueryMemory on the host-function window");
     mem_query(g->alias.base + g->alias.size + 0x1000, &q);

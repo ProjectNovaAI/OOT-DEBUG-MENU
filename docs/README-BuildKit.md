@@ -139,7 +139,7 @@ place. Without it DLSS does nothing on Linux.
 
 DLSS Frame Generation (RTX 40 and 50 cards) runs through NGX itself on Linux, without Streamline. It needs NVIDIA's
 `libnvidia-ngx-dlssg.so.<version>` beside `ocarina` (the same repository, `lib/Linux_x86_64/rel/`; no kit carries it)
-and DLSS upscaling on when the game starts. *Frame generation* in the Screen menu then offers NVIDIA DLSS, which
+and DLSS upscaling on when the game starts. *Frame generation* in the Display menu then offers NVIDIA DLSS, which
 switches at once, with a *DLSS multiplier* of 2x to 6x (above 2x on RTX 50 cards) or Dynamic, which generates only the
 frames needed to reach the display's refresh rate (`framegen = dlss` and `fg_mult` in `nx2navi.ini`). The log says
 `ngxfg: DLSS Frame Generation available` when NGX found the library.
@@ -187,7 +187,7 @@ beside the game.
   (see "Linux").
 - A kit with `bin\dlssg\` (made with `tools/make_kit.py --dlssg`) also brings DLSS Frame Generation on GeForce RTX 40
   and 50 cards: the build copies `nx2navi_dlssg.dll`, NVIDIA Streamline's runtime, `nvngx_dlssg.dll` and their licence
-  texts beside `ocarina.exe`, and Frame generation in the Screen menu then offers DLSS too.
+  texts beside `ocarina.exe`, and Frame generation in the Display menu then offers DLSS too.
 - Logs are in `logs\`. When reporting a problem, say where you were in the game and which graphics card you have, and
   attach `logs\nx2navi.log`. Never send game files.
 

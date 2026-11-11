@@ -408,6 +408,14 @@ int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[
     return edge;
 }
 
+// The menu button (debug_menu_button, a physical button) going down: 1 in that poll when on. *held follows the button
+// on every poll, so a press held on, or one made while on was 0, counts once and not when on comes back.
+int input_debug_gate(int *held, int on, int down) {
+    int edge = on && down && !*held;
+    *held = down;
+    return edge;
+}
+
 // Both stick clicks held together step the performance overlay as F10 does (a gamepad has no F10: the Steam Deck in
 // Game Mode). The same latch as the menu's above; the game sees neither click while it holds.
 int input_overlay_gate(int *held, uint64_t *buttons) {

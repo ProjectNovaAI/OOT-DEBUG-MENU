@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "debug_tools.h"
 #include "host.h"
 #include "layout.h"
@@ -238,12 +239,86 @@ static char warp_note[96];
 static _Atomic int warp_age = DBG_AGE_ANY;
 static _Atomic uint64_t age_hold_until;
 
-void dbg_warp_set_age(int age) { atomic_store(&warp_age, age == DBG_AGE_CHILD || age == DBG_AGE_ADULT ? age : DBG_AGE_ANY); }
-int dbg_warp_get_age(void) { return atomic_load(&warp_age); }
+// Force age stays as set from one start to the next (debug_force_age = off, child or adult; debug_tools.c dbg_keep).
+static void age_load(void) {
+    static _Atomic int done;
+    if (atomic_load(&done) || atomic_exchange(&done, 1)) return;
+    const char *v = cfg_value("NX2NAVI_DEBUG_FORCE_AGE");
+    atomic_store(&warp_age, !strcmp(v, "child") ? DBG_AGE_CHILD : !strcmp(v, "adult") ? DBG_AGE_ADULT : DBG_AGE_ANY);
+}
+
+void dbg_warp_set_age(int age) {
+    age_load();
+    age = age == DBG_AGE_CHILD || age == DBG_AGE_ADULT ? age : DBG_AGE_ANY;
+    atomic_store(&warp_age, age);
+    dbg_keep("NX2NAVI_DEBUG_FORCE_AGE", age == DBG_AGE_CHILD ? "child" : age == DBG_AGE_ADULT ? "adult" : "off");
+}
+int dbg_warp_get_age(void) { age_load(); return atomic_load(&warp_age); }
 
 static void age_hold(void) {
     int age = atomic_load(&warp_age);
     if (age != DBG_AGE_ANY && dbg_flag_get_bool(K_CHILD) != (age == DBG_AGE_CHILD)) dbg_flag_set_bool(K_CHILD, age == DBG_AGE_CHILD);
+}
+
+// The body of the forced age. The flag above changes what the game allows, not the player's body: that comes from the
+// player's resource set, which has three lists, shared, child and adult, and a byte at +0x70, 1 for the child list.
+// main+0x945610 takes the set and the age (x0, w1): it writes the byte and fills the shared list and the chosen age's
+// list with the resources to load; main+0x943550 then builds the set from them, and its lookup (main+0x944800) resolves
+// Player_Base to Player_Child or Player_Adult by the byte. An area made for one age passes that age, so the other age's
+// list stays empty. The patch site dbgage calls dbg_resource_set at each build, which notes the player's set (the one
+// with a Player entry); the patch site dbgbody calls dbg_resource_age when the age is chosen, which with an age forced
+// gives the player's set that age, so the forced age's body is filled in and loaded.
+#define RS_LISTS 0x28    // {int32 count, entries} at +0x28 (shared), +0x38 (child), +0x48 (adult)
+#define RS_ENTRY 0x70    // an entry's size; its name (char *) at +0x20
+#define RS_CHILD 0x70    // 1: the child list
+static _Atomic int rs_logs;
+static _Atomic uint64_t rs_player;
+
+static int rs_list(uint64_t set, int list, uint64_t *entries) {
+    int32_t n = 0;
+    *entries = 0;
+    if (!plat_mem_read(set + RS_LISTS + list * 0x10, &n, 4) || !plat_mem_read(set + RS_LISTS + list * 0x10 + 8, entries, 8))
+        return 0;
+    return n > 0 && n < 4096 && *entries ? n : 0;
+}
+
+static int rs_name(uint64_t entry, char *out, size_t cap) {
+    uint64_t p = 0;
+    out[0] = 0;
+    if (!plat_mem_read(entry + 0x20, &p, 8) || !p || !plat_mem_read(p, out, cap)) return 0;
+    out[cap - 1] = 0;
+    return 1;
+}
+
+void dbg_resource_set(uint64_t set) {
+    int n[3], player = 0;
+    uint64_t e[3];
+    char name[48];
+    for (int l = 0; l < 3; l++) {
+        n[l] = rs_list(set, l, &e[l]);
+        for (int i = 0; i < n[l] && !player; i++)
+            player = rs_name(e[l] + (uint64_t)i * RS_ENTRY, name, sizeof name) && !strncmp(name, "Player", 6);
+    }
+    if (!player) return;
+    int fresh = atomic_exchange(&rs_player, set) != set;
+    if (fresh || atomic_fetch_add(&rs_logs, 1) < 16) {
+        char line[512];
+        int k = snprintf(line, sizeof line, "debug age: player set %#llx child %u, lists %d/%d/%d:", (unsigned long long)set,
+                         LD8(set + RS_CHILD), n[0], n[1], n[2]);
+        for (int l = 0; l < 3; l++)
+            for (int i = 0; i < n[l] && i < 4 && k > 0 && k < (int)sizeof line - 60; i++)
+                if (rs_name(e[l] + (uint64_t)i * RS_ENTRY, name, sizeof name))
+                    k += snprintf(line + k, sizeof line - k, " %c:%s", "sca"[l], name);
+        rt_log("%s", line);
+    }
+}
+
+uint32_t dbg_resource_age(uint64_t set, uint32_t child) {
+    int age = atomic_load(&warp_age);
+    if (age == DBG_AGE_ANY || !set || set != atomic_load(&rs_player)) return child;
+    uint32_t want = age == DBG_AGE_CHILD;
+    if (want != child) rt_log("debug age: player set %#llx takes the %s body over the area's", (unsigned long long)set, want ? "child" : "adult");
+    return want;
 }
 
 const char *dbg_warp_note(void) { return warp_note; }
@@ -353,6 +428,75 @@ int dbg_guest_result(uint64_t *r) {
     *r = gcall.result;
     atomic_store(&gcall.state, 0);
     return 1;
+}
+
+// ---- the title screen's Load list (save_title.c)
+// The game reads its save list once, at its start: each of its six save slots (slot_00 to 05, with slot_06 to 11 as
+// their second copies) has an entry in one list object, which reads the slot's caption.sav (place, date, hearts,
+// picture) through the save task; the title's Load page shows the entries, a blank one for a slot with no save. The
+// game's own reset of that list (game 1.1.1: 0x7000bb0010, which sets each entry back to its slot and the list to its
+// first phase), with the list's "read the files" bit set, makes it read them all again, in about a second, as at the
+// start. The variable at SAVELIST_GLOBAL points to the one holding the list object; the object starts with
+// SAVELIST_CLASS and has two entry arrays of six (counts at +0x08 and +0x48), its phase at +0x8c (4: read) and the
+// bit at +0x8d.
+#define SAVELIST_GLOBAL 0x7004c81660ull
+#define SAVELIST_CLASS 0x7004bdffd8ull
+#define SAVELIST_RESET 0x7000bb0010ull
+#define SAVELIST_PHASE 0x8c
+#define SAVELIST_READ 0x8d
+enum { LIST_IDLE, LIST_QUEUED, LIST_READING, LIST_REFUSED };
+static _Atomic int list_req;
+static uint64_t call_saved(Cpu *c, uint64_t fn, const uint64_t a[8]);
+
+static uint64_t save_list(void) {
+    uint64_t var = 0, obj = 0, cls = 0;
+    uint32_t na = 0, nb = 0;
+    if (!RT_V111 || !plat_mem_read(SAVELIST_GLOBAL, &var, 8) || !var || !plat_mem_read(var, &obj, 8) ||
+        !obj || !plat_mem_read(obj, &cls, 8) || cls != SAVELIST_CLASS || !plat_mem_read(obj + 0x08, &na, 4) ||
+        !plat_mem_read(obj + 0x48, &nb, 4) || na != 6 || nb != 6)
+        return 0;
+    return obj;
+}
+
+static int save_list_phase(uint64_t obj) {
+    uint8_t p = 0xff;
+    return obj && plat_mem_read(obj + SAVELIST_PHASE, &p, 1) ? p : -1;
+}
+
+// Game thread, from the frame hook: only a list at rest (phase 4) is reset, never one still reading.
+static void save_list_reset(Cpu *c) {
+    uint64_t obj = save_list();
+    if (save_list_phase(obj) != 4) {
+        atomic_store(&list_req, LIST_REFUSED);
+        return;
+    }
+    volatile uint8_t *bit = (volatile uint8_t *)(uintptr_t)(obj + SAVELIST_READ);
+    *bit |= 1;
+    uint64_t a[8] = {obj};
+    call_saved(c, SAVELIST_RESET, a);
+    *bit |= 1;   // the reset leaves it, but it is what starts the reading
+    atomic_store(&list_req, LIST_READING);
+}
+
+int dbg_save_list_reload(void) {
+    int idle = LIST_IDLE, refused = LIST_REFUSED;
+    if (!dbg_available() || !save_list()) return 0;
+    if (!atomic_compare_exchange_strong(&list_req, &idle, LIST_QUEUED) &&
+        !atomic_compare_exchange_strong(&list_req, &refused, LIST_QUEUED))
+        return 0;
+    return 1;
+}
+
+int dbg_save_list_state(void) {
+    switch (atomic_load(&list_req)) {
+    case LIST_QUEUED: return 0;
+    case LIST_REFUSED: return -1;
+    case LIST_READING:
+        if (save_list_phase(save_list()) != 4) return 0;
+        atomic_store(&list_req, LIST_IDLE);
+        return 1;
+    default: return 1;
+    }
 }
 
 // The player's event performer: the component the game asks to play an event for an actor.
@@ -659,11 +803,13 @@ int dbg_reload_area(void) {
 
 void dbg_game_frame(Cpu *c) {
     if (!dbg_available()) return;
+    dbg_pause_wait();
     atomic_store(&frame_seen_ns, plat_now_ns());
     if (atomic_load(&gcall.state) == 1) {
         gcall.result = call_saved(c, gcall.fn, gcall.a);
         atomic_store(&gcall.state, 2);
     }
+    if (atomic_load(&list_req) == LIST_QUEUED) save_list_reset(c);
     if (atomic_exchange(&tp_pending, 0)) teleport_run(c);
     if (atomic_load(&warp_state) != W_IDLE) redirect_step();
     keys_init();

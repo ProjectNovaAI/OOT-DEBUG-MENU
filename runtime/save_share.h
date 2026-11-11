@@ -26,6 +26,12 @@ SaveShareResult save_share_export(const char *dir, int bug_report, char *path, s
 // Checks the zip at zip_path (manifest, game, paths, sizes, CRCs) and stages its save for the next start. detail gets
 // "<NX2navi version>, <export date>" from its manifest ("?" for what it lacks).
 SaveShareResult save_share_import(const char *zip_path, char *detail, size_t cap);
+// The save the game would load next into exactly this file (replaced when there), no bug report parts.
+SaveShareResult save_share_export_to(const char *file);
+// An empty save staged as an import: the next start begins with no save, as on a first start. 0 on success.
+int save_share_stage_empty(void);
+// <game folder>/saves (where the backups go; save_slots.c keeps the profiles there), not made. 0 when unknown.
+int save_share_saves_dir(char *out, size_t cap);
 int save_share_pending(void);   // 1 while an import waits for the next start
 int save_share_cancel(void);    // drops the waiting import; 0 on success
 // Where Export writes and Import's file dialog opens: the player's Downloads folder, else the game folder. 0 when

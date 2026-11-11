@@ -66,7 +66,7 @@ static void add_split(const char *name) {
 
 void dbg_igt_tick(uint64_t now_ns) {
     if (!k_loading) k_loading = dbg_flag_key("Sequence_IsLoadingBanc"), k_area = dbg_flag_key("Sequence_CurrentBanc");
-    int loading = dbg_flag_get_bool(k_loading) == 1 || !dbg_player_actor();
+    int loading = dbg_flag_get_bool(k_loading) == 1 || !dbg_player_actor() || dbg_paused();   // paused: RTA only
     char area[64] = "";
     int have_area = !loading && dbg_current_area(area) && area[0];
     plat_mutex_lock(&lock);

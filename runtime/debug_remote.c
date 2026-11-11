@@ -10,9 +10,11 @@
 #include "debug_remote.h"
 #include "debug_scan.h"
 #include "debug_tools.h"
+#include "debug_watch.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "save_slots.h"
 #include "vk_debug_cam.h"
 
 #ifdef _WIN32
@@ -247,6 +249,8 @@ static void hw_trap(int slot, uint64_t addr, uint64_t ip, uint64_t sp, uint64_t 
 static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }
 
 static void run_command(char *line) {
+    static char whole[1024];   // the line before strtok cuts it: for an argument with spaces (saves)
+    snprintf(whole, sizeof whole, "%s", line);
     char *cmd = strtok(line, " \t\r\n");
     if (!cmd) return;
     char *a1 = strtok(NULL, " \t\r\n"), *a2 = strtok(NULL, " \t\r\n");
@@ -437,6 +441,13 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "hotkeys") && a1) {   // hotkeys 0|1: F5 save, F6 load, F7/F8 speed, F9 timer, F12 reload
         dbg_hotkeys_set((int)num(a1));
         out_put("hotkeys %d\n", dbg_hotkeys());
+    } else if (!strcmp(cmd, "memory")) {   // memory: the application pool, what is in use now and the most so far, MiB
+        uint64_t pool = 0, used = 0;
+        mem_info(6, &pool);
+        mem_info(7, &used);
+        out_put("pool %llu MiB, in use %llu, peak %llu, free %lld\n", (unsigned long long)(pool >> 20),
+                (unsigned long long)(used >> 20), (unsigned long long)(mem_used_peak() >> 20),
+                (long long)(pool >> 20) - (long long)(used >> 20));
     } else if (!strcmp(cmd, "player")) {
         float p[3];
         if (dbg_player_pos(p)) out_put("player %.3f %.3f %.3f speed %.2f vert %.2f\n", p[0], p[1], p[2], dbg_ground_speed(), dbg_vertical_speed());
@@ -480,9 +491,20 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "infmagic") && a1) {
         dbg_magic_infinite(atoi(a1));
         out_put("infmagic %d\n", dbg_magic_infinite_on());
+    } else if (!strcmp(cmd, "anyage")) {   // anyage [0|1]: Items at any age, and the item table entries noted
+        if (a1) dbg_any_age_items(atoi(a1));
+        int n = dbg_pouch_entries();
+        out_put("anyage %d, %d table entries\n", dbg_any_age_items_on(), n);
+        uint64_t ea;
+        uint8_t own[6];
+        for (int i = 0; i < n && dbg_pouch_entry_at(i, &ea, own); i++)
+            out_put("  %#llx own %d%d keys %d%d%d%d\n", (unsigned long long)ea, own[0], own[1], own[2], own[3], own[4], own[5]);
     } else if (!strcmp(cmd, "infitems") && a1) {
         dbg_items_infinite(atoi(a1));
         out_put("infitems %d\n", dbg_items_infinite_on());
+    } else if (!strcmp(cmd, "lank")) {
+        if (a1) dbg_lank(atoi(a1));
+        out_put("lank %d\n", dbg_lank_on());
     } else if (!strcmp(cmd, "god") && a1) {
         dbg_invulnerable(atoi(a1));
         out_put("god %d\n", dbg_invulnerable_on());
@@ -546,6 +568,70 @@ static void run_command(char *line) {
         if (a1) (cmd[0] == 'f' ? dbg_fly : !strcmp(cmd, "hover") ? dbg_hover : dbg_hover_boots)(atoi(a1));
         if (a2 && cmd[0] == 'f') dbg_set_fly_speed((float)atof(a2));   // fly 1 SPEED
         out_put("fly %d (%.1f m/s), hover %d, infinite hover boots %d\n", dbg_fly_on(), dbg_fly_speed(), dbg_hover_on(), dbg_hover_boots_on());
+    } else if (!strcmp(cmd, "hook") || !strcmp(cmd, "walls")) {   // hook|walls [RANGE]: the hookshot or wall overlay's state and what is near
+        static DbgHookPoly hp[4096];
+        static DbgHookLabel hl[64];
+        char st[160];
+        dbg_hook_status(st, sizeof st);
+        float range = a1 ? strtof(a1, NULL) : 30.0f;
+        int walls = cmd[0] == 'w';
+        int n = dbg_hook_polys(hp, 4096, range, walls), t = 0, m = walls ? 0 : dbg_hook_labels(hl, 64, range);
+        for (int i = 0; i < n; i++) t += hp[i].target;
+        out_put("%s\n%d polygons within %.0f m (%d of target objects)\n", st, n, range, t);
+        for (int i = 0; i < n && i < 8; i++)
+            out_put("  %s %.1f %.1f %.1f\n", walls ? "wall" : hp[i].target ? "target" : "surface", hp[i].p[0][0], hp[i].p[0][1],
+                    hp[i].p[0][2]);
+        for (int i = 0; i < m; i++)
+            out_put("  object %s at %.1f %.1f %.1f%s\n", hl[i].name, hl[i].pos[0], hl[i].pos[1], hl[i].pos[2],
+                    hl[i].shaped ? "" : " (no shape)");
+    } else if (!strcmp(cmd, "saves")) {   // saves [new|make|switch NAME|load NAME|delete NAME|drop NAME]: profiles and manual saves (save_slots.c)
+        static char names[SAVE_LIST_MAX][SAVE_NAME_MAX];
+        char out[SAVE_NAME_MAX];
+        // a name may have spaces: the rest of the line after the second word
+        char *rest = NULL;
+        if (a2) {
+            rest = whole;
+            for (int w = 0; w < 2; w++) {
+                while (*rest == ' ' || *rest == '\t') rest++;
+                while (*rest && *rest != ' ' && *rest != '\t') rest++;
+            }
+            while (*rest == ' ' || *rest == '\t') rest++;
+            for (char *e = rest + strlen(rest); e > rest && (e[-1] == '\r' || e[-1] == '\n' || e[-1] == ' ');) *--e = 0;
+        }
+        if (a1 && !strcmp(a1, "new")) out_put("new: %s\n", save_profile_create(out) ? "failed" : out);
+        else if (a1 && !strcmp(a1, "make")) {
+            int r = save_manual_make(out);
+            out_put("make: %s\n", r > 0 ? "no save yet" : r ? "failed" : out);
+        } else if (a1 && !strcmp(a1, "switch") && rest) out_put("switch: %s (restart to apply)\n", save_profile_switch(rest) ? "failed" : "staged");
+        else if (a1 && !strcmp(a1, "load") && rest) out_put("load: %s (restart to apply)\n", save_manual_load(rest) ? "failed" : "staged");
+        else if (a1 && !strcmp(a1, "delete") && rest) out_put("delete profile: %s\n", save_profile_delete(rest) ? "failed" : "done");
+        else if (a1 && !strcmp(a1, "drop") && rest) out_put("delete manual save: %s\n", save_manual_delete(rest) ? "failed" : "done");
+        save_profile_active(out);
+        int n = save_profile_list(names, SAVE_LIST_MAX);
+        out_put("in use: %s; %d profiles:", out, n);
+        for (int i = 0; i < n; i++) out_put(" [%s]", names[i]);
+        n = save_manual_list(names, SAVE_LIST_MAX);
+        out_put("\n%d manual saves:", n);
+        for (int i = 0; i < n; i++) out_put(" [%s]", names[i]);
+        out_put("\n");
+    } else if (!strcmp(cmd, "enemies")) {   // enemies [RANGE]: the enemy health overlay's list (needs debug_view_health)
+        static DbgHealth h[256];
+        int n = dbg_view_health(h, 256, a1 ? (float)atof(a1) : 150.0f);
+        out_put("%d enemies with life (kinds %d)\n", n, dbg_view_kinds());
+        for (int i = 0; i < n; i++)
+            out_put("  %-32s %d / %d at %.1f %.1f %.1f\n", h[i].name, h[i].life, h[i].max, h[i].pos[0], h[i].pos[1], h[i].pos[2]);
+    } else if (!strcmp(cmd, "changes")) {   // changes [on|off|ignore|clear] [N]: the change monitor and its newest N lines
+        if (a1 && !strcmp(a1, "on")) dbg_watch_set(1);
+        else if (a1 && !strcmp(a1, "off")) dbg_watch_set(0);
+        else if (a1 && !strcmp(a1, "ignore")) dbg_watch_ignore_changed();
+        else if (a1 && !strcmp(a1, "clear")) dbg_watch_clear();
+        int want = a2 ? atoi(a2) : a1 && isdigit((unsigned char)a1[0]) ? atoi(a1) : 40;
+        int n = dbg_watch_count();
+        out_put("changes %s: %s, %d lines, %d ignored, %d names\n", dbg_watch_on() ? "on" : "off", dbg_watch_state(), n,
+                dbg_watch_ignored(), dbg_watch_names());
+        char line[192];
+        for (int i = (n < want ? n : want) - 1; i >= 0; i--)
+            if (dbg_watch_line(i, line, sizeof line)) out_put("%s\n", line);
     } else if (!strcmp(cmd, "fog")) {   // fog [0|1]: 1 shows the volumetric fog, 0 removes it (NX2NAVI_DEBUG_FOG_OFF)
         if (a1) cfg_set("NX2NAVI_DEBUG_FOG_OFF", atoi(a1) ? "0" : "1");
         out_put("fog %s\n", cfg_bool("NX2NAVI_DEBUG_FOG_OFF") ? "off" : "on");
@@ -632,7 +718,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
     }
 }
 
@@ -678,8 +764,9 @@ static void remote_thread(void *arg) {
     }
 }
 
-void dbg_remote_set(int on) {
+void dbg_remote_set(int on) {   // kept as debug_remote (debug_tools.c dbg_keep)
     enabled = on != 0;
+    dbg_keep("NX2NAVI_DEBUG_REMOTE", on ? "1" : "0");
     if (on && !started) {
         started = 1;
         plat_thread_spawn(remote_thread, NULL, "debug-remote", 0);

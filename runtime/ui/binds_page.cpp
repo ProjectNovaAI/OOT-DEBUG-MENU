@@ -63,7 +63,7 @@ static void utf8(uint32_t c, char *out, size_t n) {
 
 // A key as the player sees it: its catalog name, the numpad format, the character on a punctuation key in the keyboard
 // layout in use, else its nx2navi.ini name in capitals (letters, digits, F keys).
-static const char *key_label(int k, char *buf, size_t n) {
+const char *binds_key_label(int k, char *buf, size_t n) {
     if (k == KEY_NONE) return "";
     if (k >= KEY_SPACE && k <= KEY_PAGEDOWN) return menu_text((UiTextId)(UI_KEY_SPACE + (k - KEY_SPACE)));
     if (k >= KEY_NUM0 && k <= KEY_NUM_DECIMAL) {
@@ -85,7 +85,7 @@ static const char *key_label(int k, char *buf, size_t n) {
 }
 
 // A gamepad button: the label the open pad has on a face button, else its place on the pad.
-static const char *pad_label(int p) {
+const char *binds_pad_label(int p) {
     if (p == PAD_NONE) return "";
     switch (input_pad_label(p)) {
     case PAD_LABEL_A: return "A";
@@ -138,7 +138,7 @@ static void change(int action, int cell, int id) {
     char buf[48];
     if (cell < 2) {
         int lost = input_map_set_key(&m, action, cell, id);
-        if (lost >= 0) set_note(action, UI_BINDS_TAKEN, key_label(id, buf, sizeof buf), action_label(lost));
+        if (lost >= 0) set_note(action, UI_BINDS_TAKEN, binds_key_label(id, buf, sizeof buf), action_label(lost));
     } else {
         int other = input_map_set_pad(&m, action, shown_layout(), id);
         if (other >= 0) set_note(action, UI_BINDS_SWAPPED, action_label(action), action_label(other));
@@ -164,9 +164,9 @@ static void row_action(int a, const InputMap &m, int layout) {
     int nk = input_map_keys_of(&m, a, k, INPUT_BINDING_MAX);
     int np = a < B_SL_LEFT ? input_map_pads_of(&m, a, layout, p, INPUT_PAD_BINDING_MAX) : 0;
     char b0[48], b1[48];
-    const char *cells[3] = {nk > 0 ? key_label(k[0], b0, sizeof b0) : "", nk > 1 ? key_label(k[1], b1, sizeof b1) : "",
+    const char *cells[3] = {nk > 0 ? binds_key_label(k[0], b0, sizeof b0) : "", nk > 1 ? binds_key_label(k[1], b1, sizeof b1) : "",
                             a >= B_SL_LEFT ? menu_text(a <= B_SL_DOWN ? UI_PAD_LSTICK : UI_PAD_RSTICK)
-                            : np           ? pad_label(p[0])
+                            : np           ? binds_pad_label(p[0])
                                            : ""};
     const bool enabled[3] = {true, true, a < B_SL_LEFT};   // the sticks stay sticks (and the shake is the right stick's)
     char key[32];

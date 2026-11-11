@@ -7,8 +7,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <vector>
+#include <atomic>
 
 #include "imgui.h"
+#include "ui/binds_page.h"
 #include "ui/option_rows.h"
 
 extern "C" {
@@ -18,11 +20,14 @@ extern "C" {
 #include "input.h"
 #include "input_map.h"
 #include "debug_tools.h"
+#include "debug_watch.h"
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "save_slots.h"
+#include "ui/menu.h"
+#include "ui_text.h"
 #include "vk_debug_cam.h"
-int vk_dlaa_available(void);   // vk_dlaa.c: NVIDIA DLSS came up on this PC
 }
 
 // ---- formatting
@@ -58,6 +63,364 @@ static int neon_index(const char *name) {
     for (int i = 0; i < NEON; i++)
         if (name && !strcmp(name, kNeon[i].name)) return i;
     return 0;
+}
+
+// ---- the Profiles and manual saves group (save_slots.c). The file work runs on a worker thread, one job at a time;
+// the lists it reads afterwards are shown from a copy under g_sv_lock.
+
+static bool g_occ_seen;   // "Only what you can see": the last overlay frame had the scene depth (occ_begin)
+static PlatMutex g_sv_lock = PLAT_MUTEX_INIT;
+static std::atomic<int> g_sv_busy{0};
+static std::atomic<int> g_sv_restart{0};   // a job staged a save: the menu offers the restart (menu_ask_restart)
+static struct {
+    char active[SAVE_NAME_MAX];
+    char profiles[SAVE_LIST_MAX][SAVE_NAME_MAX];
+    int nprofiles;
+    char manual[SAVE_LIST_MAX][SAVE_NAME_MAX];
+    int nmanual;
+    char status[200];
+    bool warn, loaded;
+} g_sv;
+enum { SV_REFRESH, SV_SWITCH, SV_CREATE, SV_DELETE, SV_MAKE, SV_LOAD, SV_DROP };
+static struct { int job; char name[SAVE_NAME_MAX]; } g_sv_job;
+
+static void sv_main(void *arg) {
+    (void)arg;
+    char name[SAVE_NAME_MAX], msg[200] = "";
+    bool warn = false;
+    snprintf(name, sizeof name, "%s", g_sv_job.name);
+    switch (g_sv_job.job) {
+    case SV_SWITCH:
+        if (save_profile_switch(name)) snprintf(msg, sizeof msg, "Could not switch to %s (the log says why).", name), warn = true;
+        else snprintf(msg, sizeof msg, "%s waits for the restart.", name), g_sv_restart.store(1);
+        break;
+    case SV_CREATE: {
+        char made[SAVE_NAME_MAX];
+        if (save_profile_create(made)) snprintf(msg, sizeof msg, "Could not make a new profile."), warn = true;
+        else snprintf(msg, sizeof msg, "Made %s: pick it and switch to it to start a new game there.", made);
+        break;
+    }
+    case SV_DELETE:
+        if (save_profile_delete(name)) snprintf(msg, sizeof msg, "Could not delete all of %s.", name), warn = true;
+        else snprintf(msg, sizeof msg, "Deleted %s.", name);
+        break;
+    case SV_MAKE: {
+        char made[SAVE_NAME_MAX];
+        int r = save_manual_make(made);
+        if (r > 0) snprintf(msg, sizeof msg, "The game has not saved yet: save in the game first."), warn = true;
+        else if (r) snprintf(msg, sizeof msg, "Could not make the manual save (the log says why)."), warn = true;
+        else snprintf(msg, sizeof msg, "Saved as %s.", made);
+        break;
+    }
+    case SV_LOAD:
+        if (save_manual_load(name)) snprintf(msg, sizeof msg, "Could not load %s (the log says why).", name), warn = true;
+        else snprintf(msg, sizeof msg, "%s waits for the restart.", name), g_sv_restart.store(1);
+        break;
+    case SV_DROP:
+        if (save_manual_delete(name)) snprintf(msg, sizeof msg, "Could not delete %s.", name), warn = true;
+        else snprintf(msg, sizeof msg, "Deleted %s.", name);
+        break;
+    }
+    // the lists again, after any job
+    static char active[SAVE_NAME_MAX], profiles[SAVE_LIST_MAX][SAVE_NAME_MAX], manual[SAVE_LIST_MAX][SAVE_NAME_MAX];
+    save_profile_active(active);
+    int np = save_profile_list(profiles, SAVE_LIST_MAX), nm = save_manual_list(manual, SAVE_LIST_MAX);
+    plat_mutex_lock(&g_sv_lock);
+    memcpy(g_sv.active, active, sizeof active);
+    memcpy(g_sv.profiles, profiles, sizeof profiles);
+    memcpy(g_sv.manual, manual, sizeof manual);
+    g_sv.nprofiles = np, g_sv.nmanual = nm, g_sv.loaded = true;
+    if (msg[0]) snprintf(g_sv.status, sizeof g_sv.status, "%s", msg), g_sv.warn = warn;
+    plat_mutex_unlock(&g_sv_lock);
+    g_sv_busy.store(0);
+}
+
+static void sv_start(int job, const char *name) {
+    if (g_sv_busy.exchange(1)) return;
+    g_sv_job.job = job;
+    snprintf(g_sv_job.name, sizeof g_sv_job.name, "%s", name ? name : "");
+    if (!plat_thread_spawn(sv_main, NULL, "save profiles", 0)) g_sv_busy.store(0);
+}
+
+static void save_rows(void) {
+    opt_group_text("Profiles and manual saves");
+    if (!g_sv.loaded && !g_sv_busy.load()) sv_start(SV_REFRESH, nullptr);
+    if (g_sv_restart.exchange(0)) menu_ask_restart();
+    // a copy of what the worker last listed, so the rows never wait for it
+    static char active[SAVE_NAME_MAX], status[200];
+    static char profiles[SAVE_LIST_MAX][SAVE_NAME_MAX], manual[SAVE_LIST_MAX][SAVE_NAME_MAX];
+    static int np, nm;
+    static bool warn;
+    plat_mutex_lock(&g_sv_lock);
+    memcpy(active, g_sv.active, sizeof active);
+    memcpy(status, g_sv.status, sizeof status);
+    np = g_sv.nprofiles, nm = g_sv.nmanual, warn = g_sv.warn;
+    memcpy(profiles, g_sv.profiles, sizeof profiles);
+    memcpy(manual, g_sv.manual, sizeof manual);
+    plat_mutex_unlock(&g_sv_lock);
+    const bool busy = g_sv_busy.load() != 0;
+
+    char line[256];
+    snprintf(line, sizeof line, "Profile in use: %s. Each profile has its own save, any number of them. A switch or a "
+                                "load takes effect when the game starts again, and the menu offers the restart; it takes "
+                                "the save the game last wrote (its autosave, or a save from its System page).",
+             active[0] ? active : "...");
+    opt_text_str(line);
+    bool tp = cfg_bool("NX2NAVI_DEBUG_TITLE_PROFILES") != 0;
+    if (opt_toggle_text("##dbg_title_profiles", "Choose the profile on the title screen",
+                        "On the game's title screen (Continue, New Game, its Load list) RB switches to the next profile and "
+                        "LB to the one before; the keys bound to the game's R and L do the same. The profile shows at the "
+                        "bottom of the screen, and the game's Load list shows its saves about a second later, ready to "
+                        "load. Switching to or from an empty profile asks A to confirm a restart; B cancels. "
+                        "The profile you leave keeps its saves. Off: LB and RB are the game's "
+                        "there.",
+                        tp)) {
+        cfg_set("NX2NAVI_DEBUG_TITLE_PROFILES", tp ? "0" : "1");
+        opt_save_soon();
+    }
+
+    // the profile picked on the row (by name: the list can change under it), the one in use at first
+    static char picked[SAVE_NAME_MAX];
+    int pi = -1;
+    for (int i = 0; i < np; i++)
+        if (!strcmp(profiles[i], picked[0] ? picked : active)) pi = i;
+    if (pi < 0) {
+        for (int i = 0; i < np; i++)
+            if (!strcmp(profiles[i], active)) pi = i;
+    }
+    const char *pnames[SAVE_LIST_MAX];
+    for (int i = 0; i < np; i++) pnames[i] = profiles[i];
+    if (np > 0) {
+        int r = opt_text_choice("##sv_profile", "Profile", pnames, np, pi,
+                                "Pick a profile for the rows under this one. The profile in use is marked \"in use\".",
+                                true, nullptr, pi >= 0 && !strcmp(profiles[pi], active) ? "in use" : nullptr);
+        if (r >= 0) snprintf(picked, sizeof picked, "%s", profiles[r]), pi = r;
+    }
+    const bool other = pi >= 0 && strcmp(profiles[pi], active) != 0;
+    if (busy || !other) opt_disable_next_text(busy ? "Busy with the last change." : "This is the profile in use.");
+    if (opt_text_row("##sv_switch", "Switch to this profile", "A: switch and restart", nullptr,
+                     "Keeps the game's save in the profile in use, then the game starts again with the picked "
+                     "profile's save. A profile with no save yet starts a new game, as on a first start. The save "
+                     "replaced is also backed up to the saves folder next to the game.",
+                     false) == 2 && other && !busy)
+        sv_start(SV_SWITCH, profiles[pi]);
+    if (busy) opt_disable_next_text("Busy with the last change.");
+    if (opt_text_row("##sv_new", "New profile", "A: make", nullptr,
+                     "Makes an empty profile named \"Profile 2\", \"Profile 3\" and so on. Switch to it to play a new game "
+                     "without touching the others.",
+                     false) == 2 && !busy)
+        sv_start(SV_CREATE, nullptr);
+    static char armed[SAVE_NAME_MAX + 8];   // "p:" or "m:" and the name A was pressed on once
+    char key[SAVE_NAME_MAX + 8];
+    snprintf(key, sizeof key, "p:%s", pi >= 0 ? profiles[pi] : "");
+    if (busy || !other) opt_disable_next_text(busy ? "Busy with the last change." : "The profile in use cannot be deleted.");
+    if (opt_text_row("##sv_delete", "Delete this profile", strcmp(armed, key) ? "A" : "A again: delete", nullptr,
+                     "Deletes the picked profile with its save and its manual saves. Press A twice.", false) == 2 &&
+        other && !busy) {
+        if (!strcmp(armed, key)) sv_start(SV_DELETE, profiles[pi]), armed[0] = 0, picked[0] = 0;
+        else snprintf(armed, sizeof armed, "%s", key);
+    }
+
+    if (busy) opt_disable_next_text("Busy with the last change.");
+    if (opt_text_row("##sv_make", "Make a manual save", "A: save", nullptr,
+                     "Keeps a copy of the game's save in the profile in use, named after the date, the time and the "
+                     "area. As many as you like.",
+                     false) == 2 && !busy)
+        sv_start(SV_MAKE, nullptr);
+    static char mpicked[SAVE_NAME_MAX];
+    int mi = nm ? 0 : -1;
+    for (int i = 0; i < nm; i++)
+        if (!strcmp(manual[i], mpicked)) mi = i;
+    if (nm > 0) {
+        const char *mnames[SAVE_LIST_MAX];
+        for (int i = 0; i < nm; i++) mnames[i] = manual[i];
+        char note[32];
+        snprintf(note, sizeof note, "%d of %d", mi + 1, nm);
+        int r = opt_text_choice("##sv_manual", "Manual save", mnames, nm, mi,
+                                "The manual saves of the profile in use, newest first.", false, nullptr, note);
+        if (r >= 0) snprintf(mpicked, sizeof mpicked, "%s", manual[r]), mi = r;
+        if (busy) opt_disable_next_text("Busy with the last change.");
+        if (opt_text_row("##sv_load", "Load this manual save", "A: load and restart", nullptr,
+                         "The game starts again with this save. The save it replaces is backed up to the saves folder "
+                         "next to the game; make a manual save first to keep it here too.",
+                         false) == 2 && !busy)
+            sv_start(SV_LOAD, manual[mi]);
+        snprintf(key, sizeof key, "m:%s", manual[mi]);
+        if (busy) opt_disable_next_text("Busy with the last change.");
+        if (opt_text_row("##sv_drop", "Delete this manual save", strcmp(armed, key) ? "A" : "A again: delete", nullptr,
+                         "Deletes the picked manual save. Press A twice.", false) == 2 && !busy) {
+            if (!strcmp(armed, key)) sv_start(SV_DROP, manual[mi]), armed[0] = 0, mpicked[0] = 0;
+            else snprintf(armed, sizeof armed, "%s", key);
+        }
+    } else {
+        opt_text_str("No manual saves in this profile yet.");
+    }
+    if (status[0]) opt_text_str(status, warn);
+}
+
+// ---- the Hotkeys group: each debug action's two keys and controller button (debug_binds.c), bound as on the
+// Controls tab: a cell is picked, then the press is polled from the devices (input_capture) while a window waits.
+
+enum { HK_SECONDS = 5 };
+static const uint64_t kHkDoneNs = 350000000ull;   // the window stays this long after the press (binds_page.cpp kDoneNs)
+static struct {
+    int action = -1, cell;   // the cell waiting for a press (0, 1 keys, 2 the controller); action -1 none
+    bool reset;
+    uint64_t start, done;
+} g_hk;
+static char g_hk_note[128];
+static int g_hk_note_action = -1;
+static uint64_t g_hk_note_until;
+
+extern "C" bool debug_hotkey_waiting(void) { return g_hk.action >= 0; }
+extern "C" void debug_hotkey_cancel(void) { g_hk.action = -1; }
+
+// The row of the menu button (debug_menu_button) above the actions': its controller cell alone can be changed.
+enum { HK_MENU = 1000 };
+
+static void hk_setting(int i, char *out, size_t n) {
+    if (i == HK_MENU) {
+        snprintf(out, n, "DEBUG_MENU_BUTTON");
+        return;
+    }
+    snprintf(out, n, "DEBUG_HOTKEY_%s", dbg_bind_info(i)->name);
+    for (char *p = out; *p; p++)
+        if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
+}
+
+static const char *hk_label(int a) { return a == HK_MENU ? "Open the menu" : dbg_bind_info(a)->label; }
+
+// Cell 0 or 1 a key, 2 the controller button; id 0 clears it. A key or button another action had leaves that one.
+static void hk_change(int a, int cell, int id) {
+    uint8_t k[DBG_BIND_KEYS], p;
+    g_hk_note[0] = 0;
+    if (id && cell == 2) {   // the menu button and the hotkeys' buttons are kept apart
+        const char *v = cfg_value("NX2NAVI_DEBUG_MENU_BUTTON");
+        if (a != HK_MENU && v && input_pad_name(id) && !strcmp(v, input_pad_name(id))) {
+            dbg_menu_button_set(0);
+            snprintf(g_hk_note, sizeof g_hk_note, "Taken from %s.", hk_label(HK_MENU));
+        }
+    }
+    if (a == HK_MENU && cell != 2) return;
+    if (id) {
+        for (int i = 0; i < dbg_bind_count(); i++) {
+            if (i == a) continue;
+            uint8_t ok[DBG_BIND_KEYS], op;
+            dbg_bind_get(i, ok, &op);
+            bool lost = false;
+            for (int c = 0; c < DBG_BIND_KEYS; c++)
+                if (cell < 2 && ok[c] == id) ok[c] = 0, lost = true;
+            if (cell == 2 && op == id) op = 0, lost = true;
+            if (!lost) continue;
+            dbg_bind_set(i, ok, op);
+            snprintf(g_hk_note, sizeof g_hk_note, "Taken from %s.", dbg_bind_info(i)->label);
+        }
+    }
+    if (a == HK_MENU) {
+        dbg_menu_button_set(id);
+        opt_save_soon();
+        g_hk_note_action = g_hk_note[0] ? a : -1;
+        g_hk_note_until = plat_now_ns() + 4000000000ull;
+        return;
+    }
+    dbg_bind_get(a, k, &p);
+    if (cell < 2) {
+        k[cell] = (uint8_t)id;
+        if (id && k[cell ^ 1] == id) k[cell ^ 1] = 0;
+    } else {
+        p = (uint8_t)id;
+    }
+    dbg_bind_set(a, k, p);
+    opt_save_soon();
+    g_hk_note_action = g_hk_note[0] ? a : -1;
+    g_hk_note_until = plat_now_ns() + 4000000000ull;
+}
+
+static void hotkey_rows(void) {
+    opt_group_text("Hotkeys");
+    opt_text_str("Pick a cell and press the key or controller button that switches the tool; Delete, Backspace or X "
+                 "clears it. Hotkeys work with the menu closed.");
+    opt_bind_header(UI_BINDS_COL_KEY1, UI_BINDS_COL_KEY2, UI_BINDS_COL_PAD);
+    static const char kCommon[] =
+        "\n\nA key or button bound here no longer reaches the game, so D-pad up or down can be given to a hotkey in "
+        "place of what the game has there (the accessory, the boots); D-pad right opens this menu unless \"Open the "
+        "menu\" has another button. With D-pad up or down bound, "
+        "the accessory and the boots can still be put on by hand from the equipment menu. In the game's pause menu every bound key and button is the game's "
+        "again, for its cursor and pages. Saved in the settings.";
+    {
+        const char *v = cfg_value("NX2NAVI_DEBUG_MENU_BUTTON");
+        int mp = 0;
+        for (int q = PAD_SOUTH; q < PAD_COUNT && v; q++)
+            if (input_pad_name(q) && !strcmp(input_pad_name(q), v)) mp = q;
+        const char *cells[3] = {"F1", "", binds_pad_label(mp)};
+        const bool enabled[3] = {false, false, true};
+        const char *note = g_hk_note_action == HK_MENU && plat_now_ns() < g_hk_note_until ? g_hk_note : nullptr;
+        int r = opt_bind_row("DEBUG_MENU_BUTTON", hk_label(HK_MENU),
+                             "The controller button that opens the menu on this tab. D-pad right by default: the game "
+                             "only uses it to talk to Navi. With the menu open B closes it; L, R, the stick clicks and the "
+                             "back paddles close it too when they are the button (the D-pad and the other buttons work the "
+                             "menu). In the game's pause menu the button is the game's. \"Controller button opens the "
+                             "menu\" above switches it off. F1 or Esc on the keyboard. Saved in the settings.",
+                             cells, enabled, note);
+        if (g_hk.action < 0 && r == 2)
+            g_hk.action = HK_MENU, g_hk.cell = 2, g_hk.reset = true, g_hk.start = plat_now_ns(), g_hk.done = 0;
+        else if (g_hk.action < 0 && r == 12)
+            hk_change(HK_MENU, 2, 0);
+    }
+    for (int i = 0; i < dbg_bind_count(); i++) {
+        const DbgBindInfo *info = dbg_bind_info(i);
+        uint8_t k[DBG_BIND_KEYS], p;
+        dbg_bind_get(i, k, &p);
+        char b0[48], b1[48], key[64], desc[1024];
+        const char *cells[3] = {binds_key_label(k[0], b0, sizeof b0), binds_key_label(k[1], b1, sizeof b1),
+                                binds_pad_label(p)};
+        const bool enabled[3] = {true, true, true};
+        hk_setting(i, key, sizeof key);
+        snprintf(desc, sizeof desc, "%s%s", info->desc, kCommon);
+        const char *note = g_hk_note_action == i && plat_now_ns() < g_hk_note_until ? g_hk_note : nullptr;
+        int r = opt_bind_row(key, info->label, desc, cells, enabled, note);
+        if (g_hk.action >= 0 || r < 0) continue;
+        if (r < 3) {
+            g_hk.action = i, g_hk.cell = r, g_hk.reset = true, g_hk.start = plat_now_ns(), g_hk.done = 0;
+        } else {
+            hk_change(i, r - 10, 0);
+        }
+    }
+}
+
+// The window over the page while a cell waits (as binds_page.cpp capture_window): Esc or the timeout cancels; a
+// controller button cancels a key cell.
+static void hotkey_capture(void) {
+    if (g_hk.action < 0) return;
+    if (!ImGui::IsPopupOpen("##hk_capture")) ImGui::OpenPopup("##hk_capture");
+    uint64_t now = plat_now_ns();
+    bool pad_cell = g_hk.cell == 2;
+    if (!g_hk.done && now - g_hk.start > HK_SECONDS * 1000000000ull) g_hk.done = now;
+    if (!g_hk.done) {
+        int id = 0, got = input_capture(g_hk.reset, &id);
+        g_hk.reset = false;
+        if (got == INPUT_CAPTURE_KEY && !pad_cell) hk_change(g_hk.action, g_hk.cell, id);
+        if (got == INPUT_CAPTURE_PAD && pad_cell) hk_change(g_hk.action, g_hk.cell, id);
+        if (got != INPUT_CAPTURE_NONE && !(got == INPUT_CAPTURE_KEY && pad_cell)) g_hk.done = now;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("##hk_capture", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
+        char t[256];
+        snprintf(t, sizeof t, menu_text(pad_cell ? UI_BINDS_PRESS_PAD : UI_BINDS_PRESS_KEY), hk_label(g_hk.action));
+        ImGui::TextUnformatted(t);
+        int left = HK_SECONDS - (int)((now - g_hk.start) / 1000000000ull);
+        snprintf(t, sizeof t, menu_text(UI_BINDS_CANCEL_HINT), left < 1 ? 1 : left);
+        ImGui::TextDisabled("%s", t);
+        if (g_hk.done && now - g_hk.done > kHkDoneNs) {
+            ImGui::CloseCurrentPopup();
+            char key[64], id[72];
+            hk_setting(g_hk.action, key, sizeof key);
+            snprintf(id, sizeof id, "%s#%d", key, g_hk.cell);
+            opt_focus_key(id);   // back on the cell it came from
+            g_hk.action = -1;
+        }
+        ImGui::EndPopup();
+    }
 }
 
 extern "C" void tab_debug(float scale) {
@@ -149,14 +512,16 @@ extern "C" void tab_debug(float scale) {
                          "first one), same age, so a route or trick can be tried again from the start.",
                          false) == 2 && rl >= 0)
             dbg_reload_area();
-        int hold = dbg_warp_get_age();
-        int rf = opt_text_row("##dbg_wflag", "Age flag on arrival",
-                         hold == DBG_AGE_CHILD ? "child" : hold == DBG_AGE_ADULT ? "adult" : "set by the area", nullptr,
-                         "For glitch hunting: after a warp, the game's age flag (Sequence_IsChildhood) is held at this value "
-                         "over the area's own choice. The player's body and items stay those of the area's age, so this "
-                         "mixes the two: what the game lets the player do follows the flag. Left and right choose.",
-                         false);
-        if (rf == -1 || rf == 1) dbg_warp_set_age((hold + rf + 3) % 3);
+        // in the order of DBG_AGE_ANY, DBG_AGE_CHILD, DBG_AGE_ADULT
+        static const char *const force_names[] = {"off (the area decides)", "child", "adult"};
+        int rf = opt_text_choice("##dbg_wflag", "Force age", force_names, 3, dbg_warp_get_age(),
+                                 "For glitch hunting: every warp of this group (Reload area and F12 too) arrives with the "
+                                 "player as this age, body included, over the area's own choice, even where the game "
+                                 "never lets that age in. The game's age flag (Sequence_IsChildhood) is held to it while "
+                                 "the area loads. To force it on the current area, choose an age, then Reload area. The "
+                                 "equipment stays what the save has, so a child can hold adult items. Left and right "
+                                 "change it; A opens the list.");
+        if (rf >= 0) dbg_warp_set_age(rf);
         // The entrances of the chosen area in the chosen age (or the area's only file when it has no age suffix).
         std::vector<int> ents;
         bool has_age = false;
@@ -175,15 +540,21 @@ extern "C" void tab_debug(float scale) {
                 if (!strcmp(b, areas[area_i].name)) ents.push_back(i);
             }
         if (entrance_k >= (int)ents.size()) entrance_k = 0;
-        int r = opt_text_row("##dbg_warea", "Destination", areas[area_i].name, nullptr,
-                             "The area to warp to. Left and right go through every area that has an entrance.", false);
-        int na = (int)areas.size();
-        if (r == -1 || r == 1) area_i = (area_i + r + na) % na, entrance_k = 0;
+        std::vector<const char *> area_names;
+        for (auto &a : areas) area_names.push_back(a.name);
+        int r = opt_text_choice("##dbg_warea", "Destination", area_names.data(), (int)areas.size(), area_i,
+                                "The area to warp to: every area that has an entrance. Left and right go through them; "
+                                "A opens the list.");
+        if (r >= 0) area_i = r, entrance_k = 0;
+        std::vector<const char *> ent_names;
+        for (int e : ents) ent_names.push_back(dbg_warp_start(e));
         snprintf(value, sizeof value, "%s (%d of %d)", ents.empty() ? "-" : dbg_warp_start(ents[entrance_k]), entrance_k + 1, (int)ents.size());
-        r = opt_text_row("##dbg_went", "Entrance", value, nullptr,
-                         "Where in the area to arrive: the entrances other areas lead to. Left and right choose.", false);
+        r = opt_text_choice("##dbg_went", "Entrance", ent_names.data(), (int)ents.size(), entrance_k,
+                            "Where in the area to arrive: the entrances other areas lead to. Left and right choose; A opens "
+                            "the list.",
+                            true, value);
         int ne = (int)ents.size();
-        if (ne && (r == -1 || r == 1)) entrance_k = (entrance_k + r + ne) % ne;
+        if (r >= 0) entrance_k = r;
         int pick = ne ? ents[entrance_k] : -1;
         const char *age_txt = !has_age ? (pick >= 0 ? "set by the area" : "-")
                               : dbg_warp_age(pick) == DBG_AGE_CHILD ? "child" : "adult";
@@ -219,6 +590,197 @@ extern "C" void tab_debug(float scale) {
         if (dbg_warp_note()[0]) opt_text_str(dbg_warp_note());
     }
 
+    opt_group_text("View");
+    {
+        // Settings (nx2navi.ini [debug]) that the renderer reads at once.
+        static const struct { const char *key, *id, *label, *desc; } sw[] = {
+            {"NX2NAVI_DEBUG_FOG_OFF", "##dbg_fog_off", "Fog off",
+             "Removes the volumetric fog: the haze of the Lost Woods, Kokiri Forest's mist and the distance fog over "
+             "Hyrule Field. It can leave a faint ghost image under Link, Navi and other characters, and may have other "
+             "effects not known yet. Saved in the settings."},
+        };
+        for (const auto &s : sw) {
+            bool on = cfg_bool(s.key) != 0;
+            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
+                cfg_set(s.key, on ? "0" : "1");
+                opt_save_soon();
+            }
+        }
+        {
+            // Foliage draw distance (draw_distance.c): read before the game starts, so it applies at the next start.
+            static const char *const steps[] = {"0.25", "0.5", "1", "1.5", "2", "3", "4", "6", "8"};
+            enum { NS = sizeof steps / sizeof *steps };
+            double now = cfg_double("NX2NAVI_DEBUG_DRAW_DISTANCE");
+            int si = 0;
+            for (int i = 1; i < NS; i++)
+                if (fabs(atof(steps[i]) - now) < fabs(atof(steps[si]) - now)) si = i;
+            static char step_text[NS][32];
+            static const char *step_names[NS];
+            for (int i = 0; i < NS; i++) {
+                snprintf(step_text[i], sizeof step_text[i], "x%s (grass %.0f m)", steps[i], 40 * atof(steps[i]));
+                step_names[i] = step_text[i];
+            }
+            snprintf(value, sizeof value, "%s%s", step_names[si],
+                     cfg_pending("NX2NAVI_DEBUG_DRAW_DISTANCE") ? ", restart to apply" : "");
+            int r = opt_text_choice("##dbg_drawdist", "Plant draw distance", step_names, NS, si,
+                                    "How far out grass tufts, bushes, flowers and low trees are drawn, as a multiple of the "
+                                    "game's distances (grass 40 m, low trees 135 m), in the areas that keep the game's own "
+                                    "(most of them). Higher shows "
+                                    "plants further away; lower draws less, for speed. Takes effect at the next start. "
+                                    "Left and right change it; A opens the list.",
+                                    false, value);
+            if (r >= 0) opt_apply("NX2NAVI_DEBUG_DRAW_DISTANCE", steps[r]);
+        }
+
+        // The volume overlay (debug_overlay_draw): settings, so they stay as set.
+        static const struct { const char *key, *id, *label, *desc; } vs[] = {
+            {"NX2NAVI_DEBUG_VIEW_WALLS", "##dbg_v_walls", "Show invisible walls",
+             "Draws the invisible walls, seen through everything: the ones placed as objects (air walls), the "
+             "air wall surfaces of the level's own collision, and the air wall shapes that come with placed models. "
+             "The collision ones are read once per area, which takes a moment after arriving."},
+            {"NX2NAVI_DEBUG_VIEW_LOADING", "##dbg_v_load", "Show loading zones",
+             "Draws the trigger boxes that load another area when the player walks in."},
+            {"NX2NAVI_DEBUG_VIEW_TRIGGERS", "##dbg_v_trig", "Show trigger zones",
+             "Draws every other trigger volume: event, camera, music and spawn areas, horse jump limits and the like."},
+            {"NX2NAVI_DEBUG_VIEW_HIDDEN", "##dbg_v_hidden", "Show hidden things",
+             "Marks hidden holes (grottos), Gold Skulltulas, pieces of heart, chests and magic bean spots."},
+            {"NX2NAVI_DEBUG_VIEW_DEATH", "##dbg_v_death", "Show death barriers",
+             "Draws what kills or sends the player back: the kill volume under the world (fall out of the level and "
+             "it catches you), lava surfaces, and marks bottomless pits and quicksand."},
+            {"NX2NAVI_DEBUG_VIEW_HOOKSHOT", "##dbg_v_hook", "Show hookshot targets",
+             "Draws every surface in the area the hookshot sticks to (wood, vines, nets and the like, read from the "
+             "area's collision data) and outlines the hookshot target objects, seen through walls. Reading a large area "
+             "takes a moment after it loads. Saved in the settings."},
+            {"NX2NAVI_DEBUG_VIEW_HEALTH", "##dbg_v_health", "Show enemy health",
+             "Draws a health bar over every enemy and boss in range, with the game's own life values (current / "
+             "maximum, in the game's units: a Skulltula has 2, a Gerudo thief 18). Saved in the settings."},
+        };
+        for (const auto &s : vs) {
+            bool on = cfg_bool(s.key) != 0;
+            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
+                cfg_set(s.key, on ? "0" : "1");
+                opt_save_soon();
+            }
+            if (!strcmp(s.key, "NX2NAVI_DEBUG_VIEW_DEATH")) {   // under it: the one death barrier that is always there
+                bool kp = cfg_bool("NX2NAVI_DEBUG_VIEW_KILL_PLANE") != 0;
+                if (!on) opt_disable_next_text("Show death barriers is off.");
+                if (opt_toggle_text("##dbg_v_killplane", "Death plane under the world",
+                                    "The kill volume every area has far below it, drawn as a grid kilometres wide with its "
+                                    "name and depth straight under the player. Off hides it and keeps the other death "
+                                    "barriers (lava, bottomless pits, quicksand). Saved in the settings.",
+                                    kp)) {
+                    cfg_set("NX2NAVI_DEBUG_VIEW_KILL_PLANE", kp ? "0" : "1");
+                    opt_save_soon();
+                }
+            }
+        }
+        static const char *const styles[] = {"wire", "solid", "both"};
+        static const char *const style_names[] = {"Wireframe", "Solid colour", "Both"};
+        int si = 0;
+        while (si < 2 && strcmp(cfg_value("NX2NAVI_DEBUG_VIEW_STYLE"), styles[si])) si++;
+        int r = opt_text_choice("##dbg_v_style", "Overlay style", style_names, 3, si,
+                                "Wireframe draws the edges; solid colour fills the faces see-through (Opacity); both does "
+                                "both. Left and right change it; A opens the list.");
+        if (r >= 0) {
+            cfg_set("NX2NAVI_DEBUG_VIEW_STYLE", styles[r]);
+            opt_save_soon();
+        }
+        // 10 % to 100 % in tens; a value between them (set in nx2navi.ini) shows as it is, with the nearest one in effect
+        static char op_text[10][8];
+        static const char *op_names[10];
+        for (int i = 0; i < 10; i++) {
+            snprintf(op_text[i], sizeof op_text[i], "%d %%", (i + 1) * 10);
+            op_names[i] = op_text[i];
+        }
+        int op = cfg_int("NX2NAVI_DEBUG_VIEW_OPACITY");
+        int oi = (op + 5) / 10 - 1;
+        oi = oi < 0 ? 0 : oi > 9 ? 9 : oi;
+        snprintf(value, sizeof value, "%d %%", op);
+        r = opt_text_choice("##dbg_v_op", "Solid colour opacity", op_names, 10, oi,
+                            "How strongly a solid face covers what is behind it. Left and right change it; A opens the "
+                            "list.",
+                            false, value);
+        if (r >= 0) {
+            snprintf(value, sizeof value, "%d", (r + 1) * 10);
+            cfg_set("NX2NAVI_DEBUG_VIEW_OPACITY", value);
+            opt_save_soon();
+        }
+        static const char *const kind_names[DBG_VOL_KINDS] = {"Colour: invisible walls", "Colour: loading zones",
+                                                              "Colour: trigger zones", "Colour: hidden things",
+                                                              "Colour: death barriers"};
+        static const char *neon_names[NEON];
+        for (int i = 0; i < NEON; i++) neon_names[i] = kNeon[i].name;
+        for (int k = 0; k < DBG_VOL_KINDS; k++) {
+            int ci = neon_index(cfg_value(kKindKey[k]));
+            char id[32];
+            snprintf(id, sizeof id, "##dbg_v_col%d", k);
+            r = opt_text_choice(id, kind_names[k], neon_names, NEON, ci,
+                                "Neon pink, green, cyan, yellow, orange or purple, or red, blue or white. Left and right "
+                                "change it; A opens the list.");
+            if (r >= 0) {
+                cfg_set(kKindKey[k], kNeon[r].name);
+                opt_save_soon();
+            }
+        }
+        {
+            int ci = neon_index(cfg_value("NX2NAVI_DEBUG_VIEW_COLOR_HOOKSHOT"));
+            r = opt_text_choice("##dbg_v_colhook", "Colour: hookshot targets", neon_names, NEON, ci,
+                                "Neon pink, green, cyan, yellow, orange or purple, or red, blue or white. Left and right "
+                                "change it; A opens the list.");
+            if (r >= 0) {
+                cfg_set("NX2NAVI_DEBUG_VIEW_COLOR_HOOKSHOT", kNeon[r].name);
+                opt_save_soon();
+            }
+        }
+        if (cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT")) {
+            char hs[160];
+            dbg_hook_status(hs, sizeof hs);
+            opt_text_str(hs);
+        }
+        {
+            bool on = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
+            if (opt_toggle_text("##dbg_v_labels", "Names on the overlay", "Writes each volume's name over it, within 60 m.",
+                                on)) {
+                cfg_set("NX2NAVI_DEBUG_VIEW_LABELS", on ? "0" : "1");
+                opt_save_soon();
+            }
+        }
+        {
+            bool on = cfg_bool("NX2NAVI_DEBUG_VIEW_OCCLUDE") != 0;
+            if (opt_toggle_text("##dbg_v_occlude", "Only what you can see",
+                                "On: the parts of walls, zones and targets that the scene's own walls, ground and objects "
+                                "cover are not drawn, so the overlay shows only what is in view (and a name only when its "
+                                "spot is). Off: everything is drawn through the scene, which finding hidden things "
+                                "needs. Uses the upscaler's depth: needs DLAA, DLSS or FSR (Display tab); without one "
+                                "everything is drawn.",
+                                on)) {
+                cfg_set("NX2NAVI_DEBUG_VIEW_OCCLUDE", on ? "0" : "1");
+                opt_save_soon();
+            }
+            if (on && !g_occ_seen)
+                opt_text_str("No scene depth right now: everything is drawn (DLAA, DLSS or FSR gives it).");
+        }
+        static const int ranges[] = {25, 50, 100, 150, 250, 500, 1000};
+        enum { NR = sizeof ranges / sizeof *ranges };
+        static char range_text[NR][16];
+        static const char *range_names[NR];
+        for (int i = 0; i < NR; i++) {
+            snprintf(range_text[i], sizeof range_text[i], "%d m", ranges[i]);
+            range_names[i] = range_text[i];
+        }
+        int rg = cfg_int("NX2NAVI_DEBUG_VIEW_RANGE"), ri = 0;
+        while (ri < NR - 1 && ranges[ri] < rg) ri++;
+        r = opt_text_choice("##dbg_v_range", "Overlay range", range_names, NR, ri,
+                            "Volumes further from the player than this are not drawn. Left and right change it; A opens "
+                            "the list.",
+                            false);
+        if (r >= 0) {
+            snprintf(value, sizeof value, "%d", ranges[r]);
+            cfg_set("NX2NAVI_DEBUG_VIEW_RANGE", value);
+            opt_save_soon();
+        }
+    }
+
     opt_group_text("Health");
     {
         int c = 0, m = 0;
@@ -229,6 +791,9 @@ extern "C" void tab_debug(float scale) {
             snprintf(value, sizeof value, "%s", dbg_health_locating() ? "searching the game's memory (about half a minute)..." : "not found: load a save");
         opt_text_row("##dbg_health", "Health", value, nullptr,
                      "Read from the game's flag store, found by its key on first use. A quarter heart is one unit.", false);
+        bool lank = dbg_lank_on() != 0;
+        if (opt_toggle_text("##dbg_lank", "Play as Lank", "Gives child Link the adult skeleton's proportions and adult Link the child's. "
+                            "Keeps the current model, animations and gameplay age.", lank)) dbg_lank(!lank);
         bool god = dbg_invulnerable_on() != 0;
         if (opt_toggle_text("##dbg_god", "Invulnerable", "Raises health back to full on every frame. A hit that would kill in a single "
                             "frame can still get through.", god))
@@ -284,11 +849,16 @@ extern "C" void tab_debug(float scale) {
                              "The player's magic meter. Left and right change it by a tenth of the maximum; A fills it.", false);
         if (ok && m > 0 && r) dbg_magic_set(r == 2 ? m : c + r * (m / 10 > 0 ? m / 10 : 1));
         int lvl = dbg_magic_level();
-        r = opt_text_row("##dbg_magiclvl", "Magic meter",
-                         lvl == 0 ? "none" : lvl == 1 ? "single" : lvl == 2 ? "double" : wait, nullptr,
-                         "No magic, the single meter or the double meter (the great fairies' gifts). Left and right change it.",
-                         false);
-        if (lvl >= 0 && (r == -1 || r == 1)) dbg_magic_set_level((lvl + r + 3) % 3);
+        static const char *const levels[] = {"none", "single", "double"};
+        if (lvl >= 0) {
+            r = opt_text_choice("##dbg_magiclvl", "Magic meter", levels, 3, lvl,
+                                "No magic, the single meter or the double meter (the great fairies' gifts). Left and right "
+                                "change it; A opens the list.");
+            if (r >= 0) dbg_magic_set_level(r);
+        } else {
+            opt_text_row("##dbg_magiclvl", "Magic meter", wait, nullptr,
+                         "No magic, the single meter or the double meter (the great fairies' gifts).", false);
+        }
         bool inf = dbg_magic_infinite_on() != 0;
         if (opt_toggle_text("##dbg_infmagic", "Infinite magic", "Fills the magic meter again on every frame.", inf)) dbg_magic_infinite(!inf);
         bool infi = dbg_items_infinite_on() != 0;
@@ -296,6 +866,13 @@ extern "C" void tab_debug(float scale) {
                             "magic beans at their largest value on every frame, so nothing runs out. Gold Skulltula tokens and "
                             "small keys are not touched. Use Infinite magic above for the magic meter.", infi))
             dbg_items_infinite(!infi);
+        bool anyage = dbg_any_age_items_on() != 0;
+        if (opt_toggle_text("##dbg_anyage", "Items at any age (WIP)",
+                            "Work in progress. The pause menu lets every item and piece of equipment be chosen as child and "
+                            "as adult (no \"Adult Only\" or \"Child Only\"), from the next time it opens. An item made for "
+                            "the other age does nothing when used: the game has no animations for Link to use those items "
+                            "at that age (nor their models and projectiles). A workaround is being worked on.", anyage))
+            dbg_any_age_items(!anyage);
         for (int i = 0; i < dbg_item_count(); i++) {
             char id[32];
             int v = 0, max = 0, step = 1;
@@ -320,8 +897,9 @@ extern "C" void tab_debug(float scale) {
         static const char *groups[] = {"Equipment", "Items", "Upgrades", "Quest", "Songs", "Masks"};
         const int ng = (int)(sizeof groups / sizeof groups[0]);
         static int gi = 0;
-        int r = opt_text_row("##dbg_owngroup", "Show", groups[gi], nullptr, "Which things to list. Left and right choose.", false);
-        if (r == -1 || r == 1) gi = (gi + r + ng) % ng;
+        int r = opt_text_choice("##dbg_owngroup", "Show", groups, ng, gi,
+                                "Which things to list. Left and right choose; A opens the list.");
+        if (r >= 0) gi = r;
         int all_on = -1;
         if (opt_text_row("##dbg_ownall", "Give all of these", "A", nullptr, "Gives every thing listed below.", false) == 2) all_on = 1;
         if (opt_text_row("##dbg_ownnone", "Remove all of these", "A", nullptr, "Removes every thing listed below.", false) == 2) all_on = 0;
@@ -365,177 +943,26 @@ extern "C" void tab_debug(float scale) {
             dbg_slot_load(i);
     }
 
+    save_rows();
+
     opt_group_text("Game speed");
     {
+        enum { NSC = sizeof kScales / sizeof *kScales };
+        static char scale_text[NSC][16];
+        static const char *scale_names[NSC];
+        for (int i = 0; i < NSC; i++) {
+            snprintf(scale_text[i], sizeof scale_text[i], "%.3gx", kScales[i]);
+            scale_names[i] = scale_text[i];
+        }
         float s = dbg_time_scale();
         snprintf(value, sizeof value, "%.3gx", s);
         snprintf(note, sizeof note, "slowest about 1/8 at 60 fps, fastest about 4x");
-        int r = opt_text_row("##dbg_scale", "Game speed", value, note,
-                             "Scales the time step the game is given each frame: slow motion to study a trick, fast "
-                             "forward to skip waiting. Left and right change it. Physics limits how slow it can go.",
-                             false);
-        int idx = scale_index(s);
-        if (r == -1 && idx > 0) dbg_set_time_scale(kScales[idx - 1]);
-        if (r == 1 && idx + 1 < (int)(sizeof kScales / sizeof *kScales)) dbg_set_time_scale(kScales[idx + 1]);
-        if (r == 2) dbg_set_time_scale(1.0f);
-    }
-
-    opt_group_text("View");
-    {
-        // Settings (nx2navi.ini [debug]) that the renderer reads at once.
-        static const struct { const char *key, *id, *label, *desc; } sw[] = {
-            {"NX2NAVI_DEBUG_FOG_OFF", "##dbg_fog_off", "Fog off",
-             "Removes the volumetric fog: the haze of the Lost Woods, Kokiri Forest's mist and the distance fog over "
-             "Hyrule Field. Saved in the settings."},
-        };
-        for (const auto &s : sw) {
-            bool on = cfg_bool(s.key) != 0;
-            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
-                cfg_set(s.key, on ? "0" : "1");
-                opt_save_soon();
-            }
-        }
-        // The best picture the renderer's own settings give (the Screen and Graphics tabs set each one): a 4K game
-        // picture, the 3D scene drawn at its full size with DLAA (FSR 3.1 Native AA where DLSS cannot run; without
-        // either the scene is 75% of the picture, widescreen.c scene_share), the sharpest sun shadows, 16x texture
-        // filtering and full texture detail. Most are read at start, so a restart applies them. Render scale and shadow
-        // range are left out: game build 1.1.1 has no scene or cascade patch set (resolution.c res_init).
-        static const struct { const char *key, *best; } q[] = {
-            {"NX2NAVI_GAME_RES", "2160"}, {"NX2NAVI_DLAA", "1"}, {"NX2NAVI_DLSS", "dlaa"},
-            {"NX2NAVI_SHADOW_SCALE", "4"}, {"NX2NAVI_ANISO", "16"}, {"NX2NAVI_TEXTURE_DETAIL", "full"},
-        };
-        enum { NQ = sizeof q / sizeof *q };
-        int best = 0;
-        for (const auto &e : q) {
-            const char *v = cfg_value(e.key);
-            best += v && !strcmp(v, e.best);
-        }
-        snprintf(value, sizeof value, "%d of %d set%s", best, (int)NQ, cfg_pending_count() ? ", restart to apply" : "");
-        if (opt_text_row("##dbg_quality_max", "Best quality", value, nullptr,
-                         "Sets the game picture to 4K (2160p), draws the 3D scene at its full size with DLAA (or AMD "
-                         "FSR 3.1 Native AA where DLSS cannot run) instead of 75% of it, the sharpest sun shadows (4x), "
-                         "16x texture filtering and full texture detail. Needs a fast GPU. Most of these apply after a "
-                         "restart.",
-                         false) == 2) {
-            for (const auto &e : q) opt_apply(e.key, e.best);
-            if (!vk_dlaa_available()) opt_apply("NX2NAVI_TAA", "fsr3");
-        }
-        if (opt_text_row("##dbg_quality_game", "Game's quality", "A", nullptr,
-                         "Puts the settings above back to their defaults (1440p, no DLAA, the game's shadows and "
-                         "filtering).",
-                         false) == 2) {
-            const char *keys[NQ];
-            for (int i = 0; i < NQ; i++) keys[i] = q[i].key + 8;   // without NX2NAVI_
-            cfg_reset(keys, NQ);
-            opt_save_soon();
-        }
-        {
-            // Foliage draw distance (draw_distance.c): read before the game starts, so it applies at the next start.
-            static const char *const steps[] = {"0.25", "0.5", "1", "1.5", "2", "3", "4", "6", "8"};
-            enum { NS = sizeof steps / sizeof *steps };
-            double now = cfg_double("NX2NAVI_DEBUG_DRAW_DISTANCE");
-            int si = 0;
-            for (int i = 1; i < NS; i++)
-                if (fabs(atof(steps[i]) - now) < fabs(atof(steps[si]) - now)) si = i;
-            snprintf(value, sizeof value, "x%s (grass %.0f m)%s", steps[si], 40 * atof(steps[si]),
-                     cfg_pending("NX2NAVI_DEBUG_DRAW_DISTANCE") ? ", restart to apply" : "");
-            int r = opt_text_row("##dbg_drawdist", "Plant draw distance", value, nullptr,
-                                 "How far out grass tufts, bushes, flowers and low trees are drawn, as a multiple of the "
-                                 "game's distances (grass 40 m, low trees 135 m), in the areas that keep the game's own "
-                                 "(most of them). Higher shows "
-                                 "plants further away; lower draws less, for speed. Takes effect at the next start. "
-                                 "Left and right change it.",
-                                 false);
-            if (r == -1 || r == 1) {
-                si = si + r < 0 ? 0 : si + r >= NS ? NS - 1 : si + r;
-                opt_apply("NX2NAVI_DEBUG_DRAW_DISTANCE", steps[si]);
-            }
-        }
-
-        // The volume overlay (debug_overlay_draw): settings, so they stay as set.
-        static const struct { const char *key, *id, *label, *desc; } vs[] = {
-            {"NX2NAVI_DEBUG_VIEW_WALLS", "##dbg_v_walls", "Show invisible walls",
-             "Draws the invisible walls placed as objects (air walls), seen through everything. The walls inside the "
-             "level's own collision mesh are not included yet."},
-            {"NX2NAVI_DEBUG_VIEW_LOADING", "##dbg_v_load", "Show loading zones",
-             "Draws the trigger boxes that load another area when the player walks in."},
-            {"NX2NAVI_DEBUG_VIEW_TRIGGERS", "##dbg_v_trig", "Show trigger zones",
-             "Draws every other trigger volume: event, camera, music and spawn areas, horse jump limits and the like."},
-            {"NX2NAVI_DEBUG_VIEW_HIDDEN", "##dbg_v_hidden", "Show hidden things",
-             "Marks hidden holes (grottos), Gold Skulltulas, pieces of heart, chests and magic bean spots."},
-            {"NX2NAVI_DEBUG_VIEW_DEATH", "##dbg_v_death", "Show death barriers",
-             "Draws what kills or sends the player back: the kill volume under the world (fall out of the level and "
-             "it catches you), lava surfaces, and marks bottomless pits and quicksand."},
-        };
-        for (const auto &s : vs) {
-            bool on = cfg_bool(s.key) != 0;
-            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
-                cfg_set(s.key, on ? "0" : "1");
-                opt_save_soon();
-            }
-        }
-        static const char *const styles[] = {"wire", "solid", "both"};
-        static const char *const style_names[] = {"Wireframe", "Solid colour", "Both"};
-        int si = 0;
-        while (si < 2 && strcmp(cfg_value("NX2NAVI_DEBUG_VIEW_STYLE"), styles[si])) si++;
-        int r = opt_text_row("##dbg_v_style", "Overlay style", style_names[si], nullptr,
-                             "Wireframe draws the edges; solid colour fills the faces see-through (Opacity); both does both. "
-                             "Left and right change it.",
-                             false);
-        if (r) {
-            si = (si + (r == -1 ? 2 : 1)) % 3;
-            cfg_set("NX2NAVI_DEBUG_VIEW_STYLE", styles[si]);
-            opt_save_soon();
-        }
-        int op = cfg_int("NX2NAVI_DEBUG_VIEW_OPACITY");
-        snprintf(value, sizeof value, "%d %%", op);
-        r = opt_text_row("##dbg_v_op", "Solid colour opacity", value, nullptr,
-                         "How strongly a solid face covers what is behind it. Left and right change it.", false);
-        if (r == -1 || r == 1) {
-            op += r * 10;
-            op = op < 10 ? 10 : op > 100 ? 100 : op;
-            snprintf(value, sizeof value, "%d", op);
-            cfg_set("NX2NAVI_DEBUG_VIEW_OPACITY", value);
-            opt_save_soon();
-        }
-        static const char *const kind_names[DBG_VOL_KINDS] = {"Colour: invisible walls", "Colour: loading zones",
-                                                              "Colour: trigger zones", "Colour: hidden things",
-                                                              "Colour: death barriers"};
-        for (int k = 0; k < DBG_VOL_KINDS; k++) {
-            int ci = neon_index(cfg_value(kKindKey[k]));
-            char id[32];
-            snprintf(id, sizeof id, "##dbg_v_col%d", k);
-            r = opt_text_row(id, kind_names[k], kNeon[ci].name, nullptr,
-                             "Neon pink, green, cyan, yellow, orange or purple, or red, blue or white. Left and right "
-                             "change it.",
-                             false);
-            if (r) {
-                ci = (ci + (r == -1 ? NEON - 1 : 1)) % NEON;
-                cfg_set(kKindKey[k], kNeon[ci].name);
-                opt_save_soon();
-            }
-        }
-        {
-            bool on = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
-            if (opt_toggle_text("##dbg_v_labels", "Names on the overlay", "Writes each volume's name over it, within 60 m.",
-                                on)) {
-                cfg_set("NX2NAVI_DEBUG_VIEW_LABELS", on ? "0" : "1");
-                opt_save_soon();
-            }
-        }
-        static const int ranges[] = {25, 50, 100, 150, 250, 500, 1000};
-        int rg = cfg_int("NX2NAVI_DEBUG_VIEW_RANGE"), ri = 0;
-        while (ri < 6 && ranges[ri] < rg) ri++;
-        snprintf(value, sizeof value, "%d m", ranges[ri]);
-        r = opt_text_row("##dbg_v_range", "Overlay range", value, nullptr,
-                         "Volumes further from the player than this are not drawn. Left and right change it.", false);
-        if (r == -1 || r == 1) {
-            ri += r;
-            ri = ri < 0 ? 0 : ri > 6 ? 6 : ri;
-            snprintf(value, sizeof value, "%d", ranges[ri]);
-            cfg_set("NX2NAVI_DEBUG_VIEW_RANGE", value);
-            opt_save_soon();
-        }
+        int r = opt_text_choice("##dbg_scale", "Game speed", scale_names, NSC, scale_index(s),
+                                "Scales the time step the game is given each frame: slow motion to study a trick, fast "
+                                "forward to skip waiting. Left and right change it; A opens the list (1x is the game's "
+                                "own speed). Physics limits how slow it can go.",
+                                false, value, note);
+        if (r >= 0) dbg_set_time_scale(kScales[r]);
     }
 
     opt_group_text("Timer");
@@ -630,6 +1057,15 @@ extern "C" void tab_debug(float scale) {
         for (auto &r : rows)
             if (opt_toggle_text(r.id, r.label, r.desc, (mask & r.bit) != 0)) mask ^= r.bit;
         dbg_overlay_set(mask);
+        bool mp = cfg_bool("NX2NAVI_DEBUG_MENU_PAD") != 0;
+        if (opt_toggle_text("##dbg_menu_pad", "Controller button opens the menu",
+                            "A controller button opens the menu on this tab: D-pad right unless another is chosen in the "
+                            "Hotkeys group below (\"Open the menu\"). The game no longer sees that button outside its "
+                            "pause menu. Off: the button is the game's again. Saved in the settings.",
+                            mp)) {
+            cfg_set("NX2NAVI_DEBUG_MENU_PAD", mp ? "0" : "1");
+            opt_save_soon();
+        }
         bool hk = dbg_hotkeys() != 0;
         if (opt_toggle_text("##dbg_hotkeys", "Keyboard hotkeys", "With the menu closed: F5 saves the position in slot 1, F6 goes to it, "
                             "F7 and F8 lower and raise the game speed, F9 starts and stops the timer, F12 reloads the area. "
@@ -637,13 +1073,47 @@ extern "C" void tab_debug(float scale) {
             dbg_hotkeys_set(!hk);
     }
 
+    hotkey_rows();
+
     opt_group_text("Remote console");
     {
         bool on = dbg_remote_enabled() != 0;
         if (opt_toggle_text("##dbg_remote", "Remote console (files)", "Lets a helper tool read and write the game's memory by "
                             "dropping commands in debug_cmd.txt next to the game; answers appear in debug_out.txt. No network "
-                            "port is opened. Turn it off when you are done.", on))
+                            "port is opened. It stays on from one start to the next: turn it off when you are done.", on))
             dbg_remote_set(!on);
+    }
+
+    opt_group_text("Change monitor");
+    {
+        bool on = dbg_watch_on() != 0;
+        if (!dbg_available()) opt_disable_next_text("Needs game build 1.1.1.");
+        if (opt_toggle_text("##watch_on", "Watch changes",
+                            "Logs every change to the game's flags (items, counters, events, the area, the age) and to the "
+                            "actors loaded (what appears and disappears), as it happens. For glitch hunting: do one thing in "
+                            "game and see what it touched. The lines also go to debug_changes.txt next to the game. Turning "
+                            "it on takes a fresh start.",
+                            on))
+            dbg_watch_set(!on);
+        if (!on) opt_disable_next_text("Watch changes is off.");
+        if (opt_text_row("##watch_ignore", "Ignore what has changed so far", "A", nullptr,
+                         "Stand still for a few seconds, then this: the flags that changed meanwhile (timers, the time of "
+                         "day) are left out from now on. Flags that change all the time are left out by themselves.",
+                         false) == 2)
+            dbg_watch_ignore_changed();
+        if (!on) opt_disable_next_text("Watch changes is off.");
+        if (opt_text_row("##watch_clear", "Clear the list", "A", nullptr,
+                         "Empties the list and starts comparing from now. Ignored flags stay ignored.", false) == 2)
+            dbg_watch_clear();
+        if (on) {
+            char line[192];
+            snprintf(line, sizeof line, "%s. %d flags ignored, %d names known.", dbg_watch_state(), dbg_watch_ignored(), dbg_watch_names());
+            opt_text_str(line);
+            int n = dbg_watch_count();
+            for (int i = 0; i < n && i < 16; i++)
+                if (dbg_watch_line(i, line, sizeof line)) opt_text_str(line);
+            if (n > 16) opt_text_str("Newest 16 shown; debug_changes.txt has them all.");
+        }
     }
 
     opt_group_text("Memory scanner");
@@ -660,8 +1130,12 @@ extern "C" void tab_debug(float scale) {
         if (r == -1) target -= step;
         if (r == 1) target += step;
         if (r == 2) target = 0;
-        snprintf(value, sizeof value, "%d", step);
-        if (opt_text_row("##scan_step", "Step", value, nullptr, "A cycles 1, 10, 100, 1000.", false) == 2) step_i = (step_i + 1) % 4;
+        static const char *const step_names[] = {"1", "10", "100", "1000"};
+        int sr = opt_text_choice("##scan_step", "Step", step_names, 4, step_i,
+                                 "How far left and right move the value to look for: 1, 10, 100 or 1000. Left and right "
+                                 "change it; A opens the list.",
+                                 false);
+        if (sr >= 0) step_i = sr;
         if (opt_text_row("##scan_first", "New search", "A", nullptr, "Searches all game memory for this value (a second or two).", false) == 2)
             snprintf(msg, sizeof msg, "%d hits%s", dbg_scan_first(target), dbg_scan_truncated() ? " (table full)" : "");
         static const struct { int mode; const char *id, *label; } nx[] = {
@@ -694,13 +1168,14 @@ extern "C" void tab_debug(float scale) {
         if (n > 12) opt_text_str("Only the first 12 hits are listed: narrow them further or save the file.");
     }
     opt_end();
+    hotkey_capture();
 }
 
 // ---- the readout, top left, over the game
 
 // ---- volume overlay (View group): invisible walls, loading zones, triggers and hidden things drawn over the picture
-// with the scene camera (vk_debug_cam.c), as wireframe, solid colour or both. Nothing hides them: they show through
-// walls, which is what finding them needs.
+// with the scene camera (vk_debug_cam.c), as wireframe, solid colour or both. They show through walls, which is what
+// finding them needs, unless "Only what you can see" is on (occ_begin).
 
 static int kind_slot(int kind) {
     return kind == DBG_VOL_WALL ? 0 : kind == DBG_VOL_LOAD ? 1 : kind == DBG_VOL_TRIGGER ? 2 : kind == DBG_VOL_HIDDEN ? 3 : 4;
@@ -727,13 +1202,91 @@ static void lerp4(const float a[4], const float b[4], float t, float o[4]) {
     for (int i = 0; i < 4; i++) o[i] = a[i] + (b[i] - a[i]) * t;
 }
 
+// "Only what you can see" (NX2NAVI_DEBUG_VIEW_OCCLUDE): the scene's view distances (vk_debug_cam.h vk_dbgcam_depth),
+// read once a frame by occ_begin. A point of the overlay is drawn when it is no further along the view than the scene
+// at its spot, with some slack, so a wall standing on the ground keeps its foot. Clip w is that distance: the
+// projection's w is the depth along the view. Lines and faces are cut into short pieces, each kept or dropped by the
+// point in its middle; the grid is a few frames old, so the edge of what is hidden trails a fast turn of the camera
+// by that much.
+static struct {
+    bool on;   // this frame tests against grid
+    int gw, gh;
+    float grid[480 * 270];
+} g_occ;
+
+static void occ_begin() {
+    g_occ.on = false;
+    if (!cfg_bool("NX2NAVI_DEBUG_VIEW_OCCLUDE")) return;
+    g_occ.on = vk_dbgcam_depth(g_occ.grid, &g_occ.gw, &g_occ.gh, 250000000ull) != 0;
+    g_occ_seen = g_occ.on;
+}
+
+// c in front of the eye and not behind the scene at its spot (or off the picture, or where the view shows sky)
+static bool occ_visible(const ViewProj &P, const float c[4]) {
+    if (!g_occ.on) return true;
+    if (c[3] < kNear) return false;
+    ImVec2 s = screen_of(P, c);
+    float u = (s.x - P.x0) / P.w, v = (s.y - P.y0) / P.h;
+    if (!(u >= 0 && u < 1 && v >= 0 && v < 1)) return true;
+    int x = (int)(u * g_occ.gw), y = (int)(v * g_occ.gh);
+    float d = g_occ.grid[y * g_occ.gw + x];
+    return d <= 0 || c[3] <= d * 1.02f + 0.3f;
+}
+
 static void draw_edge(ImDrawList *dl, const ViewProj &P, const float a[4], const float b[4], ImU32 col, float th) {
     if (a[3] < kNear && b[3] < kNear) return;
     float pa[4], pb[4];
     memcpy(pa, a, sizeof pa), memcpy(pb, b, sizeof pb);
     if (pa[3] < kNear) lerp4(a, b, (kNear - a[3]) / (b[3] - a[3]), pa);
     if (pb[3] < kNear) lerp4(b, a, (kNear - b[3]) / (a[3] - b[3]), pb);
-    dl->AddLine(screen_of(P, pa), screen_of(P, pb), col, th);
+    ImVec2 sa = screen_of(P, pa), sb = screen_of(P, pb);
+    if (!g_occ.on) {
+        dl->AddLine(sa, sb, col, th);
+        return;
+    }
+    // pieces of about 6 pixels; a run of visible pieces is one line
+    float len = sqrtf((sb.x - sa.x) * (sb.x - sa.x) + (sb.y - sa.y) * (sb.y - sa.y));
+    int n = (int)(len / 6.0f);
+    n = n < 1 ? 1 : n > 96 ? 96 : n;
+    int run = -1;
+    for (int i = 0; i <= n; i++) {
+        bool vis = false;
+        if (i < n) {
+            float m[4];
+            lerp4(pa, pb, ((float)i + 0.5f) / n, m);
+            vis = occ_visible(P, m);
+        }
+        if (vis && run < 0) run = i;
+        if (!vis && run >= 0) {
+            float c0[4], c1[4];
+            lerp4(pa, pb, (float)run / n, c0), lerp4(pa, pb, (float)i / n, c1);
+            dl->AddLine(screen_of(P, c0), screen_of(P, c1), col, th);
+            run = -1;
+        }
+    }
+}
+
+// A triangle (clip space) cut into k * k pieces, each filled when the point in its middle is visible.
+static void occ_triangle(ImDrawList *dl, const ViewProj &P, const float *a, const float *b, const float *c, ImU32 col) {
+    ImVec2 sa = screen_of(P, a), sb = screen_of(P, b), sc = screen_of(P, c);
+    float e = fmaxf(fmaxf(fabsf(sa.x - sb.x) + fabsf(sa.y - sb.y), fabsf(sb.x - sc.x) + fabsf(sb.y - sc.y)),
+                    fabsf(sc.x - sa.x) + fabsf(sc.y - sa.y));
+    int k = (int)(e / 24.0f);
+    k = k < 1 ? 1 : k > 24 ? 24 : k;
+    // the corner at grid step (i, j): a + (b - a) i / k + (c - a) j / k
+    auto at = [&](int i, int j, float o[4]) {
+        for (int r = 0; r < 4; r++) o[r] = a[r] + (b[r] - a[r]) * i / k + (c[r] - a[r]) * j / k;
+    };
+    for (int j = 0; j < k; j++)
+        for (int i = 0; i + j < k; i++)
+            for (int down = 0; down < 2; down++) {   // the piece pointing up, then (inside the triangle) the one down
+                if (down && i + j + 1 >= k) break;
+                float p0[4], p1[4], p2[4], m[4];
+                if (!down) at(i, j, p0), at(i + 1, j, p1), at(i, j + 1, p2);
+                else at(i + 1, j, p0), at(i + 1, j + 1, p1), at(i, j + 1, p2);
+                for (int r = 0; r < 4; r++) m[r] = (p0[r] + p1[r] + p2[r]) / 3.0f;
+                if (occ_visible(P, m)) dl->AddTriangleFilled(screen_of(P, p0), screen_of(P, p1), screen_of(P, p2), col);
+            }
 }
 
 // A convex face (n corners in clip space), cut at the near plane, filled.
@@ -747,6 +1300,13 @@ static void draw_face(ImDrawList *dl, const ViewProj &P, const float (*c)[4], in
         if (ina != inb) lerp4(a, b, (kNear - a[3]) / (b[3] - a[3]), out[m++]);
     }
     if (m < 3) return;
+    if (g_occ.on) {   // without the fill's smoothed edge, which would show as seams between the pieces
+        ImDrawListFlags fl = dl->Flags;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+        for (int i = 1; i + 1 < m; i++) occ_triangle(dl, P, out[0], out[i], out[i + 1], col);
+        dl->Flags = fl;
+        return;
+    }
     ImVec2 pts[40];
     for (int i = 0; i < m; i++) pts[i] = screen_of(P, out[i]);
     dl->AddConvexPolyFilled(pts, m, col);
@@ -860,6 +1420,12 @@ static bool inside(const DbgVolume &v, const float p[3]) {
     return fabsf(l[0]) <= 0.5f * v.scale[0] && fabsf(l[2]) <= 0.5f * v.scale[2];
 }
 
+// The kill volume under the world (debug_view.c death_of, Exterminator): the one death barrier kilometres wide, the
+// rest (lava plates, pit and quicksand markers) being tens of metres at most.
+static bool is_kill_plane(const DbgVolume &v) {
+    return v.kind == DBG_VOL_DEATH && v.shape == DBG_SHAPE_BOX && v.scale[0] > 1000.0f;
+}
+
 static void draw_volumes(float scale) {
     enum { MAXV = 1024 };
     static DbgVolume vol[MAXV];
@@ -878,6 +1444,7 @@ static void draw_volumes(float scale) {
     opacity = opacity < 10 ? 10 : opacity > 100 ? 100 : opacity;
     float range = (float)cfg_int("NX2NAVI_DEBUG_VIEW_RANGE");
     bool labels = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
+    bool kill_plane = cfg_bool("NX2NAVI_DEBUG_VIEW_KILL_PLANE") != 0;
     ImU32 line[DBG_VOL_KINDS], fill[DBG_VOL_KINDS];
     for (int k = 0; k < DBG_VOL_KINDS; k++) {
         int i = neon_index(cfg_value(kKindKey[k]));
@@ -896,7 +1463,7 @@ static void draw_volumes(float scale) {
     int m = 0;
     for (int o : order)
         for (int i = 0; i < n; i++)
-            if (vol[i].kind == o) idx[m++] = i;
+            if (vol[i].kind == o && (kill_plane || !is_kill_plane(vol[i]))) idx[m++] = i;
     for (int t = 0; t < m; t++) {
         const DbgVolume &v = vol[idx[t]];
         int k = kind_slot(v.kind);
@@ -909,14 +1476,14 @@ static void draw_volumes(float scale) {
             for (int j = 0; j < 3; j++) d2 += (v.pos[j] - me[j]) * (v.pos[j] - me[j]);
         // The kill volume under the world is kilometres wide and far below: its name goes on its surface straight
         // under the player, with the height, at any distance.
-        bool under = v.kind == DBG_VOL_DEATH && v.shape == DBG_SHAPE_BOX && v.scale[0] > 1000.0f && have_me;
+        bool under = is_kill_plane(v) && have_me;
         if (d2 > 60.0f * 60.0f && !under) continue;   // names only close by, or the far field fills with text
         float top[3], c[4];   // the name over the volume's top middle (an object's: 1 m over it)
         if (v.shape == DBG_SHAPE_MARKER) memcpy(top, v.pos, sizeof top), top[1] += 1.0f;
         else world_of(v, 0, 1, 0, top);
         if (under) top[0] = me[0], top[2] = me[2];
         clip_of(P, top, c);
-        if (c[3] < kNear) continue;
+        if (c[3] < kNear || (!under && !occ_visible(P, c))) continue;
         ImVec2 at = screen_of(P, c);
         char text_buf[112];   // a trigger says what it acts on
         if (v.kind != DBG_VOL_LOAD && v.target[0]) snprintf(text_buf, sizeof text_buf, "%s > %s", v.name, v.target);
@@ -929,8 +1496,171 @@ static void draw_volumes(float scale) {
     }
 }
 
+// Enemy health (Show enemy health): a bar and "life / max" 2.2 m over each enemy's position (its feet), green to red
+// as the life falls. Drawn over the volumes.
+static void draw_health(float scale) {
+    enum { MAXH = 256 };
+    static DbgHealth hp[MAXH];
+    ViewProj P;
+    float aspect = 16.0f / 9.0f;
+    if (!vk_dbgcam_vp(P.vp, &aspect)) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    if (ds.x <= 0 || ds.y <= 0) return;
+    if (aspect <= 0.1f || aspect > 10) aspect = 16.0f / 9.0f;
+    if (ds.x / ds.y > aspect) P.h = ds.y, P.w = ds.y * aspect;
+    else P.w = ds.x, P.h = ds.x / aspect;
+    P.x0 = (ds.x - P.w) * 0.5f, P.y0 = (ds.y - P.h) * 0.5f;
+    int n = dbg_view_health(hp, MAXH, (float)cfg_int("NX2NAVI_DEBUG_VIEW_RANGE"));
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    const float bw = 70.0f * scale, bh = 7.0f * scale;
+    for (int i = 0; i < n; i++) {
+        const DbgHealth &h = hp[i];
+        float top[3] = {h.pos[0], h.pos[1] + 2.2f, h.pos[2]}, c[4];
+        clip_of(P, top, c);
+        if (c[3] < kNear || !occ_visible(P, c)) continue;
+        ImVec2 at = screen_of(P, c);
+        float f = h.max > 0 ? (float)h.life / (float)h.max : 0;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        ImU32 col = IM_COL32((int)(255 * (1 - f)), (int)(220 * f + 35), 40, 235);
+        ImVec2 a(at.x - bw * 0.5f, at.y - bh), b(at.x + bw * 0.5f, at.y);
+        dl->AddRectFilled(ImVec2(a.x - 1, a.y - 1), ImVec2(b.x + 1, b.y + 1), IM_COL32(0, 0, 0, 200));
+        if (f > 0) dl->AddRectFilled(a, ImVec2(a.x + bw * f, b.y), col);
+        char text[96];
+        snprintf(text, sizeof text, "%d / %d", h.life, h.max);
+        ImVec2 sz = ImGui::CalcTextSize(text);
+        ImVec2 t(at.x - sz.x * 0.5f, a.y - sz.y - 2 * scale);
+        dl->AddText(ImVec2(t.x + 1, t.y + 1), IM_COL32(0, 0, 0, 200), text);
+        dl->AddText(t, IM_COL32(255, 255, 255, 240), text);
+        if (cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS")) {
+            const char *nm = strncmp(h.name, "Enemy_", 6) ? h.name : h.name + 6;
+            ImVec2 ns = ImGui::CalcTextSize(nm);
+            ImVec2 u(at.x - ns.x * 0.5f, t.y - ns.y);
+            dl->AddText(ImVec2(u.x + 1, u.y + 1), IM_COL32(0, 0, 0, 200), nm);
+            dl->AddText(u, col, nm);
+        }
+    }
+}
+
+// Hookshot targets (Show hookshot targets): the surfaces as filled or outlined polygons in the style set, the target
+// objects' shapes brighter, and each target object's name close by (a marker where it has no shape). With walls set,
+// the invisible walls of the collision files instead (Show invisible walls), in the walls colour.
+static void draw_hook(float scale, bool walls) {
+    enum { MAXP = 24000, MAXL = 128 };
+    static DbgHookPoly poly[MAXP];
+    static DbgHookLabel lab[MAXL];
+    ViewProj P;
+    float aspect = 16.0f / 9.0f;
+    if (!vk_dbgcam_vp(P.vp, &aspect)) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    if (ds.x <= 0 || ds.y <= 0) return;
+    if (aspect <= 0.1f || aspect > 10) aspect = 16.0f / 9.0f;
+    if (ds.x / ds.y > aspect) P.h = ds.y, P.w = ds.y * aspect;
+    else P.w = ds.x, P.h = ds.x / aspect;
+    P.x0 = (ds.x - P.w) * 0.5f, P.y0 = (ds.y - P.h) * 0.5f;
+    const char *st = cfg_value("NX2NAVI_DEBUG_VIEW_STYLE");
+    int style = !strcmp(st, "solid") ? 2 : !strcmp(st, "both") ? 3 : 1;
+    int opacity = cfg_int("NX2NAVI_DEBUG_VIEW_OPACITY");
+    opacity = opacity < 10 ? 10 : opacity > 100 ? 100 : opacity;
+    float range = (float)cfg_int("NX2NAVI_DEBUG_VIEW_RANGE");
+    int ci = neon_index(cfg_value(walls ? kKindKey[kind_slot(DBG_VOL_WALL)] : "NX2NAVI_DEBUG_VIEW_COLOR_HOOKSHOT"));
+    ImU32 line = IM_COL32(kNeon[ci].r, kNeon[ci].g, kNeon[ci].b, 200),
+          fill = IM_COL32(kNeon[ci].r, kNeon[ci].g, kNeon[ci].b, opacity * 255 / 100),
+          tline = IM_COL32(kNeon[ci].r, kNeon[ci].g, kNeon[ci].b, 255),
+          tfill = IM_COL32(kNeon[ci].r, kNeon[ci].g, kNeon[ci].b, (opacity + 100) * 255 / 200);
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    int n = dbg_hook_polys(poly, MAXP, range, walls);
+    for (int i = 0; i < n; i++) {
+        const DbgHookPoly &q = poly[i];
+        float c[8][4];
+        for (int k = 0; k < q.n; k++) clip_of(P, q.p[k], c[k]);
+        // a target object always shows filled, so it stands out from the surfaces round it
+        if ((style & 2) || q.target) draw_face(dl, P, c, q.n, q.target ? tfill : fill);
+        if (style & 1)
+            for (int k = 0; k < q.n; k++) draw_edge(dl, P, c[k], c[(k + 1) % q.n], q.target ? tline : line, 1.0f * scale);
+    }
+    int m = walls ? 0 : dbg_hook_labels(lab, MAXL, range);
+    bool labels = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
+    float me[3];
+    bool have_me = dbg_player_pos(me) != 0;
+    for (int i = 0; i < m; i++) {
+        const DbgHookLabel &l = lab[i];
+        if (!l.shaped) {   // no shape found: a 0.8 m cube at the object
+            DbgVolume v = {};
+            memcpy(v.pos, l.pos, sizeof v.pos);
+            v.shape = DBG_SHAPE_MARKER, v.kind = DBG_VOL_HIDDEN;
+            draw_volume(dl, P, v, 3, tline, tfill, 1.6f * scale);
+        }
+        if (!labels || !have_me) continue;
+        float d2 = 0;
+        for (int j = 0; j < 3; j++) d2 += (l.pos[j] - me[j]) * (l.pos[j] - me[j]);
+        if (d2 > 60.0f * 60.0f) continue;
+        float top[3] = {l.pos[0], l.pos[1] + 1.0f, l.pos[2]}, c[4];
+        clip_of(P, top, c);
+        if (c[3] < kNear || !occ_visible(P, c)) continue;
+        ImVec2 at = screen_of(P, c), sz = ImGui::CalcTextSize(l.name);
+        at.x -= sz.x * 0.5f, at.y -= sz.y;
+        dl->AddText(ImVec2(at.x + 1, at.y + 1), IM_COL32(0, 0, 0, 200), l.name);
+        dl->AddText(at, tline, l.name);
+    }
+}
+
+// The title screen's profile picker (save_title.c): a bar at the bottom with the profile in use, LB and RB either side,
+// and what is happening. A switch that needs a restart restarts the game from here, on the render thread, as the
+// menu's Restart does.
+static void draw_title_profiles(float scale) {
+    if (save_title_restart_due()) {
+        cfg_save();
+        gfx_window_request_restart();
+    }
+    SaveTitleView v;
+    if (!save_title_view(&v)) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    char main_line[300], sub[300];
+    snprintf(main_line, sizeof main_line, "LB  <   %s: %s   >  RB", v.saving ? "Save into" : "Profile", v.name);
+    if (v.count > 1) {
+        size_t n = strlen(main_line);
+        snprintf(main_line + n, sizeof main_line - n, "   (%d of %d)", v.index + 1, v.count);
+    }
+    switch (v.phase) {
+    case SAVE_TITLE_CHOSEN:
+        if (v.saving) snprintf(sub, sizeof sub, "A: save into %s and make it active  B: keep %s", v.name, v.active);
+        else snprintf(sub, sizeof sub, "Switching to %s requires a restart. A: switch  B: stay", v.name);
+        break;
+    case SAVE_TITLE_SWITCHING:
+    case SAVE_TITLE_RELOADING: snprintf(sub, sizeof sub, "Loading the saves of %s...", v.name); break;
+    case SAVE_TITLE_RESTART:
+    case SAVE_TITLE_RESTARTING: snprintf(sub, sizeof sub, "Restarting into %s...", v.name); break;
+    case SAVE_TITLE_FAILED:
+        snprintf(sub, sizeof sub, "%s", v.saving ? "Could not prepare this profile. B: cancel; see the log"
+                                                : "Could not switch: the profile in use stays (see the log)");
+        break;
+    default:
+        snprintf(sub, sizeof sub, "%s", v.saving ? "LB / RB: choose the profile for this save; A: save"
+                                       : v.count > 1 ? "LB / RB: change between profiles; the Load list shows its saves"
+                                                    : "Only one profile: make more in the menu's Debug tab, Profiles");
+    }
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImFont *font = ImGui::GetFont();
+    float fs = ImGui::GetFontSize() * 1.15f, fs2 = ImGui::GetFontSize() * 0.9f;
+    ImVec2 s1 = font->CalcTextSizeA(fs, FLT_MAX, 0, main_line), s2 = font->CalcTextSizeA(fs2, FLT_MAX, 0, sub);
+    float w = (s1.x > s2.x ? s1.x : s2.x) + 32 * scale, h = s1.y + s2.y + 22 * scale;
+    ImVec2 p0((ds.x - w) * 0.5f, ds.y - h - 18 * scale), p1(p0.x + w, p0.y + h);
+    bool chosen = v.phase != SAVE_TITLE_IDLE && v.phase != SAVE_TITLE_FAILED;
+    dl->AddRectFilled(p0, p1, IM_COL32(10, 12, 20, 200), 8 * scale);
+    dl->AddRect(p0, p1, chosen ? IM_COL32(255, 210, 90, 230) : IM_COL32(200, 200, 210, 120), 8 * scale, 0, 1.5f * scale);
+    ImU32 c1 = chosen ? IM_COL32(255, 220, 120, 255) : IM_COL32(240, 240, 245, 255);
+    ImU32 c2 = v.phase == SAVE_TITLE_FAILED ? IM_COL32(255, 120, 100, 255) : IM_COL32(200, 200, 210, 230);
+    dl->AddText(font, fs, ImVec2((ds.x - s1.x) * 0.5f, p0.y + 8 * scale), c1, main_line);
+    dl->AddText(font, fs2, ImVec2((ds.x - s2.x) * 0.5f, p0.y + 14 * scale + s1.y), c2, sub);
+}
+
 extern "C" void debug_overlay_draw(float scale) {
+    draw_title_profiles(scale);
+    if (dbg_view_kinds() && dbg_available()) occ_begin();
     if (dbg_view_kinds() && dbg_available()) draw_volumes(scale);
+    if ((dbg_view_kinds() & DBG_VOL_WALL) && dbg_available()) draw_hook(scale, true);
+    if ((dbg_view_kinds() & DBG_VOL_HOOK) && dbg_available()) draw_hook(scale, false);
+    if ((dbg_view_kinds() & DBG_VOL_ENEMY) && dbg_available()) draw_health(scale);
     int mask = dbg_overlay_mask();
     const char *toast_msg = dbg_toast(plat_now_ns());
     bool igt = dbg_igt_enabled() != 0;

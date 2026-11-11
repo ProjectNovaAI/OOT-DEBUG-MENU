@@ -768,9 +768,35 @@
 
 [debug]
 # 1: no volumetric fog. The fog's first compute pass writes every froxel as empty (vk_pipeline.c spirv_fog_off); the
-# switch applies at once. Default: 0.
+# switch applies at once. It can leave a faint ghost image under Link, Navi and other characters, and may have other
+# effects not known yet. Default: 0.
 # debug_fog_off = 0
-# Volume overlay of the debug menu (Debug tab, View; docs/debug-menu.md): placed invisible walls, loading zones, other
+# 1: a controller button opens the menu on its Debug tab, and the game no longer sees that button outside its pause
+# menu. Default: 1.
+# debug_menu_pad = 1
+# That button, by its place on the pad: south east west north lstick rstick l r start back dpad_left dpad_up
+# dpad_right dpad_down zl zr lpaddle1 rpaddle1 lpaddle2 rpaddle2, or none. B closes the menu; l, r, the stick clicks and
+# the paddles close it too. Default: dpad_right (the game only talks to Navi with it).
+# debug_menu_button = dpad_right
+# On the game's title screen (Continue, New Game, its Load list) the game's R and L (RB and LB, Q and R on the keyboard)
+# change between save profiles (Debug tab, Profiles and manual saves); saved profiles refresh the Load list immediately.
+# To or from an empty profile, A confirms a restart and B cancels.
+# 0: L and R remain available to the game there. Default: 1.
+# debug_title_profiles = 1
+# Invulnerable, infinite magic and infinite items (Debug tab), kept from one start to the next. Default: 0 each.
+# debug_god = 0
+# debug_inf_magic = 0
+# debug_inf_items = 0
+# Items at any age (WIP) (Debug tab, Player): the pause menu lets every item and piece of equipment be chosen as child
+# and as adult. Work in progress: an item made for the other age does nothing yet when used. Default: 0.
+# debug_any_age_items = 0
+# Hotkeys for the debug tools (Debug tab, Hotkeys), one line per tool: up to two keys and one controller button, in the
+# bind_ format. A key or button bound here no longer reaches the game outside its pause menu. The tools: fly hover
+# hoverboots god infmagic infitems reload ageswitch savepos loadpos slower faster fog walls loading triggers hidden death
+# hookshot health position speed area inputs timer igt split. None is bound by default.
+# debug_hotkey_fly = key:g, pad:dpad_up
+# Volume overlay of the debug menu (Debug tab, View; docs/debug-menu.md): invisible walls (placed ones, and the air wall
+# surfaces and shapes of the level's collision), loading zones, other
 # trigger zones, hidden things (grottos, Gold Skulltulas, heart pieces, chests) and death barriers (the kill volume under
 # the world, lava surfaces, bottomless pits, quicksand), drawn over the picture and seen through walls. 1 shows a kind.
 # Default: 0 each.
@@ -779,6 +805,14 @@
 # debug_view_triggers = 0
 # debug_view_hidden = 0
 # debug_view_death = 0
+# With debug_view_death on: 0 leaves out the kill volume under the world (the grid kilometres wide with its name under
+# the player) and keeps the other death barriers. Default: 1.
+# debug_view_kill_plane = 1
+# Enemy health over every enemy in range: a bar and the game's own life values (current / maximum). Default: 0.
+# debug_view_health = 0
+# 1: draws the surfaces the hookshot sticks to (from the area's collision data) and outlines the hookshot target
+# objects. Default: 0.
+# debug_view_hookshot = 0
 # wire (edges), solid (see-through colour) or both. Default: wire.
 # debug_view_style = wire
 # How strongly a solid face covers what is behind it, in percent (10 to 100). Default: 35.
@@ -789,8 +823,30 @@
 # debug_view_color_triggers = yellow
 # debug_view_color_hidden = green
 # debug_view_color_death = red
+# debug_view_color_hookshot = orange
 # 1: each volume's name over it, within 60 m. Default: 1.
 # debug_view_labels = 1
+# 1 (Only what you can see): the parts of the overlay that the scene's walls, ground and objects cover are not
+# drawn, and a name only where its spot is in view. 0: everything is drawn through the scene. Uses the upscaler's
+# depth: needs DLAA, DLSS or FSR; without one everything is drawn. Default: 0.
+# debug_view_occlude = 0
+# The Debug tab's other settings, kept from one start to the next as the tab changes them (fly and hover are not
+# kept). Hold health at this many quarter hearts, 0 off (0 to 80). Default: 0.
+# debug_health_lock = 0
+# Game speed, 0.05 to 8 (1 the game's own). Default: 1.
+# debug_speed = 1
+# On-screen readout, the sum of: 1 position, 2 speed, 4 timer, 8 inputs, 16 area. Default: 0.
+# debug_readout = 0
+# Keyboard hotkeys F5 to F9 and F12 with the menu closed. Default: 0.
+# debug_hotkeys = 0
+# The file-based remote console (debug_cmd.txt). Default: 0.
+# debug_remote = 0
+# Infinite Hover Boots. Default: 0.
+# debug_hover_boots = 0
+# Fly speed in metres a second (1 to 100). Default: 8.
+# debug_fly_speed = 8
+# Force age on every debug warp: off, child or adult. Default: off.
+# debug_force_age = off
 # Volumes further from the player than this many metres are not drawn (10 to 1000). Default: 150.
 # debug_view_range = 150
 # Foliage draw distance (game build 1.1.1): multiplies how far out grass tufts, bushes, flowers and low trees are drawn

@@ -54,7 +54,7 @@ extern "C" void menu_sdl_event(const SDL_Event *e) {
         }
         if (((e->key.scancode >= SDL_SCANCODE_F2 && e->key.scancode <= SDL_SCANCODE_F9) || e->key.scancode == SDL_SCANCODE_F12) &&
             !e->key.repeat && !menu_is_open() &&
-            dbg_hotkey((int)(e->key.scancode - SDL_SCANCODE_F1) + 1))
+            dbg_hotkey((int)(e->key.scancode - SDL_SCANCODE_F1) + 1 + ((e->key.mod & SDL_KMOD_SHIFT) ? DBG_SHIFT : 0)))
             return;
         if (e->key.scancode == SDL_SCANCODE_F10) {
             if (!e->key.repeat) menu_perf_cycle();

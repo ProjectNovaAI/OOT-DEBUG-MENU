@@ -193,6 +193,7 @@ void mem_init(void);                                       // reserve every regi
 const RtGuestLayout *mem_layout(void);
 int mem_start_note(int probe);                             // a game's start: a warning line when the free commit is
                                                            // below the game's need (mem_need.h); 1 when it is
+uint64_t mem_used_peak(void);   // the most of the application pool in use so far (image, heap and mapped alias bytes)
 void mem_guest_census(uint64_t frame);   // NX2NAVI_TRACE=perf: committed bytes per guest region
 void mem_lazy_heap_report(uint64_t frame);   // NX2NAVI_TRACE=perf: the lazy heap's faults since the last line
 uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr);                      // 0x01

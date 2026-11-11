@@ -83,6 +83,7 @@ static int classify(uint64_t actor, const char *name, int *shape, Entry *e) {
     if (!strcmp(name, "Exterminator")) return death_of(name, shape, e) ? DBG_VOL_DEATH : 0;
     *shape = DBG_SHAPE_BOX;
     e->base[0] = e->base[1] = e->base[2] = 1.0f, e->lift = 0;
+    if (!strncmp(name, "Enemy_", 6) || !strncmp(name, "DungeonBoss", 11) || has(name, "MiddleBoss")) return DBG_VOL_ENEMY;
     if (has(name, "AirWall") || has(name, "Airwall")) return DBG_VOL_WALL;
     if (!strcmp(name, "Area")) return dbg_area_is_loading_zone(actor) ? DBG_VOL_LOAD : DBG_VOL_TRIGGER;
     // NavMeshCut* (path-finding holes round every character) and ForbidAutoPlacement* (where nothing spawns) fill a
@@ -198,6 +199,7 @@ int dbg_view_volumes(DbgVolume *out, int max, float range) {
         const Entry *e = &copy[i];
         uint64_t cls = 0, name = 0;
         DbgVolume *v = &out[n];
+        if (e->kind == DBG_VOL_ENEMY) continue;   // drawn by dbg_view_health
         if (!e->actor) {   // a placement: where the stage file puts it
             memcpy(v->pos, e->pos, sizeof v->pos);
             memcpy(v->axes, e->axes, sizeof v->axes);
@@ -228,8 +230,56 @@ int dbg_view_volumes(DbgVolume *out, int max, float range) {
     return n;
 }
 
-// The kinds the settings switch on (nx2navi.ini [debug] debug_view_walls, _loading, _triggers, _hidden, _death), parsed again
-// when cfg_version changes; also starts or stops the helper thread's rescans.
+// Enemy health (debug_tools.h DbgHealth): the life component by the path the game's life query takes, checked by its
+// class, then the current and maximum values.
+#define LIFE_HOLDER 0x270
+#define LIFE_COMPONENT 0x2b8
+#define LIFE_CLASS 0x4b4c460ull
+#define LIFE_CUR 0x1c10
+#define LIFE_MAX 0x1c18
+
+static int life_of(uint64_t actor, int *life, int *max) {
+    uint64_t holder = 0, comp = 0, cls = 0, pc = 0, pm = 0;
+    uint32_t c = 0, m = 0;
+    if (!plat_mem_read(actor + LIFE_HOLDER, &holder, 8) || !holder || !plat_mem_read(holder + LIFE_COMPONENT, &comp, 8) || !comp ||
+        !plat_mem_read(comp, &cls, 8) || cls != MOD_MAIN_BASE + LIFE_CLASS || !plat_mem_read(comp + LIFE_CUR, &pc, 8) || !pc ||
+        !plat_mem_read(comp + LIFE_MAX, &pm, 8) || !pm || !plat_mem_read(pc + 8, &c, 4) || !plat_mem_read(pm + 8, &m, 4))
+        return 0;
+    if (m == 0 || m > 100000 || c > 100000) return 0;
+    *life = (int)c, *max = (int)m;
+    return 1;
+}
+
+int dbg_view_health(DbgHealth *out, int max, float range) {
+    static Entry copy[LIST_MAX];
+    float me[3];
+    int have_me = dbg_player_pos(me), n = 0, m;
+    plat_mutex_lock(&V.lock);
+    m = V.n;
+    memcpy(copy, V.list, (size_t)m * sizeof *copy);
+    plat_mutex_unlock(&V.lock);
+    for (int i = 0; i < m && n < max; i++) {
+        const Entry *e = &copy[i];
+        uint64_t cls = 0, name = 0;
+        DbgHealth *h = &out[n];
+        if (e->kind != DBG_VOL_ENEMY || !e->actor) continue;
+        if (!plat_mem_read(e->actor, &cls, 8) || cls != MOD_MAIN_BASE + ACTOR_CLASS) continue;
+        if (!plat_mem_read(e->actor + ACT_NAME, &name, 8) || name != e->name_ptr) continue;
+        if (!plat_mem_read(e->actor + ACT_POS, h->pos, sizeof h->pos) || !finite3(h->pos)) continue;
+        if (h->pos[0] == 0 && h->pos[1] == 0 && h->pos[2] == 0) continue;   // pooled, waiting at the origin
+        if (have_me && range > 0) {
+            float d[3] = {h->pos[0] - me[0], h->pos[1] - me[1], h->pos[2] - me[2]};
+            if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > range * range) continue;
+        }
+        if (!life_of(e->actor, &h->life, &h->max)) continue;
+        memcpy(h->name, e->name, sizeof h->name);
+        n++;
+    }
+    return n;
+}
+
+// The kinds the settings switch on (nx2navi.ini [debug] debug_view_walls, _loading, _triggers, _hidden, _death,
+// _health, _hookshot), parsed again when cfg_version changes; also starts or stops the helper thread's rescans.
 int dbg_view_kinds(void) {
     static unsigned seen = ~0u;
     static int kinds;
@@ -240,8 +290,13 @@ int dbg_view_kinds(void) {
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_LOADING") ? DBG_VOL_LOAD : 0) |
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_TRIGGERS") ? DBG_VOL_TRIGGER : 0) |
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_HIDDEN") ? DBG_VOL_HIDDEN : 0) |
-                (cfg_bool("NX2NAVI_DEBUG_VIEW_DEATH") ? DBG_VOL_DEATH : 0);
+                (cfg_bool("NX2NAVI_DEBUG_VIEW_DEATH") ? DBG_VOL_DEATH : 0) |
+                (cfg_bool("NX2NAVI_DEBUG_VIEW_HEALTH") ? DBG_VOL_ENEMY : 0);
         dbg_view_want(kinds);
+        // debug_hook.c, its own thread: the hookshot surfaces and the walls of the collision files
+        dbg_hook_want((cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT") ? DBG_HOOK_SURFACES : 0) |
+                      (cfg_bool("NX2NAVI_DEBUG_VIEW_WALLS") ? DBG_HOOK_WALLS : 0));
+        if (cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT")) kinds |= DBG_VOL_HOOK;
     }
     return kinds;
 }

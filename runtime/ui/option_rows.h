@@ -25,6 +25,10 @@ void opt_reserve_bottom(float h);
 float opt_bottom(void);
 // The next page's first row takes the controller's cursor (opening the menu, switching tabs).
 void opt_focus_first(void);
+// As opt_focus_first, but the next page keeps its place: the row that last had the cursor takes it again where it
+// stands, and the page stays scrolled as it was. Should that row be gone or out of view, the first row in view takes the
+// cursor; a page not shown before starts from its first row. Rows of opt_bind_row are not kept.
+void opt_focus_resume(void);
 // The row of key (or button id) takes the cursor, scrolled into view, when it is next drawn.
 void opt_focus_key(const char *key);
 // The next row is greyed out like one the environment fixes, with note under its label and in its description.
@@ -69,6 +73,14 @@ int opt_text_row(const char *id, const char *label, const char *value, const cha
 // the cheat files). opt_toggle_text shows on / off (value: shown instead, NULL for On / Off) and returns true on A, a
 // click, left or right; the caller changes its state. id: unique on the page, the environment check uses it.
 bool opt_toggle_text(const char *id, const char *label, const char *desc, bool on, const char *value = nullptr);
+// A row of the caller's own with n named values (the Debug tab's): left and right step through them (round past the
+// ends when wrap), A or a click opens a list of them all under the row, the value in effect marked and under the
+// cursor; A or a click there picks one, B, Escape or a click elsewhere closes it unchanged. cur: the index in effect, -1
+// none. shown: the row's value text (NULL: names[cur]). Returns the index picked or stepped to, or -1 while unchanged.
+int opt_text_choice(const char *id, const char *label, const char *const *names, int n, int cur, const char *desc,
+                    bool wrap = true, const char *shown = nullptr, const char *note = nullptr);
+// A choice's list is open, or B / Escape closed it this frame: those keys and the tab keys belong to it, not the menu.
+bool opt_list_open(void);
 void opt_group_text(const char *title);
 void opt_text_str(const char *text, bool warn = false);
 // lo..hi in steps of step (left and right held for a second go ten times as fast); fmt formats the value ("%.0f %%").
@@ -86,6 +98,8 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
 void opt_bind_header(UiTextId c0, UiTextId c1, UiTextId c2);
 int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *const cells[3], const bool enabled[3],
                  const char *note = nullptr);
+int opt_bind_row(const char *key, const char *label, const char *desc, const char *const cells[3], const bool enabled[3],
+                 const char *note = nullptr);   // the description as text (the Debug tab's hotkeys)
 
 // nx2navi.ini is written a moment after the last change (a held slider would rewrite it every frame) and when the menu
 // closes. opt_save_tick: on every frame the menu lays out; force: write now if anything is pending. 1 while a write is

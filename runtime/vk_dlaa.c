@@ -27,6 +27,7 @@
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
+#include "vk_debug_cam.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
 #include "vk_ffx.h"
@@ -709,8 +710,9 @@ static struct Size *size_for(VkCommandBuffer cb, uint32_t w, uint32_t h, uint32_
         !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->mask, &e->mask_mem, &e->mask_view) ||
         !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[0], &e->chars_mem[0], &e->chars_view[0]) ||
         !image2d(w, h, VK_FORMAT_R8_UNORM, u8, &e->chars[1], &e->chars_mem[1], &e->chars_view[1]) ||
-        !image2d(w, h, VK_FORMAT_R32_SFLOAT, u8, &e->dist[0], &e->dist_mem[0], &e->dist_view[0]) ||
-        !image2d(w, h, VK_FORMAT_R32_SFLOAT, u8, &e->dist[1], &e->dist_mem[1], &e->dist_view[1]))
+        // the distances are also copied out for the debug overlay (odepth_probe)
+        !image2d(w, h, VK_FORMAT_R32_SFLOAT, u8 | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &e->dist[0], &e->dist_mem[0], &e->dist_view[0]) ||
+        !image2d(w, h, VK_FORMAT_R32_SFLOAT, u8 | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, &e->dist[1], &e->dist_mem[1], &e->dist_view[1]))
         return NULL;
     VkImageMemoryBarrier2 ib[7];
     VkImage im[7] = {e->out, e->mv, e->mask, e->chars[0], e->chars[1], e->dist[0], e->dist[1]};
@@ -1342,6 +1344,97 @@ static void hl_destroy(void) {
     D.hl_view = VK_NULL_HANDLE, D.hl = D.hl_srgb = VK_NULL_HANDLE;
 }
 
+// ---- the scene's view distances for the debug overlay (vk_debug_cam.h vk_dbgcam_depth). While the overlay hides what
+// the scene covers, ODEPTH_H whole rows of the distances mv_pass wrote (evenly spaced over the view) are copied to a
+// host buffer after the pass; ODEPTH_SLOTS evaluations later, when the GPU has long been past that copy, the rows are
+// sampled down into a grid of ODEPTH_W by ODEPTH_H that the overlay reads. Whole rows keep the copy to one region per
+// row. Nothing is copied while the overlay has not asked within the last second.
+#define ODEPTH_W 480
+#define ODEPTH_H 270
+#define ODEPTH_SLOTS 4
+static struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    float *map;
+    uint32_t row;                          // floats per row in the buffer (the width of the image the rows came from)
+    uint32_t next;
+    uint8_t have[ODEPTH_SLOTS];
+    uint32_t slot_w[ODEPTH_SLOTS];         // the image's width when each slot was copied (0: not copied)
+    PlatMutex lock;
+    float grid[ODEPTH_W * ODEPTH_H];       // lock: the latest grid, 0 where the view shows sky
+    uint64_t grid_ns;                      // lock: when it was read back (0 never)
+    uint64_t asked_ns;                     // __atomic: the overlay's last request
+} OD = {.lock = PLAT_MUTEX_INIT};
+
+int vk_dbgcam_depth(float *out, int *gw, int *gh, unsigned long long max_age_ns) {
+    uint64_t now = plat_now_ns();
+    __atomic_store_n(&OD.asked_ns, now, __ATOMIC_RELAXED);
+    plat_mutex_lock(&OD.lock);
+    int ok = OD.grid_ns && now - OD.grid_ns <= max_age_ns;
+    if (ok) memcpy(out, OD.grid, sizeof OD.grid);
+    plat_mutex_unlock(&OD.lock);
+    *gw = ODEPTH_W, *gh = ODEPTH_H;
+    return ok;
+}
+
+static void odepth_free(void) {
+    const VkCtx *c = vk_ctx();
+    if (OD.buf) vmaDestroyBuffer(c->vma, OD.buf, OD.mem);
+    OD.buf = VK_NULL_HANDLE, OD.map = NULL, OD.row = 0;
+    memset(OD.have, 0, sizeof OD.have);
+}
+
+static void odepth_probe(VkCommandBuffer cb, const struct Size *e, uint32_t w, uint32_t h) {
+    uint64_t now = plat_now_ns(), asked = __atomic_load_n(&OD.asked_ns, __ATOMIC_RELAXED);
+    if (!asked || now - asked > 1000000000ull || !e->dist_ok || w < 2 || h < 2) {   // dist_ok: mv_pass wrote them
+        memset(OD.have, 0, sizeof OD.have);
+        return;
+    }
+    const VkCtx *c = vk_ctx();
+    if (OD.buf && OD.row < w) odepth_free();   // a wider picture: the rows no longer fit
+    if (!OD.buf) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                 .size = (VkDeviceSize)ODEPTH_SLOTS * ODEPTH_H * w * sizeof(float),
+                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(c->vma, &bi, &ai, &OD.buf, &OD.mem, &info) != VK_SUCCESS) {
+            OD.buf = VK_NULL_HANDLE;
+            return;
+        }
+        OD.map = info.pMappedData, OD.row = w;
+        memset(OD.have, 0, sizeof OD.have);
+    }
+    const size_t slot_floats = (size_t)ODEPTH_H * OD.row;
+    uint32_t s = OD.next++ % ODEPTH_SLOTS;
+    if (OD.have[s]) {   // copied ODEPTH_SLOTS evaluations ago: sample it down into the grid
+        vmaInvalidateAllocation(c->vma, OD.mem, s * slot_floats * sizeof(float), slot_floats * sizeof(float));
+        const float *rows = OD.map + s * slot_floats;
+        uint32_t sw = OD.slot_w[s];
+        plat_mutex_lock(&OD.lock);
+        for (int y = 0; y < ODEPTH_H; y++)
+            for (int x = 0; x < ODEPTH_W; x++) {
+                uint32_t px = (uint32_t)(((float)x + 0.5f) * (float)sw / ODEPTH_W);
+                OD.grid[y * ODEPTH_W + x] = rows[(size_t)y * OD.row + (px < sw ? px : sw - 1)];
+            }
+        OD.grid_ns = now;
+        plat_mutex_unlock(&OD.lock);
+    }
+    // the replay's viewports have negative heights: row 0 is the top of the view
+    VkBufferImageCopy r[ODEPTH_H];
+    for (int y = 0; y < ODEPTH_H; y++) {
+        uint32_t py = (uint32_t)(((float)y + 0.5f) * (float)h / ODEPTH_H);
+        r[y] = (VkBufferImageCopy){.bufferOffset = (s * slot_floats + (size_t)y * OD.row) * sizeof(float),
+                                   .bufferRowLength = OD.row,
+                                   .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                   .imageOffset = {0, (int32_t)(py < h ? py : h - 1), 0},
+                                   .imageExtent = {w, 1, 1}};
+    }
+    vkCmdCopyImageToBuffer(cb, e->dist[e->dist_cur ^ 1], VK_IMAGE_LAYOUT_GENERAL, OD.buf, ODEPTH_H, r);
+    OD.have[s] = 1, OD.slot_w[s] = w;
+}
+
 // The device is idle here. Release NGX features and parameters before their Vulkan resources, then shut down NGX even
 // if initialization succeeded but the layout check failed. The Linux core's Shutdown1 takes an extra output pointer
 // compared with the SDK's public wrapper; it reports the number of devices still using NGX.
@@ -1365,6 +1458,7 @@ void vk_dlaa_release(void) {
     if (D.mv_samp) vkDestroySampler(c->device, D.mv_samp, NULL);
     if (D.camb) vmaDestroyBuffer(c->vma, D.camb, D.camb_mem);
     if (D.mvm) vmaDestroyBuffer(c->vma, D.mvm, D.mvm_mem);   // mapped for good: the destroy unmaps it
+    odepth_free();
     if (R.pipe) vkDestroyPipeline(c->device, R.pipe, NULL);
     if (R.layout) vkDestroyPipelineLayout(c->device, R.layout, NULL);
     if (R.dsl) vkDestroyDescriptorSetLayout(c->device, R.dsl, NULL);
@@ -1661,6 +1755,9 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     VkImageView cv = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, t->level,
                                          t->base_layer, 1, 0);
     struct Snap *mk = D.mv_samp ? mask_pass(cb, cv, w, h) : NULL;
+    // mv_pass's distances, behind its barrier, for the debug overlay; queued before rec_drain below, after which NGX and
+    // FSR record into this command buffer themselves
+    if (mv == 1) odepth_probe(cb, e, w, h);
     int timed = T.on > 0 && T.used[T.slot];   // mv_pass began this frame's slot
     if (timed) times_mark(cb, T_DL0);
     uint64_t c0 = timed ? kern_now_ns() : 0;

@@ -5,7 +5,7 @@
 //
 // F1 or Esc on the keyboard and Minus and Plus held together (consumed in poll_merged, input_menu_gate in input.h) open it;
 // F1, Esc, B or "Continue" close it. While it is open the game gets no input (input_menu, input.h) and keeps running; the
-// cursor is released from the mouse camera. Tabs Screen, Game, Mods, Sound, Controls and Menu (L / R or Q / E switch
+// cursor is released from the mouse camera. Tabs Display, Game, Mods, Sound, Controls and Menu (ZL / ZR or Q / E switch
 // them) hold option rows (ui/option_rows.h) over the cfg settings and the mods folder (mods.h); the bottom row has
 // "Continue" and "Quit game".
 // Test hooks (ui/menu.cpp): NX2NAVI_MENU_TEST=<frame>[:<frames per page>] opens the menu at that presented frame and saves
@@ -25,6 +25,9 @@ extern "C" {
 // ---- state, any thread
 int menu_is_open(void);
 void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad; not before the game's first frame
+void menu_open_debug(void);               // the menu button (debug_menu_button): opens the menu on its Debug tab, or closes it
+void menu_save_settings_soon(void);       // a setting changed outside the menu (debug_binds.c): nx2navi.ini follows
+void menu_ask_restart(void);              // present path: the Restart confirmation opens (a save waits for it)
 void menu_perf_cycle(void);               // F10: the performance overlay off, fps, full
 
 // ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey; coordinates in pixels of the

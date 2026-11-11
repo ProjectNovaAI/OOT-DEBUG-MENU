@@ -13,6 +13,7 @@
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "debug_tools.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -21,6 +22,7 @@
 #include "input_ds3.h"
 #endif
 #include "nvn_api.h"
+#include "save_slots.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -821,40 +823,49 @@ static int ds3_primary(uint8_t pd[PAD_COUNT], int32_t raw[4], int sdl_pad) {
 }
 #endif
 
-static int pad_read_now(uint64_t *b, int32_t sl[2], int32_t sr[2]);
-
-// Under lock, state 1: the gamepad's buttons (ORed into *b) and sticks; 0 without one. While SDL is finding devices
-// again (sdl_enter) the answer is the last one read: what was held stays held for those moments.
-static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
-    static uint64_t last_b;
+static int pad_read_now(uint8_t pd[PAD_COUNT], int32_t sl[2], int32_t sr[2]);
+// The pad's buttons for the game's layout, less the physical buttons in drop (1 << PAD_ id: the ones bound to debug
+// hotkeys, dbg_bind_pads); *phys, when given, gets every physical button held. A poll that finds SDL busy reuses the
+// last reading.
+static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2], uint32_t drop, uint32_t *phys) {
+    static uint8_t last_pd[PAD_COUNT];
     static int32_t last_sl[2], last_sr[2];
     static int last_ok;
     if (sdl_enter()) {
-        uint64_t pb = 0;
+        uint8_t pd[PAD_COUNT] = {0};
         int32_t l[2] = {0, 0}, r[2] = {0, 0};
-        last_ok = pad_read_now(&pb, l, r);
+        last_ok = pad_read_now(pd, l, r);
         sdl_leave();
-        last_b = pb, last_sl[0] = l[0], last_sl[1] = l[1], last_sr[0] = r[0], last_sr[1] = r[1];
+        memcpy(last_pd, pd, sizeof pd);
+        last_sl[0] = l[0], last_sl[1] = l[1], last_sr[0] = r[0], last_sr[1] = r[1];
     }
-    if (last_ok) *b |= last_b, sl[0] = last_sl[0], sl[1] = last_sl[1], sr[0] = last_sr[0], sr[1] = last_sr[1];
-    return last_ok;
+    if (phys) *phys = 0;
+    if (!last_ok) return 0;
+    uint8_t pd[PAD_COUNT];
+    for (int p = 0; p < PAD_COUNT; p++) {
+        pd[p] = last_pd[p];
+        if (pd[p] && phys) *phys |= 1u << p;
+        if (drop >> p & 1) pd[p] = 0;
+    }
+    *b |= input_map_pad_buttons(pd, pad_layout_get());
+    sl[0] = last_sl[0], sl[1] = last_sl[1], sr[0] = last_sr[0], sr[1] = last_sr[1];
+    return 1;
 }
 
-static int pad_read_now(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
-    uint8_t pd[PAD_COUNT] = {0};
+// The physical buttons held (pd, by PAD_ id) and the sticks of the pad in use.
+static int pad_read_now(uint8_t pd[PAD_COUNT], int32_t sl[2], int32_t sr[2]) {
 #ifdef _WIN32
     int sdl = pad_physical(pd);
     uint8_t dd[PAD_COUNT] = {0};
     int32_t raw[4];
     if (ds3_primary(dd, raw, sdl)) {
-        *b |= input_map_pad_buttons(dd, pad_layout_get());
+        memcpy(pd, dd, sizeof dd);
         input_pad_stick(raw[0], raw[1], stick_dead_get(0), sl);
         input_pad_stick(raw[2], raw[3], stick_dead_get(1), sr);
         return 1;
     }
     if (!sdl) {
         if (!xinput_read(pd, raw)) return 0;
-        *b |= input_map_pad_buttons(pd, pad_layout_get());
         input_pad_stick(raw[0], raw[1], stick_dead_get(0), sl);
         input_pad_stick(raw[2], raw[3], stick_dead_get(1), sr);
         return 1;
@@ -862,7 +873,6 @@ static int pad_read_now(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
 #else
     if (!pad_physical(pd)) return 0;
 #endif
-    *b |= input_map_pad_buttons(pd, pad_layout_get());
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
     stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
@@ -896,14 +906,23 @@ int input_pad_stick_percent(double pct[2]) {
 }
 
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
-    uint64_t b = 0;
+    uint64_t b = 0, hotkeys = 0;
+    uint32_t phys = 0;   // the pad's physical buttons held, for the debug hotkeys (debug_binds.c)
+    int keys_polled = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) {
         binds_refresh();
-        if (state == 1) pad_read(&b, sl, sr);
-        int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
+        // the menu button (debug_menu_button) never reaches the game, except in the game's pause menu: the flag is
+        // read only once the button was held at the last poll, so the first poll of a press there drops it too
+        static uint32_t last_phys;
+        int menu_pad = dbg_menu_button();
+        uint32_t drop = dbg_bind_pads();
+        if (menu_pad && (!(last_phys >> menu_pad & 1) || menu_is_open() || !dbg_game_menu_open())) drop |= 1u << menu_pad;
+        if (state == 1) pad_read(&b, sl, sr, drop, &phys);
+        last_phys = phys;
+        int pad_used = b || phys || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
@@ -930,6 +949,9 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 if (!cap || mouse_ignore[k]) down[k] = 0;
             }
             was_captured = cap;
+            // the debug hotkeys first: a key bound to one is cleared, so the game does not see it
+            hotkeys = dbg_bind_poll(phys, down, menu_is_open());
+            keys_polled = 1;
             b |= input_map_buttons(down);
             int32_t k[2];
             walk_get();
@@ -958,18 +980,28 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         // A press or a full-way stick on the pad wins over keys held in the same poll: the player picked it up
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
+        if (!keys_polled) hotkeys = dbg_bind_poll(phys, NULL, menu_is_open());
     }
     script_apply(&b, sl, sr);
     rec_apply(b, sl, sr);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
-    static int combo_held;
+    static int combo_held, menu_pad_held;
+    // The menu button opens the Debug tab, and closes the menu when the menu has no use for it (dbg_menu_button_closes:
+    // D-pad right changes values there). In the game's pause menu it is the game's.
+    int mpad = dbg_menu_button(), mdown = mpad && (phys >> mpad & 1);
+    int mon = mpad && (menu_is_open() ? dbg_menu_button_closes(mpad) : !mdown || !dbg_game_menu_open());
+    int open_debug = input_debug_gate(&menu_pad_held, mon, mdown);
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
     int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
     plat_mutex_unlock(&lock);
+    // on the game's title screen L and R choose the save profile (save_title.c)
+    if (!menu_is_open()) save_title_input(&b);
     if (toggle) menu_toggle();
+    else if (open_debug) menu_open_debug();
+    dbg_bind_run(hotkeys);
     if (overlay) menu_perf_cycle();
     stick_bits(&b, sl[0], sl[1], B_SL_LEFT);
     stick_bits(&b, sr[0], sr[1], B_SR_LEFT);
@@ -1044,7 +1076,7 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) binds_refresh();
-    int ok = state == 1 && pad_read(&b, sl, sr);
+    int ok = state == 1 && pad_read(&b, sl, sr, 0, NULL);
     plat_mutex_unlock(&lock);
     *buttons = b;
     *lx = sl[0];

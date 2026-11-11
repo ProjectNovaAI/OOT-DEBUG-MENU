@@ -1,5 +1,5 @@
 """Build and run tests/save_share_check.c: the game's side of a shared save without the game. runtime/fs_host.c,
-save_share.c and save_zip.c with the rest of the runtime stubbed, each run of the program one start of the game on a
+save_share.c, save_zip.c and save_slots.c with the rest of the runtime stubbed, each run of the program one start of the game on a
 profile folder made here:
 
 - export: the zip holds the save the game would load next (a finished commit waiting in save-tx before the committed
@@ -8,6 +8,11 @@ profile folder made here:
 - import: zips the launcher exports wait in profile/save-import; at the next start the save the game would load goes
   to saves/backup <time> beside the program, the import becomes the save (the finished commit it replaces too), and
   the start says where the old save went; a second start changes nothing
+- live import: clean mounted saves replace the committed and working copies and deliver their profile tag; an
+  unmounted save, an open writer or uncommitted changes refuse the import without changing the committed save
+- Save As: adopts another profile without replacing the running save, snapshots the previous profile, preserves
+  the destination archive as a manual backup, and refuses busy saves, pending imports and invalid destinations
+- profile presence: settings and captions alone do not count as a playable save
 - refusals (no manifest, another game, a newer format, a path outside the save, a damaged member, no save files):
   nothing waits and the save stays; Cancel drops a waiting import
 
@@ -58,7 +63,7 @@ def main():
     libs = ['-lbcrypt', '-lws2_32', '-lwinmm', '-lpsapi', '-lshell32', '-lole32', '-luser32'] if os.name == 'nt' else \
         ['-lpthread', '-ldl', '-lm']
     subprocess.check_call([compiler(), '-std=gnu11', '-O1', '-g', '-w', '-I', str(rt), str(ROOT / 'tests' /
-                           'save_share_check.c'), *(str(rt / f) for f in ('fs_host.c', 'save_share.c', 'save_zip.c',
+                           'save_share_check.c'), *(str(rt / f) for f in ('fs_host.c', 'save_share.c', 'save_zip.c', 'save_slots.c',
                                                                            *plat)), '-o', str(exe), *libs], env=env)
     bad = 0
 
@@ -187,6 +192,108 @@ def main():
     check(run('import', profile, shared).endswith('waiting 1'), 'import again')
     check(run('cancel', profile) == 'result 0 waiting 0', 'cancel')
     check(run('start', profile) == 'done  waiting 0' and tree(acct) == shared_save, 'a cancelled import stays out')
+
+    # Live import: mounted clean saves change both committed and working copies. Unsafe states retain the import.
+    for state in ('clean', 'unmounted', 'writer', 'dirty', 'race'):
+        live = work / ('live-' + state)
+        live_acct = live / 'save' / ACCOUNT
+        for name, data in mine.items():
+            (live_acct / name).parent.mkdir(parents=True, exist_ok=True)
+            (live_acct / name).write_bytes(data)
+        line = run('live', live, shared, state)
+        if state in ('clean', 'race'):
+            check(line == 'result 0 waiting 0 tagged 1 tag profile:Live', f'live clean: {line}')
+            check(tree(live_acct) == shared_save, 'live committed save replaced')
+            expected_work = dict(shared_save, **({'option.sav': shared_save['option.sav'][:3]} if state == 'race' else {}))
+            check(tree(live / 'save-tx' / 'work') == expected_work, 'live mounted working copy replaced; racing writer uses new copy')
+            check(not (live / 'save-import.tag').exists(), 'live import tag consumed')
+            check(not (live / 'save-tx' / 'work-old').exists() and not (live / 'save-tx' / 'work-next').exists(),
+                  'live temporary working copies cleaned')
+            check(any(tree(d) == mine for d in (work / 'saves').iterdir()), 'live replaced save backed up')
+        else:
+            check(line == 'result -1 waiting 1 tagged 0 tag', f'live {state}: {line}')
+            check(tree(live_acct) == mine, f'live {state} leaves committed save unchanged')
+            check(tree(live / 'save-import') == shared_save, f'live {state} retains staged import')
+            check((live / 'save-import.tag').read_text() == 'profile:Live', f'live {state} retains import tag')
+
+    # Save As adopts a destination while retaining both profiles' prior saves and the running working copy.
+    profiles = work / 'saves' / 'profiles'
+    profiles.mkdir(parents=True, exist_ok=True)
+    for state in ('clean', 'empty', 'same', 'writer', 'dirty', 'pending', 'missing', 'invalid'):
+        old_name, dest_name = 'Old-' + state, 'Dest-' + state
+        old = profiles / old_name
+        old.mkdir()
+        dest = profiles / dest_name
+        if state not in ('missing', 'invalid'):
+            dest.mkdir()
+            if state not in ('empty', 'same'):
+                shutil.copy2(shared, dest / 'progress.zip')
+        (profiles / 'active.txt').write_text(old_name)
+        session = work / ('adopt-' + state)
+        session_acct = session / 'save' / ACCOUNT
+        for name, data in mine.items():
+            (session_acct / name).parent.mkdir(parents=True, exist_ok=True)
+            (session_acct / name).write_bytes(data)
+        target = old_name if state == 'same' else '../outside' if state == 'invalid' else dest_name
+        before_dest = tree(dest)
+        line = run('adopt', session, target, state, shared)
+        accepted = state in ('clean', 'empty', 'same')
+        expected_active = dest_name if state in ('clean', 'empty') else old_name
+        check(line == f'result {0 if accepted else -1} active {expected_active}', f'adopt {state}: {line}')
+        check(tree(session_acct) == mine, f'adopt {state} leaves committed current save unchanged')
+        expected_work = dict(mine, **({'uncommitted.sav': b''} if state == 'dirty' else {}))
+        check(tree(session / 'save-tx' / 'work') == expected_work, f'adopt {state} leaves mounted session unchanged')
+        if state in ('clean', 'empty'):
+            with zipfile.ZipFile(old / 'progress.zip') as z:
+                check({n[5:]: z.read(n) for n in z.namelist() if n.startswith('save/')} == mine,
+                      f'adopt {state} snapshots previous profile')
+            check(not (dest / 'progress.zip').exists(), f'adopt {state} destination uses current session')
+            if state == 'clean':
+                backups = list((dest / 'manual').glob('*.zip'))
+                check(len(backups) == 1 and backups[0].read_bytes() == Path(shared).read_bytes(),
+                      'adopt preserves destination archive byte for byte as manual save')
+        else:
+            check(tree(dest) == before_dest, f'adopt {state} leaves destination unchanged')
+            check(not (old / 'progress.zip').exists(), f'adopt {state} does not snapshot on refusal or same profile')
+
+    # Archive existence is insufficient: settings-only profiles and misleading member names have no playable save.
+    for name, members, expected in (
+        ('Settings-only', {'save/account.sav': b'a', 'save/option.sav': b'o'}, 0),
+        ('Caption-only', {'save/slot_00/caption.sav': b'c'}, 0),
+        ('Wrong-slot', {'save/slot_x0/progress.sav': b'p', 'save/slot_00/progress.sav.extra': b'p'}, 0),
+        ('Playable', {'save/slot_05/progress.sav': b'p'}, 1),
+    ):
+        folder = profiles / name
+        folder.mkdir()
+        archive = zip_of(name + '.zip', members)
+        shutil.copy2(archive, folder / 'progress.zip')
+        check(run('has-save', profile, name) == f'has {expected}', f'has-save {name}')
+    check(run('has-save', profile, 'Absent') == 'has 0', 'missing archive has no save')
+
+    # An imported identity cannot be consumed until active.txt is durable. A directory in its place
+    # makes atomic replacement fail consistently, without relying on platform-specific permissions.
+    recovering = work / 'recover-marker'
+    recovering.mkdir()
+    recovery_target = profiles / 'Recovered'
+    recovery_target.mkdir()
+    recovery_archive = recovery_target / 'progress.zip'
+    shutil.copy2(shared, recovery_archive)
+    marker = profiles / 'active.txt'
+    marker.unlink()
+    marker.mkdir()
+    completed = recovering / 'save-import.tag.done'
+    completed.write_text('profile:Recovered')
+    check(run('active', recovering).startswith('result 0 '), 'active marker failure reported')
+    check(completed.read_text() == 'profile:Recovered', 'active marker failure retains completed identity')
+    check(recovery_archive.read_bytes() == Path(shared).read_bytes(), 'active marker failure retains target archive')
+    marker.rmdir()
+    marker.write_text('Previous')
+    # A crash before the completed-tag rename leaves .tag, with no staged import. Recovery accepts that identity too.
+    completed.rename(recovering / 'save-import.tag')
+    check(run('active', recovering) == 'result 1 active Recovered', 'identity recovered after marker becomes writable')
+    check(marker.read_text() == 'Recovered', 'recovered marker is durable')
+    check(not (recovering / 'save-import.tag').exists(), 'identity acknowledged after marker persisted')
+    check(not recovery_archive.exists(), 'target archive dropped only after durable marker')
 
     print('save_share_check:', 'FAILED' if bad else 'ok')
     return 1 if bad else 0

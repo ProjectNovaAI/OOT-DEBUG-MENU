@@ -201,7 +201,7 @@ static void scene_menu(float w, float h, float scale, ImFont *title, bool first)
             ImGui::Spacing();
             opt_reserve_bottom(bottom);
             if (first) opt_focus_first();
-            // the Screen tab's first rows, as menu.cpp tab_screen shows them
+            // the Display tab's first rows, as menu.cpp tab_screen shows them
             opt_begin("##screen", scale);
             opt_toggle("NX2NAVI_FULLSCREEN", UI_MENU_FULLSCREEN, UI_MENU_FULLSCREEN_DESC);
             static const char *const sizes[] = {"", "1920x1080"};

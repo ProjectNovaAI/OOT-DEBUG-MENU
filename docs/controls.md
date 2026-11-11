@@ -91,10 +91,15 @@ The game's *Swap Jump Controls* option trades B and X (jump on B, put away on X)
 | F1 or Esc | Minus and Plus together | open or close the settings menu; the game gets no input while it is open |
 | F10 | L3 + R3 (both stick clicks) | performance overlay: off, frame rate, full panel |
 | F11 | | borderless fullscreen on or off, saved to `nx2navi.ini` |
+| Q, R (the game's L and R) | LB, RB | on the game's title screen and its Load page: change between save profiles, the one in use shown at the bottom (`debug_title_profiles`, on by default); saved profiles switch immediately; to or from an empty profile A confirms a restart and B cancels |
+| Q, R (the game's L and R) | LB, RB | on the Save screen: choose the destination profile; A saves the current session there and makes it active, B keeps the current profile |
+| | D-pad right | open the settings menu on its Debug tab (`debug_menu_pad`, on by default; `debug_menu_button` picks another button). B closes it; a shoulder button, a stick click or a paddle chosen as the button closes it too. In the game's pause menu the button is the game's |
 
 The window opens on the monitor `NX2NAVI_MONITOR` (`monitor` in `nx2navi.ini`) names, and F11 fullscreen covers the monitor the window is on. `nx2navi.exe --list-monitors` prints each monitor's index, name (on Windows its device name too), desktop rectangle, primary flag and DPI without game files; `nx2navi.exe --monitor <value>` sets `NX2NAVI_MONITOR` for one run and wins over the file. The value is `auto` (default), `primary`, an index from the list (counting from 1), or part of a monitor name (on Windows also a device name such as `display3`; on Linux the name carries the connector, such as `dp-2`); when nothing matches, the log lists the monitors and the window is placed as with `auto`. On Wayland a window cannot place itself: only fullscreen (`fullscreen = 1`) opens on the chosen monitor, and a windowed window opens where the compositor puts it.
 
-The Minus+Plus combo never reaches the game. In the menu the arrow keys, the D-pad or the left stick move, Enter or A selects, Q and E or L and R switch tabs, Esc or B goes back (Switch button names, as in the table above). With the mouse, a click on a row selects it and a setting changes on the two framed arrows beside its value (held, an arrow repeats); a click anywhere else on the row changes nothing.
+The Minus+Plus combo never reaches the game. In the menu the arrow keys, the D-pad or the left stick move, Enter or A selects, Q and E, L and R (LB and RB) or ZL and ZR (LT and RT) switch tabs, Esc or B goes back (Switch button names, as in the table above). With the mouse, a click on a row selects it and a setting changes on the two framed arrows beside its value (held, an arrow repeats); a click anywhere else on the row changes nothing.
+
+Hotkeys for the debug tools (fly, hover, the overlays, reload area and more) are bound on the Debug tab, two keys and a controller button each ([debug-menu.md](debug-menu.md), "Hotkeys"). A key or button bound there no longer reaches the game, outside its pause menu.
 
 ## Audio output
 

@@ -1,7 +1,7 @@
 // The debug tools' frame hook (recomp/patches-v111.txt, set dbgframe): the framework's per-frame update
 // (main+0x6e6be0) calls the patch page at +0xf70 in place of its `ldr x8, [x0, #0xa8]`. The host function makes that
-// load and then runs debug_warp.c dbg_game_frame on the game thread, where guest functions may be called. Built per install, as
-// its address depends on the version's patch page.
+// load and then runs debug_warp.c dbg_game_frame on the game thread, where guest functions may be called. Also the
+// Force age hook (set dbgage, below). Built per install, as its address depends on the version's patch page.
 #include "debug_tools.h"
 #include "host.h"
 
@@ -18,4 +18,52 @@ static void debug_frame(Cpu *c) {
 }
 
 __attribute__((constructor)) static void debug_frame_register(void) { rt_register_host(HOST_DEBUG_FRAME, debug_frame); }
+
+// Force age (set dbgage). main+0x943550, which builds an actor's resource set, calls the patch page at +0xf60 in place
+// of its `ldr x8, [x0, #0x20]`, with the set in x0: the host function makes that load after debug_warp.c
+// dbg_resource_set has noted the player's set. main+0x945610, which gives a set its age and fills in that age's
+// resources, calls +0xf50 in place of its `mov w20, w1`, with the set in x0 and the area's age in w1: the host function
+// puts the age dbg_resource_age returns in both w1 and w20, which the rest of the function reads.
+#define HOST_DEBUG_RESOURCE_SET (RT_PATCH_PAGE + 0xf60)
+#define HOST_DEBUG_RESOURCE_AGE (RT_PATCH_PAGE + 0xf50)
+
+static void debug_resource_set(Cpu *c) {
+    dbg_resource_set(c->x[0]);
+    c->x[8] = LD64(c->x[0] + 0x20);
+}
+
+static void debug_resource_age(Cpu *c) {
+    uint32_t child = dbg_resource_age(c->x[0], (uint32_t)c->x[1] & 1);
+    c->x[1] = child;
+    c->x[20] = child;
+}
+
+__attribute__((constructor)) static void debug_resource_set_register(void) {
+    rt_register_host(HOST_DEBUG_RESOURCE_SET, debug_resource_set);
+    rt_register_host(HOST_DEBUG_RESOURCE_AGE, debug_resource_age);
+}
+// The model's skeleton world-matrix thunk takes the embedded ModelObj (FModel + 0xd8). The original thunk loads
+// its skeleton pointer and tail-calls the world's scale-mode dispatcher. The host wrapper keeps that call's ABI,
+// including the caller's link register, and restores local translations after the resulting world pose is ready.
+#define HOST_DEBUG_LANK (RT_PATCH_PAGE + 0xf40)
+#define SKELETON_WORLD 0x70014e01c0ull
+static void debug_lank_world(Cpu *c) {
+    uint64_t object = c->x[0], lr = c->x[30], matrix = c->x[1];
+    int changed = dbg_lank_before(object - 0xd8);
+    uint64_t skeleton = LD64(object + 0x20);
+    rt_call(c, SKELETON_WORLD, 2, skeleton, matrix);
+    if (changed) dbg_lank_after();
+    c->x[30] = lr;
+}
+__attribute__((constructor)) static void debug_lank_register(void) { rt_register_host(HOST_DEBUG_LANK, debug_lank_world); }
+
+// Items at any age (debug_ages.c): the pause menu item table's entry reader (main+0x33a2500) calls +0xf30 in place of
+// its closing `mov w0, w21`, with the entry it has just read in x20; the host function notes it, then makes the move.
+#define HOST_DEBUG_POUCH_ENTRY (RT_PATCH_PAGE + 0xf30)
+static void debug_pouch_entry(Cpu *c) {
+    dbg_pouch_entry(c->x[20]);
+    c->x[0] = (uint32_t)c->x[21];
+}
+__attribute__((constructor)) static void debug_pouch_register(void) { rt_register_host(HOST_DEBUG_POUCH_ENTRY, debug_pouch_entry); }
+
 #endif

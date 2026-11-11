@@ -77,6 +77,14 @@ int fs_save_import_stage(int count, const char *const *rel, const uint8_t *const
 int fs_save_import_waiting(void);                          // 1 while an import waits for the next start (0 before
                                                            // the first storage use)
 int fs_save_import_cancel(void);                           // drops it; 0 on success
+int fs_save_import_tag(const char *text);                  // a line that goes with the import waiting; 0 on success
+int fs_save_import_tag_peek(char *out, size_t cap);        // completed import identity, retained until acknowledged
+int fs_save_import_tag_ack(const char *text);             // remove that completed identity only; 0 on success
+int fs_save_import_tag_take(char *out, size_t cap);        // 1 and that line once a start made its import the save
+// The import waiting becomes the save now, while the game runs (the title screen's profile switch, save_title.c):
+// 0 done; -1 nothing changed (the game writes its save, or no import waits); 1 the committed save changed but the
+// working copy could not, so the game must restart.
+int fs_save_import_now(void);
 const char *fs_save_import_done(void);                     // the backup of the save an import replaced at this start,
                                                            // "-" when there was none, "" when no import ran
 // A copy of the newest committed save (every slot) in <profile>/<folder>/<UTC time>/, flushed, taken while no Commit

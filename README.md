@@ -5,7 +5,8 @@
 > [!NOTE]
 > **This is a fork of [NX2navi](https://github.com/tangerineturtle1/NX2navi) that adds a live in-game debug menu** for speedrun
 > practice, testing and bug hunting. The game, build and licence are otherwise unchanged. Everything below the line is the
-> original project's README. Details: [docs/debug-menu.md](docs/debug-menu.md).
+> original NX2navi README from before the fork: it describes the port itself and is not part of this fork's debug menu
+> changes. Details of the debug menu: [docs/debug-menu.md](docs/debug-menu.md).
 
 ### What this fork adds
 
@@ -14,27 +15,92 @@
 - **Player**: live position readout, teleport (the game's own actor warp, so it sticks), 4 saved position slots
 - **Fly (no clip)** with the stick, Space/X up and Ctrl/B down, adjustable speed; **hover** (walk on air at a fixed height); **infinite Hover Boots**
 - **Warp to every area, as child or adult**: 135 entrances in all areas. "Warp now" drops the player into the nearest loading zone and sends that area change to the chosen place, or arm a warp for the next area change the game makes (door, loading zone, warp song, void out)
-- **Switch between child and adult** anywhere the area has both versions, staying at the same entrance; an "age flag on arrival" switch for glitch hunting
+- **Switch between child and adult** anywhere the area has both versions, staying at the same entrance; **Force age** makes the player child or adult on arrival anywhere, body included, for glitch hunting
 - **Reload area** (menu, console or F12): back into the area at the entrance you came in by, to retry a trick or a route
 - **Fog off**: removes the volumetric fog live (the haze of the forests and the field), from the menu or the console
 - **Plant draw distance**: grass, bushes, flowers and low trees drawn up to 8 times further out (or less, for speed)
-- **Best quality** in one press: 4K picture, full-size 3D scene with DLAA (or FSR 3.1 Native AA), sharpest shadows, 16x texture filtering, full texture detail; and back to the game's quality
-- **See the invisible**: invisible walls, loading zones, trigger zones (each named with what it triggers), hidden things (grottos, Gold Skulltulas, heart pieces, chests) and **death barriers** (the kill plane under the world, lava surfaces, bottomless pits, quicksand) drawn over the game and through walls, as wireframe, solid colour or both, with a neon colour per kind
+- **See the invisible**: invisible walls (placed ones and the ones in the level's collision), loading zones, trigger zones (each named with what it triggers), hidden things (grottos, Gold Skulltulas, heart pieces, chests) and **death barriers** (the kill plane under the world, lava surfaces, bottomless pits, quicksand) drawn over the game and through walls, as wireframe, solid colour or both, with a neon colour per kind
+- **Hookshot targets**: the surfaces the hookshot sticks to (wooden walls and posts, ivy, ladders, nets) and the targets themselves, read from the game's own collision files
+- **Enemy health** shown above every enemy nearby
 - **Game speed**: slow motion and fast forward from 0.05x to 8x
 - **Speedrun timer**: in-game time without the loading screens plus real time, splits on every area change or by hand (F3), compared with your best run in green/red, auto-start when a save loads; switched on in the settings (`debug_igt`)
 - **Timer** with laps, and a **speed** readout
 - **On-screen overlay**: position, speed, timer, the area and the entrance you came in by, and a live **input display** drawn as a Switch Pro Controller, which switches to a keyboard and mouse view when those were used last
 - **Keyboard hotkeys** with the menu closed: F2 start/stop the speedrun timer, F3 split, F4 reset, F5 save, F6 load, F7/F8 game speed, F9 timer, F12 reload area
+- **Your own hotkeys**: bind fly, hover, invulnerable, infinite magic and items, the overlays, reload area, switch age and more to two keys and a controller button each; D-pad up and down can be taken over from the game
+- **D-pad right opens the menu** on the Debug tab (the game only talks to Navi with it); any other controller button can be chosen instead, or none. LB and RB (or LT and RT) turn the menu's pages. In the game's pause menu the button stays the game's
 - **Memory scanner** (find and edit values) and a **remote console** for inspecting the running game (`NX2NAVI_DEBUG_REMOTE=1`), with hardware watchpoints and execution breakpoints
-- **Health**: live health readout, invulnerable (always full), hold health at a chosen number of hearts, refill, set to a quarter heart, add or remove heart containers
+- **Save profiles and manual saves**: as many profiles as you like, each with its own save (a new one starts a new game), and any number of manual saves per profile, named with the date, time and area; switching or loading restarts the game into it, and the save it replaces is backed up. On the game's title screen and its Load page LB and RB (Q and R on the keyboard) change between profiles, with the profile in use shown; profiles with saved slots switch and refresh the list immediately; switches to or from an empty profile ask A to confirm a restart (B cancels). On the Save screen the same buttons choose where to save your current session; that profile becomes active, with its previous progress kept as a manual backup
+- **Change monitor**: logs every change to the game's flags and every actor that appears or disappears, as it happens, for glitch and arbitrary code execution hunting
+- **Health**: live health readout, invulnerable (always full; it, infinite magic and infinite items stay on from one start to the next), hold health at a chosen number of hearts, refill, set to a quarter heart, add or remove heart containers
 - **Give and remove items**: every sword, shield, tunic, boot, item, upgrade, stone, medallion, song and mask, one by one or a whole group at once
 - **Magic and items**: no magic, single or double magic meter, magic readout and fill, infinite magic, infinite items (rupees and ammunition never run out), and live counts you can change for rupees, arrows, bombs, bombchus, Deku sticks, nuts and seeds, magic beans, Gold Skulltula tokens and each dungeon's small keys
 - **Everything here is a work in progress and still being worked on**; features may be incomplete or change.
 - **Flag editing** from the remote console: any bool, int, float, enum, string or vector flag by name
-- *Being built next*: the level collision mesh in the overlay, scenery model draw distance, more tools for speedrunners and glitch hunters
+- *Being built next*: scenery model draw distance, more tools for speedrunners and glitch hunters
 <!-- DEBUG-MENU-FEATURES:END -->
 
+### Controls
+
+**Playing** (the defaults; every one can be remapped on the Controls tab of the menu):
+
+| Switch | Gamepad (by position) | Keyboard and mouse | In the game |
+|---|---|---|---|
+| Left stick | left stick | W A S D | move |
+| Right stick | right stick | mouse, arrow keys | camera |
+| A | right face button | E, Left Shift | talk, open, pick up, climb, grab; held, dash |
+| B | bottom face button | Left Ctrl, Backspace | put away, cancel, back |
+| X | top face button | Space | jump |
+| Y | left face button | left mouse button | sword |
+| ZL | left trigger | right mouse button, Z | target |
+| ZR | right trigger | F, X | use the selected item |
+| L | left shoulder (LB) | Q | quick-select items; previous page in the game's menus |
+| R | right shoulder (RB) | R | quick-select items; next page in the game's menus |
+| Left stick click | left stick click | V | |
+| Right stick click | right stick click | C, middle mouse button | camera behind Link |
+| D-pad left | D-pad left | 1, O | ocarina |
+| D-pad up | D-pad up | 2 | accessory on or off |
+| D-pad right | D-pad right | 3, N | Navi |
+| D-pad down | D-pad down | 4 | change boots |
+| Plus | Start | Tab | pause menu: items, equipment, collection, system |
+| Minus | Back | M | map |
+
+**The settings menu and the window**:
+
+| Keyboard | Gamepad | What it does |
+|---|---|---|
+| F1 or Esc | Minus and Plus together | open or close the settings menu |
+| | D-pad right (choosable) | open the menu on its Debug tab; B closes it (in the game's pause menu the button stays the game's) |
+| Q and E | LB and RB, LT and RT | previous and next page of the menu |
+| arrow keys, Enter, Esc | D-pad or left stick, A, B | move, select, back |
+| F10 | both stick clicks | performance overlay |
+| F11 | | borderless fullscreen |
+
+**Debug tools** (with the menu closed):
+
+| Keyboard | What it does |
+|---|---|
+| F2, F3, F4 | speedrun timer: start or pause, split, reset |
+| Shift+F2, Shift+F3 | pause and resume the game, one frame forward |
+| F5, F6 | save the position to slot 1, go back to it |
+| F7, F8 | game speed down, up |
+| F9 | timer start or stop |
+| F12 | reload the area at the entrance you came in by |
+
+The F keys work once *Keyboard hotkeys* is on in the Debug tab. The controller button that opens the menu is D-pad
+right unless another is picked in the *Hotkeys* group (*Open the menu*); *Controller button opens the menu* switches it
+off, and the game then has D-pad right (Navi) back. While flying: the left stick moves where the camera
+looks, X (Space) rises, B (Left Ctrl) sinks and A (Left Shift) held is three times faster. Your own hotkeys for fly,
+hover, invulnerable, the overlays and the rest are set in the Debug tab's *Hotkeys* group: two keys and a controller
+button for each. A key or button bound there no longer reaches the game, except in its pause menu, so D-pad up or
+down can be given to a hotkey; the accessory and the boots can still be put on from the equipment menu. Full list:
+[docs/controls.md](docs/controls.md) and [docs/debug-menu.md](docs/debug-menu.md).
+
 ---
+
+> [!NOTE]
+> **The original NX2navi description, from before the fork.** Everything from here down was written for the NX2navi
+> project and describes the port itself. It is not part of this fork's debug menu changes.
 
 # NX2navi
 

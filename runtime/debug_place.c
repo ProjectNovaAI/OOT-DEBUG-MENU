@@ -14,6 +14,7 @@
 #include "debug_tools.h"
 #include "fs.h"
 #include "host.h"
+#include "platform/platform.h"
 
 #define MAX_RAW (64u << 20)
 
@@ -49,23 +50,49 @@ static int sarc_member(const uint8_t *p, size_t n, const char *name, size_t *at,
     return 0;
 }
 
-// The stage files' dictionary, made once.
-static ZSTD_DDict *stage_dict(void) {
-    static ZSTD_DDict *dd;
-    static int tried;
-    if (tried) return dd;
-    tried = 1;
+// A dictionary of Pack/ZsDic.pack.zs by its member name ("bcett.byml.zsdic" for the stage files, "zs.zsdic" for the
+// collision files), made once each; NULL when it is not there.
+static ZSTD_DDict *zs_dict(const char *member) {
+    static const char *const names[] = {"bcett.byml.zsdic", "zs.zsdic"};
+    static ZSTD_DDict *dd[2];
+    static int tried[2];
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    int k = !strcmp(member, names[1]);
+    if (!k && strcmp(member, names[0])) return NULL;
+    plat_mutex_lock(&lock);
+    if (!tried[k]) {
+        tried[k] = 1;
+        uint64_t zn = 0;
+        uint8_t *z = romfs_load("Pack/ZsDic.pack.zs", &zn), *dics = NULL;
+        unsigned long long dn = z ? ZSTD_getFrameContentSize(z, (size_t)zn) : ZSTD_CONTENTSIZE_ERROR;
+        size_t at, size;
+        if (dn != ZSTD_CONTENTSIZE_UNKNOWN && dn != ZSTD_CONTENTSIZE_ERROR && dn <= MAX_RAW &&
+            (dics = malloc((size_t)dn)) && ZSTD_decompress(dics, (size_t)dn, z, (size_t)zn) == dn &&
+            sarc_member(dics, (size_t)dn, member, &at, &size))
+            dd[k] = ZSTD_createDDict(dics + at, size);
+        free(dics);
+        free(z);
+    }
+    plat_mutex_unlock(&lock);
+    return dd[k];
+}
+
+uint8_t *dbg_romfs_unzs(const char *path, const char *dict, size_t *n_out) {
+    ZSTD_DDict *dd = zs_dict(dict);
+    *n_out = 0;
+    if (!path || !dd) return NULL;
     uint64_t zn = 0;
-    uint8_t *z = romfs_load("Pack/ZsDic.pack.zs", &zn), *dics = NULL;
-    unsigned long long dn = z ? ZSTD_getFrameContentSize(z, (size_t)zn) : ZSTD_CONTENTSIZE_ERROR;
-    size_t at, size;
-    if (dn != ZSTD_CONTENTSIZE_UNKNOWN && dn != ZSTD_CONTENTSIZE_ERROR && dn <= MAX_RAW && (dics = malloc((size_t)dn)) &&
-        ZSTD_decompress(dics, (size_t)dn, z, (size_t)zn) == dn &&
-        sarc_member(dics, (size_t)dn, "bcett.byml.zsdic", &at, &size))
-        dd = ZSTD_createDDict(dics + at, size);
-    free(dics);
+    uint8_t *z = romfs_load(path, &zn), *raw = NULL;
+    unsigned long long rn = z ? ZSTD_getFrameContentSize(z, (size_t)zn) : ZSTD_CONTENTSIZE_ERROR;
+    if (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn <= MAX_RAW && (raw = malloc((size_t)rn))) {
+        ZSTD_DCtx *dc = ZSTD_createDCtx();
+        size_t got = dc ? ZSTD_decompress_usingDDict(dc, raw, (size_t)rn, z, (size_t)zn, dd) : 0;
+        ZSTD_freeDCtx(dc);
+        if (ZSTD_isError(got) || got != rn) free(raw), raw = NULL;
+    }
     free(z);
-    return dd;
+    if (raw) *n_out = (size_t)rn;
+    return raw;
 }
 
 // The romfs-relative path of the file whose name is `name`, searched over the index (the area's folder is not always
@@ -83,21 +110,7 @@ static const char *find_file(const char *name) {
 }
 
 static uint8_t *load_stage(const char *file, size_t *n_out) {
-    const char *path = find_file(file);
-    ZSTD_DDict *dd = stage_dict();
-    if (!path || !dd) return NULL;
-    uint64_t zn = 0;
-    uint8_t *z = romfs_load(path, &zn), *raw = NULL;
-    unsigned long long rn = z ? ZSTD_getFrameContentSize(z, (size_t)zn) : ZSTD_CONTENTSIZE_ERROR;
-    if (rn != ZSTD_CONTENTSIZE_UNKNOWN && rn != ZSTD_CONTENTSIZE_ERROR && rn <= MAX_RAW && (raw = malloc((size_t)rn))) {
-        ZSTD_DCtx *dc = ZSTD_createDCtx();
-        size_t got = dc ? ZSTD_decompress_usingDDict(dc, raw, (size_t)rn, z, (size_t)zn, dd) : 0;
-        ZSTD_freeDCtx(dc);
-        if (ZSTD_isError(got) || got != rn) free(raw), raw = NULL;
-    }
-    free(z);
-    *n_out = (size_t)rn;
-    return raw;
+    return dbg_romfs_unzs(find_file(file), "bcett.byml.zsdic", n_out);
 }
 
 // ---- BYML: dictionaries (0xc1: 8-byte entries {key index:24, type:8, value}), arrays (0xc0: types, padded to 4, then

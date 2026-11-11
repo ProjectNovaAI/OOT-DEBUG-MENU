@@ -132,7 +132,8 @@ static void add_settings_file(Export *e, const char *name, const char *path) {
     free(data);
 }
 
-SaveShareResult save_share_export(const char *dir, int bug_report, char *path, size_t cap) {
+// dir and a name made from the time, or exact (dir NULL): the file to write, replaced when there.
+static SaveShareResult export_zip(const char *dir, const char *exact, int bug_report, char *path, size_t cap) {
     *path = 0;
     struct tm t;
     plat_local_time(&t);
@@ -173,6 +174,18 @@ SaveShareResult save_share_export(const char *dir, int bug_report, char *path, s
         rt_log("save share: export: out of memory for the zip");
         return SAVE_SHARE_WRITE_FAILED;
     }
+    if (exact) {
+        snprintf(path, cap, "%s", exact);
+        int ok = plat_file_write_atomic(exact, zip, zn);
+        free(zip);
+        if (!ok) {
+            rt_log("save share: export: cannot write %s", exact);
+            *path = 0;
+            return SAVE_SHARE_WRITE_FAILED;
+        }
+        rt_log("save share: exported %d save files to %s (%zu bytes)", e.files, exact, zn);
+        return SAVE_SHARE_OK;
+    }
     plat_file_mkdir_p(dir);
     char stem[64];
     snprintf(stem, sizeof stem, "NX2navi-save-%04d-%02d-%02d_%02d-%02d-%02d%s", t.tm_year + 1900, t.tm_mon + 1,
@@ -195,6 +208,24 @@ SaveShareResult save_share_export(const char *dir, int bug_report, char *path, s
            path, zn);
     return SAVE_SHARE_OK;
 }
+
+SaveShareResult save_share_export(const char *dir, int bug_report, char *path, size_t cap) {
+    return export_zip(dir, NULL, bug_report, path, cap);
+}
+
+SaveShareResult save_share_export_to(const char *file) {
+    char path[PLAT_PATH_MAX];
+    return export_zip(NULL, file, 0, path, sizeof path);
+}
+
+int save_share_saves_dir(char *out, size_t cap) {
+    char dir[PLAT_PATH_MAX];
+    if (!exe_dir(dir, sizeof dir)) return 0;
+    int n = snprintf(out, cap, "%s/saves", dir);
+    return n > 0 && (size_t)n < cap;
+}
+
+int save_share_stage_empty(void) { return fs_save_import_stage(0, NULL, NULL, NULL) ? -1 : 0; }
 
 // ---- import
 static const SzEntry *find_member(const SzEntry *e, int count, const char *name) {

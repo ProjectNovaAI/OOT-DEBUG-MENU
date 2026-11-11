@@ -329,7 +329,7 @@ Before a commit:
 
 A change to the in-game menu's look (`runtime/ui/menu_skin.cpp`, `option_rows.cpp`, `perf_panel.cpp`) can be looked at
 without game files: `python tools/menu_preview.py` builds the menu's own drawing code with the host's clang++ and
-writes the Screen tab, the full performance overlay and the boot screen to `build/menu-preview/` (`menu.png`,
+writes the Display tab, the full performance overlay and the boot screen to `build/menu-preview/` (`menu.png`,
 `overlay.png`, `boot.png`; a stand-in font, and the window's plain border in place of the game's ornamented frame).
 With `--romfs <extracted RomFS folder>` it draws the game's interface textures as the game does, and
 `tools/ui_textures.py <folder>` lists the textures there and dumps those matching `--match` to `build/ui-textures/`;
@@ -342,6 +342,11 @@ and checks its deflate, inflate, zip writer and reader against Python's zlib and
 launcher imports a zip it wrote. The second builds `fs_host.c` and `save_share.c` with the rest of the runtime stubbed
 and runs each step as a start of the game on a profile it makes: the export, an import from a zip the launcher
 exported, its backup and swap at the next start, the zips it refuses and Cancel. No game files.
+
+Changes to profile switching and save destinations also pass `python tests/save_title_check.py`. This checks
+selection, confirmation and cancellation, queued title switches, failed preparation, and the distinction between
+title and in-game Load screens. `save_share_check.py` covers live import refusal and replacement, active-profile
+adoption and backups, and detecting saved slots inside profile archives. Neither test needs game files.
 
 A change to the step Ocarina is given each frame (`runtime/frame_rate.c` `ocarina_step`) passes
 `python tests\frame_step_check.py`, which builds `frame_rate.c` with the rest of the runtime stubbed and feeds it

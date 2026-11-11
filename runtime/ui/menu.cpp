@@ -30,6 +30,7 @@ static int g_font_bad;
 #pragma clang diagnostic ignored "-Wunused-function"
 #include "imstb_truetype.h"
 #include "menu_sound.h"
+#include "save_slots.h"
 #include "menu_assets.h"
 #include "ui/menu_art.h"
 #include "ui/menu_skin.h"
@@ -90,6 +91,8 @@ extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 void tab_debug(float scale);         // ui/debug_tab.cpp: the Debug tab
+bool debug_hotkey_waiting(void);     // ui/debug_tab.cpp: a hotkey cell waits for a press
+void debug_hotkey_cancel(void);      // ui/debug_tab.cpp: and stops waiting (the menu opened or closed)
 void debug_overlay_draw(float scale);   // ui/debug_tab.cpp: the on-screen readout
 }
 
@@ -149,6 +152,22 @@ extern "C" void menu_toggle(void) {
     if (g_failed_flag() || g_booting.load(std::memory_order_acquire)) return;
     change_open(-1);
 }
+// Set by menu_open_debug on the pad's thread, taken at the next opening's reset (menu_overlay_frame): that opening
+// shows the Debug tab.
+static std::atomic<int> g_open_debug{0};
+// Set by the menu's layout while a page waits for a button to bind (the controls page, the Debug tab's hotkeys): the
+// menu button pressed then is the button bound, and does not close the menu.
+static std::atomic<int> g_pad_bindable{0};
+extern "C" void menu_open_debug(void) {
+    if (g_failed_flag() || g_booting.load(std::memory_order_acquire)) return;
+    if (menu_is_open()) {
+        if (!g_pad_bindable.load(std::memory_order_acquire)) change_open(0);
+        return;
+    }
+    g_open_debug.store(1, std::memory_order_release);
+    change_open(1);
+}
+
 // ---- events from the window adapter, queued while the menu is open; the present path hands them to ImGui
 enum { EV_KEY, EV_POS, EV_BUTTON, EV_WHEEL, EV_FOCUS, EV_CHAR, EV_MAX = 256 };
 struct Ev { int type, a, b; float x, y; };
@@ -635,7 +654,7 @@ static void test_apply_sets(uint64_t frame) {
     }
 }
 
-// ---- the lists the Screen and Game tabs build
+// ---- the lists the Display and Game tabs build
 enum { MAX_GPUS = 8 };
 static char g_gpu_names[MAX_GPUS][VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 static int g_gpu_n = -1;   // -1: not listed yet
@@ -1415,6 +1434,8 @@ static int restart_pending(void) {
 // runs on while the menu is open, and closing the window finishes only a Commit that has begun (gfx_window_closed,
 // fs_save_flush), so a save between writing its files and committing them would be dropped.
 static bool restart_rebuild, g_confirm_quit;
+static bool g_ask_restart;   // menu_ask_restart: the bottom row opens the confirmation at its next layout
+extern "C" void menu_ask_restart(void) { g_ask_restart = true; }
 static void restart_confirm(float scale) {
     g_modal = false;
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1519,6 +1540,7 @@ static int g_tab;               // the tab shown
 static int tabs_shown(void) { return cfg_bool("NX2NAVI_COOP_BETA") ? TAB_COUNT : TAB_COOP; }
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
+static bool g_focus_keep;       // the menu has just opened: that tab's row it was left at takes the cursor instead
 
 // A row of another tab: that tab opens with the row under the cursor.
 static void go_to(int tab, const char *key) {
@@ -1594,19 +1616,26 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     // where it would run into the title (a narrow window, a long title)
     char game[16], version[96];
     snprintf(game, sizeof game, "%d.%d.%d", rt_game_version / 100, rt_game_version / 10 % 10, rt_game_version % 10);
-    snprintf(version, sizeof version, "NX2navi %s  -  game %s", rt_port_version, game);
+    snprintf(version, sizeof version, "NX2navi-Debug-Menu %s  -  game %s", rt_port_version, game);
     float version_x = win_s.x - ImGui::GetStyle().WindowPadding.x - ImGui::CalcTextSize(version).x;
     if (win_p.x + version_x >= title_end + ImGui::GetStyle().ItemSpacing.x * 2) {
         ImGui::SameLine(version_x);
         ImGui::TextDisabled("%s", version);
     }
 
-    // a text field takes Q and E as letters, and a window of a page keeps the tab keys
-    const bool keeps_keys = g_modal || binds_modal() || coop_modal() || ImGui::GetIO().WantTextInput;
-    int step = keeps_keys                                                                                ? 0
-             : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
-             : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
-                                                                                                         : 0;
+    g_pad_bindable.store(binds_modal() || debug_hotkey_waiting(), std::memory_order_release);
+    // LB and RB, LT and RT (Q and E) step the tabs; the menu button opens and closes the menu (menu_open_debug), so
+    // a shoulder button chosen as the menu button does only that. A text field takes Q and E as letters, and a window
+    // of a page keeps the tab keys.
+    const int menu_pad = dbg_menu_button();
+    const bool lb = menu_pad != PAD_L && ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false),
+               rb = menu_pad != PAD_R && ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false);
+    const bool keeps_keys = g_modal || binds_modal() || coop_modal() || debug_hotkey_waiting() || opt_list_open() ||
+                            ImGui::GetIO().WantTextInput;
+    int step = keeps_keys                                                                                     ? 0
+             : rb || ImGui::IsKeyPressed(ImGuiKey_GamepadR2, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
+             : lb || ImGui::IsKeyPressed(ImGuiKey_GamepadL2, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) ? -1
+                                                                                                               : 0;
     const int ntabs = tabs_shown();
     if (g_tab >= ntabs) g_tab_request = 0;   // the Co-op tab was shown and coop_beta went off
     if (step) g_tab_request = g_tab_sounded = (g_tab + step + ntabs) % ntabs;
@@ -1624,8 +1653,12 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
             if (!shown) continue;
             g_tab = k;
             if (g_focus_page == k) {
-                opt_focus_first();
+                // the menu opening again: each tab keeps the row and the scroll it was left at. The Debug tab, a long
+                // page of tools gone back to again and again, keeps them when another tab is shown in between too.
+                if (k == TAB_DEBUG || g_focus_keep) opt_focus_resume();
+                else opt_focus_first();
                 g_focus_page = -1;
+                g_focus_keep = false;
             }
             ImGui::Spacing();
             // the page's rows are a NavFlattened child of this window itself: ImGui clips the items of a direct child
@@ -1693,18 +1726,21 @@ static void layout_menu(uint32_t w, uint32_t h, float scale) {
     ImGui::SetCursorPos(ImVec2(buttons_x, y));
     if (skin_widget_button(cont, ImVec2(bw, 0), scale)) set_open(0);
     ImGui::SameLine(0, gap);
-    if (skin_widget_button(restart, ImVec2(bw, 0), scale)) g_confirm_quit = false, ImGui::OpenPopup("##confirm");
+    if (skin_widget_button(restart, ImVec2(bw, 0), scale) || g_ask_restart)
+        g_ask_restart = false, g_confirm_quit = false, ImGui::OpenPopup("##confirm");
     ImGui::SameLine(0, gap);
     if (skin_widget_button(quit, ImVec2(bw, 0), scale)) g_confirm_quit = true, ImGui::OpenPopup("##confirm");
     restart_confirm(scale);
     menu_sounds_frame();
-    bool was_modal = g_modal || binds_modal() || coop_modal() || ImGui::GetIO().WantTextInput;
+    bool was_modal = g_modal || binds_modal() || coop_modal() || opt_list_open() || ImGui::GetIO().WantTextInput;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();
 }
 
 static int g_save_pending;   // a changed setting still waits for its write to nx2navi.ini (opt_save_tick)
+static std::atomic<int> g_save_asked{0};   // menu_save_settings_soon: any thread, taken at the next frame
+extern "C" void menu_save_settings_soon(void) { g_save_asked.store(1, std::memory_order_release); }
 
 // ---- the performance overlay (NX2NAVI_PERF_OVERLAY), in the top right corner. "fps": the frame rate over the presents of
 // the last half second. "full": a panel of perfmon.c's numbers:
@@ -1879,6 +1915,7 @@ static int overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot)
     static bool was_open;
     bool opened = open && !was_open;
     was_open = open;
+    if (g_save_asked.exchange(0, std::memory_order_acq_rel)) g_save_pending = 1, opt_save_soon();
     if (!open) {
         if (g_save_pending) g_save_pending = opt_save_tick(1);   // closed: the last change goes to nx2navi.ini now
         if (g_test.next_at < g_test.n_at && !g_test.opened && frame >= g_test.at[g_test.next_at]) {
@@ -1887,7 +1924,8 @@ static int overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot)
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode && !toast && !dbg_overlay_mask() && !dbg_igt_enabled() && !dbg_view_kinds() && !dbg_toast(plat_now_ns())) {   // nothing to draw: skip the frame
+        } else if (!g_perf_mode && !toast && !dbg_overlay_mask() && !dbg_igt_enabled() && !dbg_view_kinds() && !dbg_toast(plat_now_ns()) &&
+                   !save_title_showing()) {   // nothing to draw: skip the frame
             return 0;
         }
     }
@@ -1922,9 +1960,12 @@ static int overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot)
         io.ClearInputMouse();
         binds_cancel();          // a cell waiting for a press when the menu closed: no press binds on the next opening
         coop_cancel();           // the Co-op tab's window closes and its secret hides
+        debug_hotkey_cancel();
         g_sound_fresh = true;
         g_last_ns = 0;
-        g_focus_page = g_tab_request >= 0 ? g_tab_request : g_tab;   // opening: the first row has the cursor
+        if (g_open_debug.exchange(0, std::memory_order_acq_rel)) g_tab_request = TAB_DEBUG;   // opened by LB
+        g_focus_page = g_tab_request >= 0 ? g_tab_request : g_tab;   // opening: the row left last has the cursor
+        g_focus_keep = true;
         if (GImGui->OpenPopupStack.Size) ImGui::ClosePopupToLevel(0, false);   // a confirmation left open on closing
         g_modal = false;
     }

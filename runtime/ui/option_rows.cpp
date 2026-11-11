@@ -33,6 +33,34 @@ static bool g_held;                      // the last row's left / right has been
 static float g_bottom;                   // opt_reserve_bottom: kept free under the panes
 static bool g_disable_next;              // opt_disable_next: the next row is greyed out with g_disable_note
 static const char *g_disable_note;
+static bool g_lit_next;                  // the next row is lit as if selected: its list is open (opt_text_choice)
+
+// opt_focus_resume: each page's row that last had the cursor, by key. The page's scroll position needs no keeping: its
+// child window holds it while the menu is closed, and only opt_focus_first scrolls it back to the top.
+static struct Place { ImGuiID page; char key[64]; } g_places[8];
+static bool g_resume_req, g_resume;      // requested / this page looks for its kept row while its rows are drawn
+static char g_resume_key[64];
+static ImGuiID g_resume_fallback;        // the page's first row wholly in view, should the kept one not be
+
+// The item takes the cursor. The window that has just appeared (the menu opening) has asked for its first item to
+// take it, which is the first tab; that request, not yet applied, is dropped, or it would win at the next frame and
+// leave the cursor on the tab bar.
+static void take_cursor(ImGuiID id) {
+    ImGui::SetFocusID(id, ImGui::GetCurrentWindow());
+    ImGui::SetNavCursorVisible(true);
+    ImGuiContext &g = *GImGui;
+    g.NavInitRequest = false;
+    g.NavInitResult.ID = 0;
+}
+
+static Place *place_of(ImGuiID page, bool add) {
+    for (Place &p : g_places)
+        if (p.page == page) return &p;
+    if (!add) return nullptr;
+    for (Place &p : g_places)
+        if (!p.page) return p.page = page, p.key[0] = 0, &p;
+    return &g_places[0];   // more pages than places: the first one's is given up
+}
 
 // The rows' cursor, drawn once all rows are (opt_end), its glow in the layer under the rows and its frame in the one
 // over them: the selected row's box, else the hovered one's (alpha: fainter for a hovered row, and for one the
@@ -60,6 +88,7 @@ static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *
 }
 
 void opt_focus_first(void) { g_focus_req = true; }
+void opt_focus_resume(void) { g_resume_req = true; }
 
 void opt_focus_key(const char *key) { snprintf(g_focus_key, sizeof g_focus_key, "%s", key); }
 
@@ -77,9 +106,21 @@ void opt_begin(const char *id, float scale) {
     g_scale = scale;
     g_take_first = g_focus_req;
     g_focus_req = false;
-    if (g_take_first) ImGui::NavMoveRequestCancel();   // this frame's move goes to the first row instead
     g_hover.text[0] = g_focus.text[0] = g_first.text[0] = 0;
     if (ImGuiID page = ImGui::GetID(id); page != g_page) g_page = page, g_shown.text[0] = 0;
+    // opt_focus_resume: a page shown for the first time has no kept row, so it starts from its first one
+    g_resume = false;
+    if (g_resume_req) {
+        const Place *pl = place_of(g_page, false);
+        if (pl && pl->key[0]) {
+            g_resume = true, g_take_first = false, g_resume_fallback = 0;
+            snprintf(g_resume_key, sizeof g_resume_key, "%s", pl->key);
+        } else {
+            g_take_first = true;
+        }
+        g_resume_req = false;
+    }
+    if (g_take_first || g_resume) ImGui::NavMoveRequestCancel();   // this frame's move goes to that row instead
     ImVec2 avail = ImGui::GetContentRegionAvail();
     avail.y -= g_bottom;
     ImGui::PushID(id);
@@ -95,6 +136,12 @@ void opt_begin(const char *id, float scale) {
 
 void opt_end(void) {
     ImGui::Dummy(ImVec2(0, row_margin()));   // the last row's cursor stays inside the pane
+    if (g_resume) {   // the kept row is gone or out of view: the first row in view takes the cursor, the scroll stays
+        g_resume = false;
+        if (g_resume_fallback) {
+            take_cursor(g_resume_fallback);
+        }
+    }
     ImDrawList *dl = ImGui::GetWindowDrawList();
     if (g_cursor.on) {
         dl->ChannelsSetCurrent(0);
@@ -134,6 +181,7 @@ struct RowView {
     const char *note;    // under the value instead of the "default" mark; NULL for none
     float col;           // the width of the widest value the row can show (value_width); 0: this value's
     bool end_l, end_r;   // the value is the first / last one: that arrow is drawn faint and does nothing
+    bool list;           // A or a click opens a list of the values (opt_text_choice): a down arrow right of the value
 };
 
 // The width of the widest of n values at the current font size: a stepper's left arrow stands that far from the right
@@ -212,6 +260,8 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     const char *disabled = g_disable_next ? g_disable_note : NULL;
     g_disable_next = false;
     bool off = disabled || cfg_from_env(key) != 0;
+    const bool lit = g_lit_next;
+    g_lit_next = false;
     ImGui::PushID(key);
     // the row's box, inset from the pane's sides by the room its cursor needs
     const float margin = row_margin();
@@ -227,12 +277,24 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     ImGui::PopStyleColor();
     bool to_key = g_focus_key[0] && !strcmp(key, g_focus_key);
     if (g_take_first || to_key) {
-        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-        ImGui::SetNavCursorVisible(true);
+        take_cursor(ImGui::GetItemID());
         if (g_take_first) ImGui::SetScrollY(0);   // the page's top: text and a heading above the first row show
         else ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);   // as a cursor move would (the last row whole)
         g_take_first = false;
         if (to_key) g_focus_key[0] = 0;
+    }
+    if (g_resume) {   // opt_focus_resume: the kept row takes the cursor if it is wholly in view, so the scroll stays
+        const ImRect &clip = ImGui::GetCurrentWindow()->InnerClipRect;
+        const bool whole = ImGui::GetItemRectMin().y >= clip.Min.y && ImGui::GetItemRectMax().y <= clip.Max.y;
+        if (whole && !g_resume_fallback) g_resume_fallback = ImGui::GetItemID();
+        if (whole && !strcmp(key, g_resume_key)) {
+            take_cursor(ImGui::GetItemID());
+            g_resume = false;
+        }
+    }
+    if (ImGui::IsItemFocused()) {   // the page's row with the cursor, for opt_focus_resume
+        Place *pl = place_of(g_page, true);
+        snprintf(pl->key, sizeof pl->key, "%s", key);
     }
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
     int step = clicked && !off ? 2 : 0;
@@ -266,10 +328,10 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     ImFont *font = ImGui::GetFont();
     float pad = 20 * g_scale, small = fs * 0.72f;
     // the save menu's brown button, brighter while selected or hovered; the white cursor goes round it in opt_end
-    skin_button(dl, p, ImVec2(p.x + w, p.y + h), g_scale, foc ? 1.0f : hov ? 0.6f : 0.0f, off);
-    if (foc || (hov && !g_cursor.on)) {
+    skin_button(dl, p, ImVec2(p.x + w, p.y + h), g_scale, foc || lit ? 1.0f : hov ? 0.6f : 0.0f, off);
+    if (foc || lit || (hov && !g_cursor.on)) {
         g_cursor.on = true, g_cursor.a = p, g_cursor.b = ImVec2(p.x + w, p.y + h);
-        g_cursor.alpha = (foc ? 1.0f : 0.55f) * (off ? 0.5f : 1.0f);
+        g_cursor.alpha = (foc || lit ? 1.0f : 0.55f) * (off ? 0.5f : 1.0f);
     }
     float ty = p.y + fs * 0.25f, ny = p.y + fs * 1.3f;   // the label line and the note line under it
     float right = p.x + w - pad;                         // the value's right edge
@@ -314,6 +376,12 @@ static int row_text(const char *key, const char *label, const char *desc, const 
         value_mid = (lb.x + ra.x) * 0.5f;
         right = ra.x - gap;
         value_left = la.x;
+    }
+    if (v.list) {   // a down arrow at the row's right edge, the value left of it: the row opens a list
+        const float aw = floorf(fs * 0.5f), ah = aw * 0.6f, ax = right - aw, cy = ty + fs * 0.52f;
+        const ImU32 ac = off ? kGrey : hov || foc || lit ? SKIN_TEXT : SKIN_TEXT_DIM;
+        dl->AddTriangleFilled(ImVec2(ax, cy - ah * 0.5f), ImVec2(ax + aw, cy - ah * 0.5f), ImVec2(ax + aw * 0.5f, cy + ah * 0.5f), ac);
+        right = ax - floorf(fs * 0.5f);
     }
     if (movable) {   // up and down arrows left of the value; a click on one moves the row
         // a fixed value column (On / Off differ in width) keeps the arrows of the rows in one line
@@ -615,6 +683,11 @@ void opt_bind_header(UiTextId c0, UiTextId c1, UiTextId c2) {
 
 int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *const cells[3], const bool enabled[3],
                  const char *note) {
+    return opt_bind_row(key, label, menu_text(desc), cells, enabled, note);
+}
+
+int opt_bind_row(const char *key, const char *label, const char *desc, const char *const cells[3], const bool enabled[3],
+                 const char *note) {
     ImGui::PushID(key);
     const float margin = row_margin();   // room for the cursor, as the option rows leave
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + margin);
@@ -643,8 +716,7 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
         snprintf(id, sizeof id, "%s#%d", key, c);
         bool to_key = g_focus_key[0] && !strcmp(id, g_focus_key);
         if (g_take_first || to_key) {
-            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
-            ImGui::SetNavCursorVisible(true);
+            take_cursor(ImGui::GetItemID());
             if (g_take_first) ImGui::SetScrollY(0);
             else ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);
             g_take_first = false;
@@ -664,9 +736,9 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
     }
     char k[64];
     snprintf(k, sizeof k, "NX2NAVI_%s", key);
-    if (row_foc) desc_set(g_focus, menu_text(desc), k, NULL, NULL);
-    if (row_hov) desc_set(g_hover, menu_text(desc), k, NULL, NULL);
-    if (!g_first.text[0]) desc_set(g_first, menu_text(desc), k, NULL, NULL);
+    if (row_foc) desc_set(g_focus, desc, k, NULL, NULL);
+    if (row_hov) desc_set(g_hover, desc, k, NULL, NULL);
+    if (!g_first.text[0]) desc_set(g_first, desc, k, NULL, NULL);
     if (note && (row_foc || row_hov)) {   // e.g. what moved here, after the description
         Desc &d = row_hov ? g_hover : g_focus;
         size_t n = strlen(d.text);
@@ -676,4 +748,89 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
     ImGui::Dummy(ImVec2(w, h));
     ImGui::PopID();
     return result;
+}
+
+// ---- a choice with a list (opt_text_choice): the list is a popup under the row (above it when the screen ends first),
+// as wide as the row and at most kListRows values high, scrolled to the value in effect
+
+static const int kListRows = 12;
+static int g_list_frame = -10;   // the last frame a list was open
+static ImGuiID g_list_id;        // that list
+
+bool opt_list_open(void) { return g_list_frame >= ImGui::GetFrameCount() - 1; }
+
+static bool back_pressed(void) {
+    return ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
+}
+
+int opt_text_choice(const char *id, const char *label, const char *const *names, int n, int cur, const char *desc,
+                    bool wrap, const char *shown, const char *note) {
+    ImGui::PushID(id);
+    const ImGuiID list = ImGui::GetID("##list");
+    ImGui::PopID();
+    g_lit_next = ImGui::IsPopupOpen(list, 0);
+    RowView v = {shown ? shown : cur >= 0 && cur < n ? names[cur] : "", false, false, note};
+    v.list = n > 0;
+    const int step = row_text(id, label, desc, v, false);
+    const ImVec2 ra = ImGui::GetItemRectMin(), rb = ImGui::GetItemRectMax();
+    int pick = -1;
+    if (n > 0 && (step == -1 || step == 1)) {
+        if (cur < 0) pick = step < 0 ? n - 1 : 0;   // no value of the list in effect: from its end or its start
+        else if (wrap) pick = (cur + step + n) % n;
+        else pick = cur + step < 0 ? 0 : cur + step >= n ? n - 1 : cur + step;
+    }
+    ImGui::PushID(id);
+    if (step == 2 && n > 0) ImGui::OpenPopup("##list");
+    const int frame = ImGui::GetFrameCount();
+    // B or Escape closed the list before the rows were drawn (ImGui's own cancel): the cancel sound the menu's boxes play
+    if (!ImGui::IsPopupOpen(list, 0) && g_list_id == list && g_list_frame == frame - 1 && back_pressed())
+        menu_sound_play(MENU_SOUND_CANCEL);
+    if (ImGui::IsPopupOpen(list, 0)) {
+        const float fs = ImGui::GetFontSize(), ih = floorf(fs * 1.7f), pad = floorf(10 * g_scale), w = rb.x - ra.x;
+        const float lh = ih * (n < kListRows ? n : kListRows) + pad * 2, gap = 4 * g_scale;
+        const ImGuiViewport *vp = ImGui::GetMainViewport();
+        const float top = vp->WorkPos.y, bottom = vp->WorkPos.y + vp->WorkSize.y;
+        float y = rb.y + gap;
+        if (y + lh > bottom) y = ra.y - gap - lh >= top ? ra.y - gap - lh : fmaxf(bottom - lh, top);
+        ImGui::SetNextWindowPos(ImVec2(ra.x, y));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0), ImVec2(w, lh));   // the popup fits its values up to that
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 0);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad, pad));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0, 0, 0, 0));   // skin_panel draws the box
+        const bool open = ImGui::BeginPopup("##list", ImGuiWindowFlags_NoMove);
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+        if (open) {
+            g_list_frame = frame, g_list_id = list;
+            const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+            ImDrawList *dl = ImGui::GetWindowDrawList();
+            skin_panel(dl, wp, ImVec2(wp.x + ws.x, wp.y + ws.y), g_scale);
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0));
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.30f, 0.22f, 0.12f, 1));          // the value in effect
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.42f, 0.31f, 0.15f, 1));   // under the pointer
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.50f, 0.37f, 0.18f, 1));
+            for (int i = 0; i < n; i++) {
+                ImGui::PushID(i);
+                // the name is drawn by fit_text, not as the selectable's label: a name may hold "##"
+                if (ImGui::Selectable("", i == cur, 0, ImVec2(0, ih))) pick = i;   // and the list closes
+                if (i == cur && ImGui::IsWindowAppearing()) {
+                    ImGui::SetItemDefaultFocus();   // the controller's cursor starts on the value in effect
+                    ImGui::SetScrollHereY(0.5f);
+                }
+                const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                fit_text(dl, a.x + pad, b.x - pad, a.y, b.y - a.y, i == cur ? SKIN_GOLD : SKIN_TEXT,
+                         names[i] ? names[i] : "", false);
+                ImGui::PopID();
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::PopStyleVar();
+            if (pick < 0 && back_pressed()) {
+                ImGui::CloseCurrentPopup();
+                menu_sound_play(MENU_SOUND_CANCEL);
+            }
+            ImGui::EndPopup();
+        }
+    }
+    ImGui::PopID();
+    return pick == cur ? -1 : pick;
 }

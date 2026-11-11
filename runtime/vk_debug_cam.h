@@ -14,6 +14,11 @@ void vk_dbgcam_draw(struct VkExec *ex);
 int vk_dbgcam_vp(float vp[16], float *aspect);
 // Set while the overlay draws (vk_dbgcam_vp sets it); vk_dbgcam_draw does nothing without it.
 extern volatile int vk_dbgcam_want;
+// The scene's view distances (vk_dlaa.c odepth_probe) for an overlay that hides what the scene covers: a grid of
+// *gw by *gh (row 0 the top of the view, metres along the view direction, 0 where the view shows sky) into out, which
+// holds 480 * 270 floats. 1 when a grid read back within max_age_ns is there; 0 while none is (no upscaler with its
+// motion pass runs: DLAA, DLSS or FSR). Each call asks for the next second of grids.
+int vk_dbgcam_depth(float *out, int *gw, int *gh, unsigned long long max_age_ns);
 
 #ifdef __cplusplus
 }

@@ -7,8 +7,11 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "debug_tools.h"
 #include "host.h"
 #include "input.h"
@@ -29,10 +32,31 @@ void dbg_fly(int on) { atomic_store(&fly_on, on != 0); }
 int dbg_fly_on(void) { return atomic_load(&fly_on); }
 void dbg_hover(int on) { atomic_store(&hover_on, on != 0); }
 int dbg_hover_on(void) { return atomic_load(&hover_on); }
-void dbg_hover_boots(int on) { atomic_store(&boots_on, on != 0); }
-int dbg_hover_boots_on(void) { return atomic_load(&boots_on); }
-float dbg_fly_speed(void) { return atomic_load(&fly_speed); }
-void dbg_set_fly_speed(float ms) { atomic_store(&fly_speed, ms < 1.0f ? 1.0f : ms > 100.0f ? 100.0f : ms); }
+// Infinite Hover Boots and the fly speed stay as set from one start to the next (debug_hover_boots, debug_fly_speed;
+// debug_tools.c dbg_keep). Fly and hover do not: a start in the air or inside a wall would surprise.
+static void move_load(void) {
+    static _Atomic int done;
+    if (atomic_load(&done) || atomic_exchange(&done, 1)) return;
+    atomic_store(&boots_on, cfg_bool("NX2NAVI_DEBUG_HOVER_BOOTS") != 0);
+    float ms = strtof(cfg_value("NX2NAVI_DEBUG_FLY_SPEED"), NULL);
+    atomic_store(&fly_speed, ms >= 1.0f && ms <= 100.0f ? ms : 8.0f);
+}
+
+void dbg_hover_boots(int on) {
+    move_load();
+    atomic_store(&boots_on, on != 0);
+    dbg_keep("NX2NAVI_DEBUG_HOVER_BOOTS", on ? "1" : "0");
+}
+int dbg_hover_boots_on(void) { move_load(); return atomic_load(&boots_on); }
+float dbg_fly_speed(void) { move_load(); return atomic_load(&fly_speed); }
+void dbg_set_fly_speed(float ms) {
+    move_load();
+    ms = ms < 1.0f ? 1.0f : ms > 100.0f ? 100.0f : ms;
+    atomic_store(&fly_speed, ms);
+    char v[16];
+    snprintf(v, sizeof v, "%g", ms);
+    dbg_keep("NX2NAVI_DEBUG_FLY_SPEED", v);
+}
 
 // ---- the camera actor, found by a helper thread and checked on every use
 
@@ -113,7 +137,7 @@ void dbg_move_frame(struct Cpu *c) {
     int mode = 0;
     if (atomic_load(&fly_on)) mode = AIR_FLY;
     else if (atomic_load(&hover_on)) mode = AIR_HOVER;
-    else if (atomic_load(&boots_on) && hover_boots_worn()) {
+    else if (dbg_hover_boots_on() && hover_boots_worn()) {
         input_poll_ui(&b, &lx, &ly, &rx, &ry);
         if (air_mode == AIR_BOOTS && !(b & BTN_B)) mode = AIR_BOOTS;
         else if (!(b & BTN_B) && vy < -BOOTS_FALL_MS) {
@@ -127,5 +151,5 @@ void dbg_move_frame(struct Cpu *c) {
     }
     if (mode != air_mode) memcpy(air_pos, p, sizeof air_pos), air_mode = mode;
     if (mode != AIR_BOOTS) input_poll_ui(&b, &lx, &ly, &rx, &ry);
-    air_step(c, p, b, lx, ly, mode == AIR_FLY ? atomic_load(&fly_speed) : WALK_MS, mode == AIR_FLY, dt);
+    air_step(c, p, b, lx, ly, mode == AIR_FLY ? dbg_fly_speed() : WALK_MS, mode == AIR_FLY, dt);
 }

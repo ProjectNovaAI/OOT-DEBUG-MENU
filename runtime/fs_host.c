@@ -94,6 +94,10 @@ static char *join(const char *dir, const char *name) {
 
 // Save in progress: a save-data file open for writing, or save data changed in the last 3 s and not committed yet
 // (NX2navi writes a slot's files back to back and then commits; between the files nothing is open for a moment).
+// A writer must not begin between a live import's clean-state check and working-copy swap. Existing
+// writable handles keep save_writers nonzero; this gate covers opening those handles and path mutations.
+// Lock order: save_mutation_gate, then pending-commit waits or tx_lock. Commit workers never take this gate.
+static PlatMutex save_mutation_gate = PLAT_MUTEX_INIT;
 static volatile int32_t save_writers, save_dirty;
 static volatile int64_t save_changed_ns;
 static void save_wait_commit(void);
@@ -750,12 +754,75 @@ static void import_pending(void) {
     snprintf(ready_root, sizeof ready_root, "%s", commit);
     int waits = swap_in();
     snprintf(import_done, sizeof import_done, "%s", *backup ? backup : "-");
+    // the import's tag (fs_save_import_tag) now says what the save is: save_slots.c takes it (fs_save_import_tag_take)
+    char tag[1100], done[1100];
+    snprintf(tag, sizeof tag, "%s/save-import.tag", profile);
+    snprintf(done, sizeof done, "%s/save-import.tag.done", profile);
+    if (plat_file_exists(tag) && !plat_file_replace(tag, done, 1)) rt_log("host save import: cannot keep %s", tag);
     rt_log("host save import: the save imported in the menu is the save now%s; the save it replaced is in %s",
            waits ? " (it waits in save-tx)" : "", *backup ? backup : "(none: there was no save)");
 }
 
 const char *fs_save_import_done(void) {
     return plat_cas32(&storage_ready, 0, 0) ? import_done : "";
+}
+
+// The title screen's profile switch (save_title.c): the import waiting becomes the save while the game runs. The
+// caller makes sure the game holds nothing of its save that it would write back (its title screen, before a slot is
+// loaded); here the save must be mounted, with no save file open for writing, nothing uncommitted and no Commit
+// running. The working copy of the import is made first (save-tx/work-next), then the import becomes the committed
+// save as at a start (import_pending: the backup, the swap), then the working copy is swapped for the new one. The
+// mount keeps its root, so the game's next reads of its save see the import.
+// 0 on success. -1: nothing changed, the import still waits. 1: the import is the committed save but the working copy
+// could not be swapped (a file in it held open): the game must restart, which makes the working copy again.
+int fs_save_import_now(void) {
+    ready();
+    plat_mutex_lock(&save_mutation_gate);
+    char imp[1100], next[1100], old[1100];
+    snprintf(imp, sizeof imp, "%s/save-import", profile);
+    snprintf(next, sizeof next, "%s/work-next", tx_root);
+    snprintf(old, sizeof old, "%s/work-old", tx_root);
+    save_wait_commit();
+    plat_mutex_lock(&tx_lock);
+    int r = -1, n = 0, linked = 0;
+    uint64_t bytes = 0;
+    int mounted = save_mounts > 0;   // tx_lock guards it
+    if (!mounted || plat_cas32(&save_writers, 0, 0) || plat_cas32(&save_dirty, 0, 0) ||
+        plat_fs_kind(imp) != PLAT_FS_DIR) {
+        rt_log("fs: live save import refused: %s", !mounted ? "the save is not mounted"
+                                                  : plat_fs_kind(imp) != PLAT_FS_DIR ? "no import waits"
+                                                                                       : "the game is writing its save");
+        goto out;
+    }
+    if ((exists(next) && remove_tree(next)) || (exists(old) && remove_tree(old)) ||
+        copy_tree(imp, next, NULL, 0, &n, &linked, &bytes)) {
+        rt_log("fs: live save import: cannot make the new working copy in %s", next);
+        remove_tree(next);
+        goto out;
+    }
+    import_pending();
+    if (plat_fs_kind(imp) == PLAT_FS_DIR) {   // it still waits (the backup failed): the save is unchanged
+        remove_tree(next);
+        goto out;
+    }
+    r = 1;
+    if (move_dir(work_root, old, MOVE_TRIES)) {
+        rt_log("fs: live save import: the working copy is in use; the game restarts to make it again");
+        remove_tree(next);
+        goto out;
+    }
+    if (move_dir(next, work_root, MOVE_TRIES)) {
+        rt_log("fs: live save import: cannot put the new working copy in place; the game restarts to make it again");
+        if (move_dir(old, work_root, MOVE_TRIES)) rt_log("fs: live save import: the old working copy stays in %s", old);
+        goto out;
+    }
+    if (remove_tree(old)) rt_log("fs: live save import: cannot delete %s", old);
+    rt_log("fs: live save import: %d files are the save and its working copy now", n);
+    r = 0;
+out:
+    plat_mutex_unlock(&tx_lock);
+    plat_mutex_unlock(&save_mutation_gate);
+    return r;
 }
 
 // Visits every file under dir (rel: its path below the save, "" at the top), in name order; links are left out.
@@ -820,11 +887,69 @@ static int stage_file(const char *path, const uint8_t *data, size_t n) {
     return ok ? 0 : -1;
 }
 
+// <profile>/save-import.tag: a line about the import waiting (save_slots.c: the save profile it brings), given after
+// the import is staged. A new import or its cancel drops it; the start that makes the import the save renames it to
+// save-import.tag.done, which fs_save_import_tag_take hands over once.
+int fs_save_import_tag(const char *text) {
+    ready();
+    char tag[1100];
+    snprintf(tag, sizeof tag, "%s/save-import.tag", profile);
+    return plat_file_write_atomic(tag, text, strlen(text)) ? 0 : -1;
+}
+
+// The completed identity must survive until its owner durably records it. A crash after the import moves to
+// save-tx but before its tag rename leaves .tag instead; it is completed only when no staged import remains.
+static int import_tag_path(char out[1100]) {
+    snprintf(out, 1100, "%s/save-import.tag.done", profile);
+    if (plat_file_exists(out)) return 1;
+    char imp[1100];
+    snprintf(imp, sizeof imp, "%s/save-import", profile);
+    if (plat_fs_kind(imp) == PLAT_FS_DIR) return 0;
+    snprintf(out, 1100, "%s/save-import.tag", profile);
+    return plat_file_exists(out);
+}
+
+int fs_save_import_tag_peek(char *out, size_t cap) {
+    ready();
+    if (!out || !cap) return 0;
+    char done[1100];
+    if (!import_tag_path(done)) return 0;
+    uint64_t n = 0;
+    uint8_t *d = plat_file_read(done, &n);
+    if (!d) return 0;
+    if (n >= cap) { free(d); return 0; }
+    memcpy(out, d, (size_t)n);
+    out[n] = 0;
+    free(d);
+    return 1;
+}
+
+int fs_save_import_tag_ack(const char *text) {
+    ready();
+    char done[1100];
+    if (!import_tag_path(done)) return 0;
+    uint64_t n = 0;
+    uint8_t *d = plat_file_read(done, &n);
+    if (!d) return -1;
+    int same = strlen(text) == n && !memcmp(d, text, (size_t)n);
+    free(d);
+    if (!same) return -1;
+    plat_file_delete(done);
+    return plat_file_exists(done) ? -1 : 0;
+}
+
+int fs_save_import_tag_take(char *out, size_t cap) {
+    if (!fs_save_import_tag_peek(out, cap)) return 0;
+    return fs_save_import_tag_ack(out) == 0;
+}
+
 int fs_save_import_stage(int count, const char *const *rel, const uint8_t *const *data, const size_t *size) {
     ready();   // the start's own import_pending has run: this one waits for the next start
-    char imp[1100], part[1100];
+    char imp[1100], part[1100], tag[1100];
     snprintf(imp, sizeof imp, "%s/save-import", profile);
     snprintf(part, sizeof part, "%s/save-import.part", profile);
+    snprintf(tag, sizeof tag, "%s/save-import.tag", profile);
+    plat_file_delete(tag);   // the tag of an import this one replaces
     if (remove_tree_retry(part) || plat_fs_mkdir(part)) {
         rt_log("host save import: cannot make %s", part);
         return -1;
@@ -860,8 +985,10 @@ int fs_save_import_waiting(void) {
 
 int fs_save_import_cancel(void) {
     ready();
-    char imp[1100];
+    char imp[1100], tag[1100];
     snprintf(imp, sizeof imp, "%s/save-import", profile);
+    snprintf(tag, sizeof tag, "%s/save-import.tag", profile);
+    plat_file_delete(tag);
     if (remove_tree_retry(imp)) return -1;
     rt_log("host save import: the import waiting for the next start was dropped");
     return 0;
@@ -1167,7 +1294,7 @@ static int64_t host_read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     return got < 0 ? -1 : got;
 }
 
-static uint32_t open_file(uint64_t *out, const char *path, int mode) {
+static uint32_t open_file_ungated(uint64_t *out, const char *path, int mode) {
     if (romfs_owns(path)) {
         coop_game_rom_open(path);   // coop_game.c: the title screen's start
         return romfs_open(out, path, mode);
@@ -1198,6 +1325,14 @@ static uint32_t open_file(uint64_t *out, const char *path, int mode) {
         }
     plat_mutex_unlock(&lock);
     rt_fatal("fs: host file handle table full (%d)", NFILES);
+}
+
+static uint32_t open_file(uint64_t *out, const char *path, int mode) {
+    if (!(mode & FS_OPEN_WRITE)) return open_file_ungated(out, path, mode);
+    plat_mutex_lock(&save_mutation_gate);
+    uint32_t result = open_file_ungated(out, path, mode);
+    plat_mutex_unlock(&save_mutation_gate);
+    return result;
 }
 
 static uint32_t read_file(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
@@ -1294,7 +1429,7 @@ static void close_file(uint64_t h) {
     }
 }
 
-static uint32_t create_file(const char *path, int64_t size) {
+static uint32_t create_file_ungated(const char *path, int64_t size) {
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
@@ -1307,7 +1442,14 @@ static uint32_t create_file(const char *path, int64_t size) {
     return fs_result(err);
 }
 
-static uint32_t delete_file(const char *path) {
+static uint32_t create_file(const char *path, int64_t size) {
+    plat_mutex_lock(&save_mutation_gate);
+    uint32_t result = create_file_ungated(path, size);
+    plat_mutex_unlock(&save_mutation_gate);
+    return result;
+}
+
+static uint32_t delete_file_ungated(const char *path) {
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
@@ -1315,7 +1457,14 @@ static uint32_t delete_file(const char *path) {
     return fs_result(plat_fs_unlink(p));
 }
 
-static uint32_t rename_file(const char *from, const char *to) {
+static uint32_t delete_file(const char *path) {
+    plat_mutex_lock(&save_mutation_gate);
+    uint32_t result = delete_file_ungated(path);
+    plat_mutex_unlock(&save_mutation_gate);
+    return result;
+}
+
+static uint32_t rename_file_ungated(const char *from, const char *to) {
     char a[PATH_CAP], b[PATH_CAP];
     uint32_t r = save_change_path(from, a, sizeof a);
     if (!r) r = host_path(to, b, sizeof b);
@@ -1324,6 +1473,13 @@ static uint32_t rename_file(const char *from, const char *to) {
     if (strcspn(to, ":") != n || strncmp(from, to, n)) return FS_R_INVALID_PATH;   // across mounts
     if (exists(b)) return FS_R_ALREADY_EXISTS;
     return fs_result(plat_fs_rename(a, b, 0));
+}
+
+static uint32_t rename_file(const char *from, const char *to) {
+    plat_mutex_lock(&save_mutation_gate);
+    uint32_t result = rename_file_ungated(from, to);
+    plat_mutex_unlock(&save_mutation_gate);
+    return result;
 }
 
 static uint32_t entry_type(int *out, const char *path) {
@@ -1342,19 +1498,33 @@ static uint32_t entry_type(int *out, const char *path) {
 typedef struct { char name[769]; uint8_t pad0[3]; int8_t type; uint8_t pad1[3]; int64_t size; } DirectoryEntry;
 _Static_assert(sizeof(DirectoryEntry) == 0x310, "nn::fs::DirectoryEntry");
 
-static uint32_t create_directory(const char *path) {
+static uint32_t create_directory_ungated(const char *path) {
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
     return fs_result(plat_fs_mkdir(p));
 }
 
-static uint32_t delete_recursive(const char *path) {
+static uint32_t create_directory(const char *path) {
+    plat_mutex_lock(&save_mutation_gate);
+    uint32_t result = create_directory_ungated(path);
+    plat_mutex_unlock(&save_mutation_gate);
+    return result;
+}
+
+static uint32_t delete_recursive_ungated(const char *path) {
     char p[PATH_CAP];
     uint32_t r = save_change_path(path, p, sizeof p);
     if (r) return r;
     if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
     return remove_tree(p) ? FS_R_INVALID_ARGUMENT : 0;
+}
+
+static uint32_t delete_recursive(const char *path) {
+    plat_mutex_lock(&save_mutation_gate);
+    uint32_t result = delete_recursive_ungated(path);
+    plat_mutex_unlock(&save_mutation_gate);
+    return result;
 }
 
 static int romfs_listing_add(const char *name, int is_dir, uint64_t size, void *ctx) {
