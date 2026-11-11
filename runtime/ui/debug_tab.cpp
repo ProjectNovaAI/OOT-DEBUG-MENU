@@ -62,6 +62,29 @@ extern "C" void tab_debug(float scale) {
                  "Measured from the position over a tenth of a second of real time. A jump of more than 20 m (a teleport, a "
                  "loading screen) is not counted.",
                  false);
+    {
+        bool fly = dbg_fly_on() != 0;
+        if (opt_toggle_text("##dbg_fly", "Fly (no clip)",
+                            "The left stick moves where the camera looks, X (Space) rises, B (Left Ctrl) sinks, A (Left Shift) "
+                            "held is three times faster. Walls and the ground do not stop the player; gravity is off.",
+                            fly))
+            dbg_fly(!fly);
+        snprintf(value, sizeof value, "%.0f m/s", dbg_fly_speed());
+        int r = opt_text_row("##dbg_flyspeed", "Fly speed", value, nullptr, "Left and right change it by 2 m/s.", false);
+        if (r == -1 || r == 1) dbg_set_fly_speed(dbg_fly_speed() + 2.0f * r);
+        bool hov = dbg_hover_on() != 0;
+        if (opt_toggle_text("##dbg_hover", "Hover",
+                            "Holds the player at the height where this was switched on: walk on air, off ledges, over gaps "
+                            "and water. Switch it off to land.",
+                            hov))
+            dbg_hover(!hov);
+        bool hb = dbg_hover_boots_on() != 0;
+        if (opt_toggle_text("##dbg_hoverboots", "Infinite Hover Boots",
+                            "With the Hover Boots on, a fall stops where it starts and the player keeps that height for as "
+                            "long as the boots are on. B (Left Ctrl) drops.",
+                            hb))
+            dbg_hover_boots(!hb);
+    }
 
     opt_group_text("Warp");
     {

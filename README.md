@@ -12,6 +12,7 @@
 <!-- DEBUG-MENU-FEATURES:START (keep this list current whenever a feature is added) -->
 - **Debug tab** in the in-game menu (usable live while playing)
 - **Player**: live position readout, teleport (the game's own actor warp, so it sticks), 4 saved position slots
+- **Fly (no clip)** with the stick, Space/X up and Ctrl/B down, adjustable speed; **hover** (walk on air at a fixed height); **infinite Hover Boots**
 - **Warp to every area, as child or adult**: 135 entrances in all areas. "Warp now" drops the player into the nearest loading zone and sends that area change to the chosen place, or arm a warp for the next area change the game makes (door, loading zone, warp song, void out)
 - **Switch between child and adult** anywhere the area has both versions, staying at the same entrance; an "age flag on arrival" switch for glitch hunting
 - **Game speed**: slow motion and fast forward from 0.05x to 8x
@@ -24,7 +25,7 @@
 - **Magic and items**: no magic, single or double magic meter, magic readout and fill, infinite magic, infinite items (rupees and ammunition never run out), and live counts you can change for rupees, arrows, bombs, bombchus, Deku sticks, nuts and seeds, magic beans, Gold Skulltula tokens and each dungeon's small keys
 - **Everything here is a work in progress and still being worked on**; features may be incomplete or change.
 - **Flag editing** from the remote console: any bool, int, float, enum, string or vector flag by name
-- *Being built next*: fly/noclip, hover and infinite Hover Boots, fog off, draw distance and quality, collision/invisible-wall/death-barrier visibility (with a solid-colour option), an in-game-time timer with splits
+- *Being built next*: fog off, draw distance and quality, collision/invisible-wall/death-barrier visibility (with a solid-colour option), an in-game-time timer with splits
 <!-- DEBUG-MENU-FEATURES:END -->
 
 ---

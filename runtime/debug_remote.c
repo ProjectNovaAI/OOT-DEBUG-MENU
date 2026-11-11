@@ -540,6 +540,10 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "give") && a1 && a2) {   // give INDEX 0|1: remove or give an owned item
         int i = atoi(a1);
         out_put("give %d %s: %s, now %d\n", i, a2, dbg_owned_set(i, atoi(a2)) ? "done" : "failed", dbg_owned_get(i));
+    } else if (!strcmp(cmd, "fly") || !strcmp(cmd, "hover") || !strcmp(cmd, "hoverboots")) {   // fly|hover|hoverboots [0|1]
+        if (a1) (cmd[0] == 'f' ? dbg_fly : !strcmp(cmd, "hover") ? dbg_hover : dbg_hover_boots)(atoi(a1));
+        if (a2 && cmd[0] == 'f') dbg_set_fly_speed((float)atof(a2));   // fly 1 SPEED
+        out_put("fly %d (%.1f m/s), hover %d, infinite hover boots %d\n", dbg_fly_on(), dbg_fly_speed(), dbg_hover_on(), dbg_hover_boots_on());
     } else if (!strcmp(cmd, "magiclvl")) {   // magiclvl [0|1|2]: the magic meter's level
         if (a1) dbg_magic_set_level(atoi(a1));
         out_put("magic level %d\n", dbg_magic_level());
@@ -583,7 +587,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots area perf gcall gres\n");
     }
 }
 

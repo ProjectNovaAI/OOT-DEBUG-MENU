@@ -109,3 +109,10 @@ Health is stored in quarter hearts in the player's heap data as 16-byte records 
 - An item is two flags: `PouchData.<name>.StockNum` (int: 1 for an item that is not counted, the count for ammunition) and `IsGet.<name>` (bool: ever got; it also skips the first-get scene). Songs have the bool only. `debug_tools.c` `owned` lists 74 things; giving sets both, removing sets the count to 0 and the bool off. Tested: the Hookshot and Longshot leave the item menu and come back, Ice Arrows and Nayru's Love appear.
 - Magic: the maximum is `PlayerStatus.MPMax`, 240 a level (none 0, single 240, double 480); `Item_FairyBless_MP` and `Item_FairyBless_MPDouble` record the levels got. Setting the maximum alone changes the meter on screen at once. `dbg_magic_set_level` sets all three.
 - Console: `own [FILTER]`, `give INDEX 0|1`, `magiclvl [0|1|2]`.
+
+### Fly, hover and infinite Hover Boots (working, tested in game 2026-11-10)
+- `runtime/debug_move.c`, run from the frame hook. Each mode keeps its own position and puts the player there every frame with the actor warp (`dbg_frame_teleport`), so gravity never acts. The game gives a player in the air no walking speed, so all three move the position with the left stick themselves: stick up goes along the view (player minus the `PlayerCamera` actor's position, horizontal), A held is three times faster. Fly also rises on X and sinks on B, and passes through walls; hover and the boots move at 6 m/s at a fixed height.
+- The teleport keeps the actor's rotation (`dbg_frame_teleport` reads the axis columns at +0x2f8) unless a facing is given; moving turns the player along the movement.
+- Infinite Hover Boots: with `PlayerStatus.EquipBoot` = `Armor_Adult_HoverBoot`, a fall faster than 1.5 m/s starts a hold at the height it started from; B or taking the boots off ends it.
+- Tested: fly up 8 m/s and along the view, right on the stick goes right on screen; hover walks across at a constant height; the boots hold stops a fall and walks on air.
+- Console: `fly 0|1 [SPEED]`, `hover 0|1`, `hoverboots 0|1`.

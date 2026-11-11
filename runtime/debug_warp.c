@@ -395,14 +395,29 @@ int dbg_player_teleport(const float pos[3]) {
     return 1;
 }
 
-static void teleport_run(Cpu *c) {
+// The actor's own pose is a column-major 3x4 matrix: the three axis columns at +0x2f8 (x, y, z: the facing), then the
+// position at +0x31c. A teleport keeps the actor's rotation unless a facing is given (a horizontal direction).
+#define ACTOR_AXES 0x2f8
+void dbg_frame_teleport(Cpu *c, const float pos[3], const float *face) {
     uint64_t actor = dbg_player_actor();
+    float ax[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
     if (!actor) return;
-    const float m[12] = {1, 0, 0, tp_pos[0], 0, 1, 0, tp_pos[1], 0, 0, 1, tp_pos[2]};
+    float len = face ? sqrtf(face[0] * face[0] + face[2] * face[2]) : 0;
+    if (len > 1e-4f) {
+        float fx = face[0] / len, fz = face[2] / len;
+        const float f[9] = {fz, 0, -fx, 0, 1, 0, fx, 0, fz};
+        memcpy(ax, f, sizeof ax);
+    } else if (!plat_mem_read(actor + ACTOR_AXES, ax, sizeof ax) || !isfinite(ax[0]) || fabsf(ax[4]) < 0.5f) {
+        const float f[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};   // unreadable or tipped over: upright
+        memcpy(ax, f, sizeof ax);
+    }
+    const float m[12] = {ax[0], ax[3], ax[6], pos[0], ax[1], ax[4], ax[7], pos[1], ax[2], ax[5], ax[8], pos[2]};
     memcpy(tp_matrix, m, sizeof m);
     uint64_t a[8] = {actor, (uint64_t)(uintptr_t)tp_matrix, 0};
     call_saved(c, GUEST_WARP_ACTOR, a);
 }
+
+static void teleport_run(Cpu *c) { dbg_frame_teleport(c, tp_pos, NULL); }
 
 // Instant warp: with a warp armed, the player is put into the nearest loading zone of the area. The zone reserves its
 // area change and the redirect writes the destination over it. An entrance of an area is an actor named
@@ -431,31 +446,45 @@ static int actor_named(uint64_t act, const char *want) {
            name && plat_mem_read(name, text, n) && !memcmp(text, want, n);
 }
 
-static int find_zones(float zone[ZONES_MAX][3]) {
+int dbg_actor_named(uint64_t actor, const char *name) { return actor_named(actor, name); }
+
+// Every actor of the generic actor class with this name, in heap order (a helper thread's job: about a second).
+int dbg_find_actors(const char *name, uint64_t *out, int max) {
     enum { CHUNK = 1 << 20 };
     static uint64_t buf[CHUNK / 8];
+    static PlatMutex lock;   // zero is unlocked; buf is shared by the callers' threads
     const uint64_t cls = MOD_MAIN_BASE + ACTOR_CLASS;
     int n = 0;
-    for (uint64_t addr = HEAP_FROM; addr < HEAP_TO && n < ZONES_MAX;) {
+    plat_mutex_lock(&lock);
+    for (uint64_t addr = HEAP_FROM; addr < HEAP_TO && n < max;) {
         uint64_t end = 0;
         int st = plat_mem_state(addr, HEAP_TO, &end);
         if (end <= addr) break;
-        for (uint64_t at = addr; st == PLAT_PROT_RW && at < end && n < ZONES_MAX; at += CHUNK) {
+        for (uint64_t at = addr; st == PLAT_PROT_RW && at < end && n < max; at += CHUNK) {
             uint64_t len = end - at < CHUNK ? end - at : CHUNK;
             if (!plat_mem_read(at, buf, len)) continue;
-            for (uint64_t i = 0; i < len / 8 && n < ZONES_MAX; i++) {
-                if (buf[i] != cls) continue;
-                uint64_t act = at + i * 8, link = 0, entrance = 0;
-                float p[3];
-                if (!actor_named(act, TRIGGER_NAME) || !plat_mem_read(act + TRIGGER_LINK, &link, 8) || !link) continue;
-                if (!plat_mem_read(link + TRIGGER_LINK_ENTRANCE, &entrance, 8) || !actor_named(entrance, ENTRANCE_NAME)) continue;
-                if (!plat_mem_read(act + 0x31c, p, sizeof p) || !isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2])) continue;
-                if (fabsf(p[0]) > 1e5f || fabsf(p[1]) > 1e5f || fabsf(p[2]) > 1e5f) continue;
-                p[1] += TRIGGER_RAISE_M;
-                memcpy(zone[n++], p, sizeof p);
-            }
+            for (uint64_t i = 0; i < len / 8 && n < max; i++)
+                if (buf[i] == cls && actor_named(at + i * 8, name)) out[n++] = at + i * 8;
         }
         addr = end;
+    }
+    plat_mutex_unlock(&lock);
+    return n;
+}
+
+static int find_zones(float zone[ZONES_MAX][3]) {
+    enum { AREAS_MAX = 512 };
+    static uint64_t area[AREAS_MAX];
+    int na = dbg_find_actors(TRIGGER_NAME, area, AREAS_MAX), n = 0;
+    for (int k = 0; k < na && n < ZONES_MAX; k++) {
+        uint64_t link = 0, entrance = 0;
+        float p[3];
+        if (!plat_mem_read(area[k] + TRIGGER_LINK, &link, 8) || !link) continue;
+        if (!plat_mem_read(link + TRIGGER_LINK_ENTRANCE, &entrance, 8) || !actor_named(entrance, ENTRANCE_NAME)) continue;
+        if (!plat_mem_read(area[k] + 0x31c, p, sizeof p) || !isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2])) continue;
+        if (fabsf(p[0]) > 1e5f || fabsf(p[1]) > 1e5f || fabsf(p[2]) > 1e5f) continue;
+        p[1] += TRIGGER_RAISE_M;
+        memcpy(zone[n++], p, sizeof p);
     }
     return n;
 }
@@ -569,4 +598,5 @@ void dbg_game_frame(Cpu *c) {
     if (atomic_load(&warp_state) != W_IDLE) redirect_step();
     keys_init();
     if (dbg_flag_addr(DBG_FLAG_STRING, K_START)) remember_start();
+    dbg_move_frame(c);
 }

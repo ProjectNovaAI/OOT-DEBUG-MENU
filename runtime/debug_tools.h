@@ -168,6 +168,28 @@ uint64_t dbg_player_performer(void);
 uint64_t dbg_guest_scratch(void);   // 64 KiB the game may use, for structures passed to guest calls
 struct Cpu;
 void dbg_game_frame(struct Cpu *c);    // the frame hook, game thread
+// Game thread only (from the frame hook): the game's actor warp of the player to pos now. face, when not NULL, is a
+// horizontal direction to turn the player to; else the player keeps its rotation.
+void dbg_frame_teleport(struct Cpu *c, const float pos[3], const float *face);
+// Actors of the generic actor class by name (a heap scan of about a second: helper threads only), and the check that
+// an address still holds such an actor.
+int dbg_find_actors(const char *name, uint64_t *out, int max);
+int dbg_actor_named(uint64_t actor, const char *name);
+
+// Fly, hover and infinite Hover Boots (debug_move.c, run by the frame hook). Fly: the left stick moves where the camera
+// looks, X rises, B sinks, A held is three times faster; walls do not stop it. Hover: the height is held where it was
+// switched on and the stick walks on air. Infinite Hover Boots: with the Hover Boots on, a fall is stopped where it
+// starts and the player walks on air at that height until the boots come off or B is pressed. Fly wins over hover,
+// hover over the boots.
+void dbg_fly(int on);
+int dbg_fly_on(void);
+float dbg_fly_speed(void);             // metres per second
+void dbg_set_fly_speed(float ms);      // 1..100
+void dbg_hover(int on);
+int dbg_hover_on(void);
+void dbg_hover_boots(int on);
+int dbg_hover_boots_on(void);
+void dbg_move_frame(struct Cpu *c);
 
 #ifdef __cplusplus
 }
