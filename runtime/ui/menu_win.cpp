@@ -59,7 +59,7 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
             *res = 0;
             return 1;
         }
-        if (w >= VK_F2 && w <= VK_F9 && !(l & (1 << 30)) && !menu_is_open() && dbg_hotkey((int)(w - VK_F1) + 1)) {
+        if (((w >= VK_F2 && w <= VK_F9) || w == VK_F12) && !(l & (1 << 30)) && !menu_is_open() && dbg_hotkey((int)(w - VK_F1) + 1)) {
             *res = 0;
             return 1;
         }

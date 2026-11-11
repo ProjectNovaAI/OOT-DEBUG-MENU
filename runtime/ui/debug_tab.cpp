@@ -140,6 +140,13 @@ extern "C" void tab_debug(float scale) {
                          "warp to an area that has one.",
                          false) == 2 && sw >= 0)
             dbg_age_switch();
+        int rl = dbg_reload_target();
+        snprintf(value, sizeof value, "A: %s", rl < 0 ? "-" : dbg_warp_start(rl));
+        if (opt_text_row("##dbg_wreload", "Reload area", value, nullptr,
+                         "For practice: warps back into this area at the entrance the player last came in by (or its "
+                         "first one), same age, so a route or trick can be tried again from the start.",
+                         false) == 2 && rl >= 0)
+            dbg_reload_area();
         int hold = dbg_warp_get_age();
         int rf = opt_text_row("##dbg_wflag", "Age flag on arrival",
                          hold == DBG_AGE_CHILD ? "child" : hold == DBG_AGE_ADULT ? "adult" : "set by the area", nullptr,
@@ -589,6 +596,7 @@ extern "C" void tab_debug(float scale) {
             {DBG_SHOW_POS, "##dbg_o_pos", "Show position", "Draws the player's position in the top left corner."},
             {DBG_SHOW_SPEED, "##dbg_o_speed", "Show speed", "Draws the ground and vertical speed."},
             {DBG_SHOW_TIMER, "##dbg_o_timer", "Show timer", "Draws the timer and the last lap."},
+            {DBG_SHOW_AREA, "##dbg_o_area", "Show area", "Draws the area's stage file and the entrance the player came in by: what Reload area (F12) goes back to."},
             {DBG_SHOW_INPUT, "##dbg_o_input", "Show inputs", "Draws the buttons and sticks the game is being given, bottom left: for checking a route or an input sequence."},
         };
         for (auto &r : rows)
@@ -596,7 +604,8 @@ extern "C" void tab_debug(float scale) {
         dbg_overlay_set(mask);
         bool hk = dbg_hotkeys() != 0;
         if (opt_toggle_text("##dbg_hotkeys", "Keyboard hotkeys", "With the menu closed: F5 saves the position in slot 1, F6 goes to it, "
-                            "F7 and F8 lower and raise the game speed, F9 starts and stops the timer.", hk))
+                            "F7 and F8 lower and raise the game speed, F9 starts and stops the timer, F12 reloads the area. "
+                            "The speedrun timer uses F2 (start, pause), F3 (split) and F4 (reset).", hk))
             dbg_hotkeys_set(!hk);
     }
 
@@ -871,7 +880,7 @@ extern "C" void debug_overlay_draw(float scale) {
     const char *toast_msg = dbg_toast(plat_now_ns());
     bool igt = dbg_igt_enabled() != 0;
     if ((!mask && !toast_msg && !igt) || !dbg_available()) return;
-    char lines[4][96];
+    char lines[6][96];
     int n = 0;
     float pos[3];
     if (mask & DBG_SHOW_POS) {
@@ -879,6 +888,12 @@ extern "C" void debug_overlay_draw(float scale) {
             snprintf(lines[n++], sizeof lines[0], "X %.2f  Y %.2f  Z %.2f", pos[0], pos[1], pos[2]);
         else
             snprintf(lines[n++], sizeof lines[0], "no player");
+    }
+    if (mask & DBG_SHOW_AREA) {
+        char cur[64] = "", banc[64], start[64];
+        dbg_current_area(cur);
+        int have = dbg_last_entrance(banc, start) && !strcmp(banc, cur);
+        snprintf(lines[n++], sizeof lines[0], "%s%s%s", cur[0] ? cur : "no area", have ? "  from " : "", have ? start : "");
     }
     if (mask & DBG_SHOW_SPEED)
         snprintf(lines[n++], sizeof lines[0], "Speed %.2f m/s  vert %.2f", dbg_ground_speed(), dbg_vertical_speed());

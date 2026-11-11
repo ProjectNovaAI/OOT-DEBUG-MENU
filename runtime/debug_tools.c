@@ -794,7 +794,7 @@ const char *dbg_toast(uint64_t now_ns) { return now_ns < toast_until ? toast_tex
 
 int dbg_hotkey(int fkey) {
     static const float scales[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
-    if (!dbg_hotkeys() || !dbg_available() || fkey < 2 || fkey > 9) return 0;
+    if (!dbg_hotkeys() || !dbg_available() || fkey < 2 || (fkey > 9 && fkey != 12)) return 0;
     char t[64];
     switch (fkey) {
     case 2:
@@ -809,6 +809,7 @@ int dbg_hotkey(int fkey) {
     case 4: toast(dbg_igt_reset() ? "Speedrun timer reset: new best run saved" : "Speedrun timer reset"); break;
     case 5: toast(dbg_slot_save(0) ? "Position saved to slot 1" : "No player to save"); break;
     case 6: toast(dbg_slot_load(0) ? "Moved to slot 1" : "Slot 1 is empty or no player"); break;
+    case 12: toast(dbg_reload_area() ? "Reloading the area" : "This area has no entrance to reload at"); break;
     case 7:
     case 8: {
         float s = dbg_time_scale();

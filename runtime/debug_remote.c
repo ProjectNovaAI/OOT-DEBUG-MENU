@@ -431,10 +431,10 @@ static void run_command(char *line) {
         }
     } else if (!strcmp(cmd, "set") && a1 && a2) {   // set HITINDEX INT
         out_put("%s\n", dbg_scan_write((int)num(a1), (int32_t)strtol(a2, NULL, 0)) ? "written" : "failed");
-    } else if (!strcmp(cmd, "overlay") && a1) {   // overlay MASK: 1 position, 2 speed, 4 timer, 8 inputs
+    } else if (!strcmp(cmd, "overlay") && a1) {   // overlay MASK: 1 position, 2 speed, 4 timer, 8 inputs, 16 area
         dbg_overlay_set((int)num(a1));
         out_put("overlay mask %d\n", dbg_overlay_mask());
-    } else if (!strcmp(cmd, "hotkeys") && a1) {   // hotkeys 0|1: F5 save, F6 load, F7/F8 speed, F9 timer
+    } else if (!strcmp(cmd, "hotkeys") && a1) {   // hotkeys 0|1: F5 save, F6 load, F7/F8 speed, F9 timer, F12 reload
         dbg_hotkeys_set((int)num(a1));
         out_put("hotkeys %d\n", dbg_hotkeys());
     } else if (!strcmp(cmd, "player")) {
@@ -592,6 +592,8 @@ static void run_command(char *line) {
         out_put("magic level %d\n", dbg_magic_level());
     } else if (!strcmp(cmd, "agesw")) {   // agesw: switch between child and adult in this area
         out_put("age switch to warp %d: %s\n%s\n", dbg_age_switch_target(), dbg_age_switch() ? "started" : "failed", dbg_warp_note());
+    } else if (!strcmp(cmd, "reload")) {   // reload: this area again from the entrance the player came in by
+        out_put("reload to warp %d: %s\n%s\n", dbg_reload_target(), dbg_reload_area() ? "started" : "failed", dbg_warp_note());
     } else if (!strcmp(cmd, "warpage")) {   // warpage [area|child|adult]: the age flag held after a warp
         if (a1) dbg_warp_set_age(!strcmp(a1, "child") ? DBG_AGE_CHILD : !strcmp(a1, "adult") ? DBG_AGE_ADULT : DBG_AGE_ANY);
         int age = dbg_warp_get_age();
@@ -630,7 +632,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
     }
 }
 

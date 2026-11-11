@@ -74,13 +74,14 @@ int dbg_igt_best_count(void);
 void dbg_igt_clear_best(void);
 
 // On-screen readout lines (bit mask).
-enum { DBG_SHOW_POS = 1, DBG_SHOW_SPEED = 2, DBG_SHOW_TIMER = 4, DBG_SHOW_INPUT = 8 };
+enum { DBG_SHOW_POS = 1, DBG_SHOW_SPEED = 2, DBG_SHOW_TIMER = 4, DBG_SHOW_INPUT = 8, DBG_SHOW_AREA = 16 };
 int dbg_overlay_mask(void);
 void dbg_overlay_set(int mask);
 
 // Hotkeys on the keyboard while the menu is closed (off by default; the Debug tab switches them): F5 saves the position in
-// slot 1, F6 goes to it, F7 and F8 lower and raise the game speed, F9 starts and stops the timer. dbg_hotkey is called with
-// the function key's number by the window code; it returns 1 when it used the key. dbg_toast is the last message to show.
+// slot 1, F6 goes to it, F7 and F8 lower and raise the game speed, F9 starts and stops the timer, F12 reloads the area
+// (dbg_reload_area). dbg_hotkey is called with the function key's number by the window code; it returns 1 when it used
+// the key. dbg_toast is the last message to show.
 int dbg_hotkeys(void);
 void dbg_hotkeys_set(int on);
 int dbg_hotkey(int fkey);
@@ -175,6 +176,13 @@ int dbg_warp_get_age(void);
 // in by when that file has it. dbg_age_switch_target is that warp, -1 when the area has one age only.
 int dbg_age_switch_target(void);
 int dbg_age_switch(void);
+// Reload area: this area again from the entrance the player last came in by (else its first one), same age.
+// dbg_reload_target is that warp, -1 when the area is not in the warp list.
+int dbg_reload_target(void);
+int dbg_reload_area(void);
+// The area and entrance the player last came in by (the stage file and its start position name). 0 before the first
+// area change was seen.
+int dbg_last_entrance(char banc[64], char start[64]);
 const char *dbg_warp_note(void);       // what the warp did last, for the menu
 int dbg_current_area(char out[64]);    // Sequence_CurrentBanc
 int dbg_is_child(void);                // Sequence_IsChildhood: 1 child, 0 adult, -1 unknown

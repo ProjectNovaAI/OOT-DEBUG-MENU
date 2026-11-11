@@ -627,6 +627,36 @@ int dbg_age_switch(void) {
     return dbg_warp_arm(i) && dbg_warp_now();
 }
 
+// This area again from the entrance the player last came in by, else its first entrance: a retry for practice.
+int dbg_reload_target(void) {
+    char cur[64];
+    keys_init();
+    if (!dbg_current_area(cur)) return -1;
+    int first = -1;
+    for (int k = 0; k < NWARPS; k++) {
+        if (strcmp(warps[k].banc, cur)) continue;
+        if (first < 0) first = k;
+        if (!strcmp(last_banc, cur) && !strcmp(warps[k].start, last_start)) return k;
+    }
+    return first;
+}
+
+int dbg_last_entrance(char banc[64], char start[64]) {
+    if (!last_start[0]) return 0;
+    memcpy(banc, last_banc, 64);
+    memcpy(start, last_start, 64);
+    return 1;
+}
+
+int dbg_reload_area(void) {
+    int i = dbg_reload_target();
+    if (i < 0) {
+        snprintf(warp_note, sizeof warp_note, "This area has no entrance in the warp list");
+        return 0;
+    }
+    return dbg_warp_arm(i) && dbg_warp_now();
+}
+
 void dbg_game_frame(Cpu *c) {
     if (!dbg_available()) return;
     atomic_store(&frame_seen_ns, plat_now_ns());
