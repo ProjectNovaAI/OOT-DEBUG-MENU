@@ -78,18 +78,30 @@ extern "C" void tab_debug(float scale) {
                             "frame can still get through.", god))
             dbg_invulnerable(!god);
         {
+            // The value to hold, in quarter hearts: whole hearts on one row, single quarters on the next (12, 12.25, 12.5, 12.75 ...).
+            static int target = 0;
             int lk = dbg_health_lock_value();
-            if (lk)
-                snprintf(value, sizeof value, "held at %.2f hearts%s", lk / 4.0, ok && lk > m ? " (capped at the maximum)" : "");
-            else
-                snprintf(value, sizeof value, "off");
+            if (!target) target = lk ? lk : (ok && c ? c : 48);
+            snprintf(value, sizeof value, "%.2f hearts, %s", target / 4.0, lk ? "holding" : "off");
             int r = opt_text_row("##dbg_lock", "Hold health at", value, nullptr,
                                  "Keeps health at exactly this value on every frame, whatever damage or healing happens: for "
-                                 "testing a fixed amount of health. Left and right change it by a heart; A switches it on or off "
-                                 "(on starts from the current health). The invulnerable switch above only keeps it full.", false);
-            if (r == -1 && lk > 4) dbg_health_lock(lk - 4);
-            if (r == 1) dbg_health_lock(lk ? (lk + 4 > 80 ? 80 : lk + 4) : (ok ? (c ? c : 4) : 4));
-            if (r == 2) dbg_health_lock(lk ? 0 : (ok ? (c ? c : 4) : 48));
+                                 "testing a fixed amount of health. Left and right change it by a whole heart; A switches the hold "
+                                 "on or off. The invulnerable switch above only keeps health full. A value above the maximum "
+                                 "holds the maximum.", false);
+            if (r == -1) target = target > 4 ? target - 4 : 1;
+            if (r == 1) target = target + 4 > 80 ? 80 : target + 4;
+            if (r == 2) lk = lk ? 0 : target, dbg_health_lock(lk);
+            snprintf(value, sizeof value, "%d quarter%s (%.2f hearts)", target, target == 1 ? "" : "s", target / 4.0);
+            int q = opt_text_row("##dbg_lockq", "Hold health: fine adjust", value, nullptr,
+                                 "Left and right change the value to hold by one quarter heart, so 12, 12.25, 12.5, 12.75 "
+                                 "hearts and so on can be set.", false);
+            if (q == -1 && target > 1) target--;
+            if (q == 1 && target < 80) target++;
+            if (r == 0 && q == 0) {
+                if (lk) target = lk;                                  // a value set elsewhere (the console) is adopted
+            } else if (dbg_health_lock_value()) {
+                dbg_health_lock(target);                              // changed while holding: follow it at once
+            }
         }
         if (opt_text_row("##dbg_refill", "Refill health", "A: full", nullptr, "Sets health to the current maximum.", false) == 2 && ok)
             dbg_health_set(m);
