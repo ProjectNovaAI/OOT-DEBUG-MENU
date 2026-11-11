@@ -448,29 +448,69 @@ static int actor_named(uint64_t act, const char *want) {
 
 int dbg_actor_named(uint64_t actor, const char *name) { return actor_named(actor, name); }
 
-// Every actor of the generic actor class with this name, in heap order (a helper thread's job: about a second).
-int dbg_find_actors(const char *name, uint64_t *out, int max) {
+// Every actor of the generic actor class, in heap order, with its name (a helper thread's job: about a second). fn
+// returns 0 to stop. Returns how many were passed to fn.
+int dbg_each_actor(int (*fn)(uint64_t actor, const char *name, void *ctx), void *ctx) {
     enum { CHUNK = 1 << 20 };
     static uint64_t buf[CHUNK / 8];
     static PlatMutex lock;   // zero is unlocked; buf is shared by the callers' threads
     const uint64_t cls = MOD_MAIN_BASE + ACTOR_CLASS;
-    int n = 0;
+    int n = 0, go = 1;
     plat_mutex_lock(&lock);
-    for (uint64_t addr = HEAP_FROM; addr < HEAP_TO && n < max;) {
+    for (uint64_t addr = HEAP_FROM; addr < HEAP_TO && go;) {
         uint64_t end = 0;
         int st = plat_mem_state(addr, HEAP_TO, &end);
         if (end <= addr) break;
-        for (uint64_t at = addr; st == PLAT_PROT_RW && at < end && n < max; at += CHUNK) {
+        for (uint64_t at = addr; st == PLAT_PROT_RW && at < end && go; at += CHUNK) {
             uint64_t len = end - at < CHUNK ? end - at : CHUNK;
             if (!plat_mem_read(at, buf, len)) continue;
-            for (uint64_t i = 0; i < len / 8 && n < max; i++)
-                if (buf[i] == cls && actor_named(at + i * 8, name)) out[n++] = at + i * 8;
+            for (uint64_t i = 0; i < len / 8 && go; i++) {
+                uint64_t name = 0;
+                char text[80];
+                if (buf[i] != cls || !plat_mem_read(at + i * 8 + 0x20, &name, 8) || !name ||
+                    !plat_mem_read(name, text, sizeof text))
+                    continue;
+                text[sizeof text - 1] = 0;
+                n++;
+                go = fn(at + i * 8, text, ctx);
+            }
         }
         addr = end;
     }
     plat_mutex_unlock(&lock);
     return n;
 }
+
+struct find_ctx {
+    const char *name;
+    uint64_t *out;
+    int max, n;
+};
+
+static int find_one(uint64_t actor, const char *name, void *ctx) {
+    struct find_ctx *f = ctx;
+    if (!strcmp(name, f->name)) f->out[f->n++] = actor;
+    return f->n < f->max;
+}
+
+// Every actor of the generic actor class with this name, in heap order (a helper thread's job: about a second).
+int dbg_find_actors(const char *name, uint64_t *out, int max) {
+    struct find_ctx f = {name, out, max, 0};
+    if (max > 0) dbg_each_actor(find_one, &f);
+    return f.n;
+}
+
+// The actor an Area trigger acts on: the target of the link record at +0x3d8 (an entrance for a loading zone, an
+// event, another Area, a chest...); 0 when it has none.
+uint64_t dbg_area_target(uint64_t area) {
+    uint64_t link = 0, target = 0;
+    if (!plat_mem_read(area + TRIGGER_LINK, &link, 8) || !link || !plat_mem_read(link + TRIGGER_LINK_ENTRANCE, &target, 8))
+        return 0;
+    return target;
+}
+
+// 1 when the Area trigger leads to an entrance (a loading zone): its link's target is the entrance actor.
+int dbg_area_is_loading_zone(uint64_t area) { return actor_named(dbg_area_target(area), ENTRANCE_NAME); }
 
 static int find_zones(float zone[ZONES_MAX][3]) {
     enum { AREAS_MAX = 512 };

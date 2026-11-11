@@ -621,6 +621,26 @@
 # 1: no volumetric fog. The fog's first compute pass writes every froxel as empty (vk_pipeline.c spirv_fog_off); the
 # switch applies at once. Default: 0.
 # debug_fog_off = 0
+# Volume overlay of the debug menu (Debug tab, View; docs/debug-menu.md): placed invisible walls, loading zones, other
+# trigger zones and hidden things (grottos, Gold Skulltulas, heart pieces, chests), drawn over the picture and seen
+# through walls. 1 shows a kind. Default: 0 each.
+# debug_view_walls = 0
+# debug_view_loading = 0
+# debug_view_triggers = 0
+# debug_view_hidden = 0
+# wire (edges), solid (see-through colour) or both. Default: wire.
+# debug_view_style = wire
+# How strongly a solid face covers what is behind it, in percent (10 to 100). Default: 35.
+# debug_view_opacity = 35
+# A colour per kind: pink, green, cyan, yellow, orange, purple (neon), red, blue or white.
+# debug_view_color_walls = pink
+# debug_view_color_loading = cyan
+# debug_view_color_triggers = yellow
+# debug_view_color_hidden = green
+# 1: each volume's name over it, within 60 m. Default: 1.
+# debug_view_labels = 1
+# Volumes further from the player than this many metres are not drawn (10 to 1000). Default: 150.
+# debug_view_range = 150
 # Speedrun timer of the debug menu (F1, Debug tab; docs/debug-menu.md), game build 1.1.1: in-game time without the
 # loading screens, real time and splits, drawn at the top right. 1 shows it. Default: 0.
 # debug_igt = 0

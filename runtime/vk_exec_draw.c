@@ -30,6 +30,7 @@
 #include "vk_exec.h"
 #include "vk_gpa.h"
 #include "platform/platform.h"
+#include "vk_debug_cam.h"
 #include "vk_dlaa.h"
 
 #define MAX_BINDINGS 128
@@ -3715,6 +3716,7 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
         vk_dlaa_draw(ex);
         vk_mvsurvey_draw(ex);
         vk_mvprev_draw(ex);
+        vk_dbgcam_draw(ex);   // the debug menu's volume overlay: the scene camera
     }
     record_fixed(ex);
     repeat_stats(ex, info);

@@ -13,6 +13,7 @@
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "vk_debug_cam.h"
 
 #ifdef _WIN32
 #include <direct.h>
@@ -548,6 +549,22 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "fog")) {   // fog [0|1]: 1 shows the volumetric fog, 0 removes it (NX2NAVI_DEBUG_FOG_OFF)
         if (a1) cfg_set("NX2NAVI_DEBUG_FOG_OFF", atoi(a1) ? "0" : "1");
         out_put("fog %s\n", cfg_bool("NX2NAVI_DEBUG_FOG_OFF") ? "off" : "on");
+    } else if (!strcmp(cmd, "view")) {   // view [RANGE]: the volume overlay's list near the player (kinds as set)
+        static DbgVolume v[256];
+        static const char *const kind[] = {"", "wall", "load", "", "trigger", "", "", "", "hidden"};
+        int n = dbg_view_volumes(v, 256, a1 ? (float)atof(a1) : 60.0f);
+        float vp[16], asp = 0;
+        int cam = vk_dbgcam_vp(vp, &asp);
+        out_put("%d volumes (kinds %d), camera %d aspect %.3f\n", n, dbg_view_kinds(), cam, asp);
+        for (int i = 0; cam && i < 4; i++) out_put("  vp %8.4f %8.4f %8.4f %10.4f\n", vp[i * 4], vp[i * 4 + 1], vp[i * 4 + 2], vp[i * 4 + 3]);
+        for (int i = 0; i < n; i++) {
+            float c[4] = {0, 0, 0, 1};
+            for (int r = 0; cam && r < 4; r++)
+                c[r] = vp[r * 4] * v[i].pos[0] + vp[r * 4 + 1] * v[i].pos[1] + vp[r * 4 + 2] * v[i].pos[2] + vp[r * 4 + 3];
+            out_put("%-7s %-40s pos %.1f %.1f %.1f scale %.2f %.2f %.2f ndc %.2f %.2f w %.1f%s%s\n", kind[v[i].kind & 15],
+                    v[i].name, v[i].pos[0], v[i].pos[1], v[i].pos[2], v[i].scale[0], v[i].scale[1], v[i].scale[2],
+                    c[0] / c[3], c[1] / c[3], c[3], v[i].target[0] ? " > " : "", v[i].target);
+        }
     } else if (!strcmp(cmd, "cfg") && a1) {   // cfg KEY [VALUE]: a setting (KEY without NX2NAVI_), set for this run
         char k[96];
         snprintf(k, sizeof k, "NX2NAVI_%s", a1);
@@ -613,7 +630,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots igt fog cfg area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
     }
 }
 

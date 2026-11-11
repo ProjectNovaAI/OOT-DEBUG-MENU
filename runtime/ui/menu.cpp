@@ -1725,7 +1725,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = 0;
             set_open(1);
             open = true;
-        } else if (!g_perf_mode && !dbg_overlay_mask() && !dbg_igt_enabled() && !dbg_toast(plat_now_ns())) {   // nothing to draw: skip the frame
+        } else if (!g_perf_mode && !dbg_overlay_mask() && !dbg_igt_enabled() && !dbg_view_kinds() && !dbg_toast(plat_now_ns())) {   // nothing to draw: skip the frame
             return 0;
         }
     }

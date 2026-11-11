@@ -20,6 +20,7 @@ extern "C" {
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "vk_debug_cam.h"
 int vk_dlaa_available(void);   // vk_dlaa.c: NVIDIA DLSS came up on this PC
 }
 
@@ -40,6 +41,22 @@ static int scale_index(float s) {
 }
 
 // ---- the tab
+
+// The overlay's colours: neon ones first, picked per kind in the View group (debug_view_color_*).
+static const struct { const char *name; uint8_t r, g, b; } kNeon[] = {
+    {"pink", 255, 16, 240}, {"green", 57, 255, 20}, {"cyan", 0, 255, 255}, {"yellow", 255, 240, 0},
+    {"orange", 255, 95, 31}, {"purple", 188, 19, 254}, {"red", 255, 30, 30}, {"blue", 40, 120, 255},
+    {"white", 255, 255, 255},
+};
+enum { NEON = sizeof kNeon / sizeof *kNeon };
+static const char *const kKindKey[DBG_VOL_KINDS] = {"NX2NAVI_DEBUG_VIEW_COLOR_WALLS", "NX2NAVI_DEBUG_VIEW_COLOR_LOADING",
+                                                    "NX2NAVI_DEBUG_VIEW_COLOR_TRIGGERS", "NX2NAVI_DEBUG_VIEW_COLOR_HIDDEN"};
+
+static int neon_index(const char *name) {
+    for (int i = 0; i < NEON; i++)
+        if (name && !strcmp(name, kNeon[i].name)) return i;
+    return 0;
+}
 
 extern "C" void tab_debug(float scale) {
     opt_begin("##debug", scale);
@@ -403,6 +420,87 @@ extern "C" void tab_debug(float scale) {
             cfg_reset(keys, NQ);
             opt_save_soon();
         }
+
+        // The volume overlay (debug_overlay_draw): settings, so they stay as set.
+        static const struct { const char *key, *id, *label, *desc; } vs[] = {
+            {"NX2NAVI_DEBUG_VIEW_WALLS", "##dbg_v_walls", "Show invisible walls",
+             "Draws the invisible walls placed as objects (air walls), seen through everything. The walls inside the "
+             "level's own collision mesh are not included yet."},
+            {"NX2NAVI_DEBUG_VIEW_LOADING", "##dbg_v_load", "Show loading zones",
+             "Draws the trigger boxes that load another area when the player walks in."},
+            {"NX2NAVI_DEBUG_VIEW_TRIGGERS", "##dbg_v_trig", "Show trigger zones",
+             "Draws every other trigger volume: event, camera, music and spawn areas, horse jump limits and the like."},
+            {"NX2NAVI_DEBUG_VIEW_HIDDEN", "##dbg_v_hidden", "Show hidden things",
+             "Marks hidden holes (grottos), Gold Skulltulas, pieces of heart, chests and magic bean spots."},
+        };
+        for (const auto &s : vs) {
+            bool on = cfg_bool(s.key) != 0;
+            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
+                cfg_set(s.key, on ? "0" : "1");
+                opt_save_soon();
+            }
+        }
+        static const char *const styles[] = {"wire", "solid", "both"};
+        static const char *const style_names[] = {"Wireframe", "Solid colour", "Both"};
+        int si = 0;
+        while (si < 2 && strcmp(cfg_value("NX2NAVI_DEBUG_VIEW_STYLE"), styles[si])) si++;
+        int r = opt_text_row("##dbg_v_style", "Overlay style", style_names[si], nullptr,
+                             "Wireframe draws the edges; solid colour fills the faces see-through (Opacity); both does both. "
+                             "Left and right change it.",
+                             false);
+        if (r) {
+            si = (si + (r == -1 ? 2 : 1)) % 3;
+            cfg_set("NX2NAVI_DEBUG_VIEW_STYLE", styles[si]);
+            opt_save_soon();
+        }
+        int op = cfg_int("NX2NAVI_DEBUG_VIEW_OPACITY");
+        snprintf(value, sizeof value, "%d %%", op);
+        r = opt_text_row("##dbg_v_op", "Solid colour opacity", value, nullptr,
+                         "How strongly a solid face covers what is behind it. Left and right change it.", false);
+        if (r == -1 || r == 1) {
+            op += r * 10;
+            op = op < 10 ? 10 : op > 100 ? 100 : op;
+            snprintf(value, sizeof value, "%d", op);
+            cfg_set("NX2NAVI_DEBUG_VIEW_OPACITY", value);
+            opt_save_soon();
+        }
+        static const char *const kind_names[DBG_VOL_KINDS] = {"Colour: invisible walls", "Colour: loading zones",
+                                                              "Colour: trigger zones", "Colour: hidden things"};
+        for (int k = 0; k < DBG_VOL_KINDS; k++) {
+            int ci = neon_index(cfg_value(kKindKey[k]));
+            char id[32];
+            snprintf(id, sizeof id, "##dbg_v_col%d", k);
+            r = opt_text_row(id, kind_names[k], kNeon[ci].name, nullptr,
+                             "Neon pink, green, cyan, yellow, orange or purple, or red, blue or white. Left and right "
+                             "change it.",
+                             false);
+            if (r) {
+                ci = (ci + (r == -1 ? NEON - 1 : 1)) % NEON;
+                cfg_set(kKindKey[k], kNeon[ci].name);
+                opt_save_soon();
+            }
+        }
+        {
+            bool on = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
+            if (opt_toggle_text("##dbg_v_labels", "Names on the overlay", "Writes each volume's name over it, within 60 m.",
+                                on)) {
+                cfg_set("NX2NAVI_DEBUG_VIEW_LABELS", on ? "0" : "1");
+                opt_save_soon();
+            }
+        }
+        static const int ranges[] = {25, 50, 100, 150, 250, 500, 1000};
+        int rg = cfg_int("NX2NAVI_DEBUG_VIEW_RANGE"), ri = 0;
+        while (ri < 6 && ranges[ri] < rg) ri++;
+        snprintf(value, sizeof value, "%d m", ranges[ri]);
+        r = opt_text_row("##dbg_v_range", "Overlay range", value, nullptr,
+                         "Volumes further from the player than this are not drawn. Left and right change it.", false);
+        if (r == -1 || r == 1) {
+            ri += r;
+            ri = ri < 0 ? 0 : ri > 6 ? 6 : ri;
+            snprintf(value, sizeof value, "%d", ranges[ri]);
+            cfg_set("NX2NAVI_DEBUG_VIEW_RANGE", value);
+            opt_save_soon();
+        }
     }
 
     opt_group_text("Timer");
@@ -563,7 +661,212 @@ extern "C" void tab_debug(float scale) {
 
 // ---- the readout, top left, over the game
 
+// ---- volume overlay (View group): invisible walls, loading zones, triggers and hidden things drawn over the picture
+// with the scene camera (vk_debug_cam.c), as wireframe, solid colour or both. Nothing hides them: they show through
+// walls, which is what finding them needs.
+
+static int kind_slot(int kind) { return kind == DBG_VOL_WALL ? 0 : kind == DBG_VOL_LOAD ? 1 : kind == DBG_VOL_TRIGGER ? 2 : 3; }
+
+// The scene camera and the rectangle of the window the 3D picture fills (the game's aspect, fitted in the window).
+struct ViewProj {
+    float vp[16];
+    float x0, y0, w, h;
+};
+
+static const float kNear = 0.05f;   // clip-space w below this is behind or at the eye
+
+static void clip_of(const ViewProj &P, const float p[3], float c[4]) {
+    for (int r = 0; r < 4; r++) c[r] = P.vp[r * 4] * p[0] + P.vp[r * 4 + 1] * p[1] + P.vp[r * 4 + 2] * p[2] + P.vp[r * 4 + 3];
+}
+
+static ImVec2 screen_of(const ViewProj &P, const float c[4]) {
+    float x = c[0] / c[3], y = c[1] / c[3];
+    return ImVec2(P.x0 + (x * 0.5f + 0.5f) * P.w, P.y0 + (0.5f - y * 0.5f) * P.h);
+}
+
+static void lerp4(const float a[4], const float b[4], float t, float o[4]) {
+    for (int i = 0; i < 4; i++) o[i] = a[i] + (b[i] - a[i]) * t;
+}
+
+static void draw_edge(ImDrawList *dl, const ViewProj &P, const float a[4], const float b[4], ImU32 col, float th) {
+    if (a[3] < kNear && b[3] < kNear) return;
+    float pa[4], pb[4];
+    memcpy(pa, a, sizeof pa), memcpy(pb, b, sizeof pb);
+    if (pa[3] < kNear) lerp4(a, b, (kNear - a[3]) / (b[3] - a[3]), pa);
+    if (pb[3] < kNear) lerp4(b, a, (kNear - b[3]) / (a[3] - b[3]), pb);
+    dl->AddLine(screen_of(P, pa), screen_of(P, pb), col, th);
+}
+
+// A convex face (n corners in clip space), cut at the near plane, filled.
+static void draw_face(ImDrawList *dl, const ViewProj &P, const float (*c)[4], int n, ImU32 col) {
+    float out[40][4];
+    int m = 0;
+    for (int i = 0; i < n && m < 38; i++) {
+        const float *a = c[i], *b = c[(i + 1) % n];
+        bool ina = a[3] >= kNear, inb = b[3] >= kNear;
+        if (ina) memcpy(out[m++], a, sizeof out[0]);
+        if (ina != inb) lerp4(a, b, (kNear - a[3]) / (b[3] - a[3]), out[m++]);
+    }
+    if (m < 3) return;
+    ImVec2 pts[40];
+    for (int i = 0; i < m; i++) pts[i] = screen_of(P, out[i]);
+    dl->AddConvexPolyFilled(pts, m, col);
+}
+
+// World point of a volume's local point: x and z across the middle, y up from the actor's position (its floor), all
+// in units of the scale.
+static void world_of(const DbgVolume &v, float lx, float ly, float lz, float o[3]) {
+    float s[3] = {lx * v.scale[0], ly * v.scale[1], lz * v.scale[2]};
+    for (int i = 0; i < 3; i++) o[i] = v.pos[i] + v.axes[i] * s[0] + v.axes[3 + i] * s[1] + v.axes[6 + i] * s[2];
+}
+
+static void draw_volume(ImDrawList *dl, const ViewProj &P, const DbgVolume &v, int style, ImU32 line, ImU32 fill,
+                        float th) {
+    DbgVolume mk = v;
+    if (v.shape == DBG_SHAPE_MARKER) {   // an object: a 0.8 m cube round it, upright
+        static const float id[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+        memcpy(mk.axes, id, sizeof id);
+        mk.scale[0] = mk.scale[1] = mk.scale[2] = 0.8f;
+    }
+    const DbgVolume &u = mk;
+    if (v.shape == DBG_SHAPE_CYLINDER) {
+        enum { SEG = 20 };
+        float ring[2][SEG][4];
+        for (int k = 0; k < SEG; k++) {
+            float a = 6.2831853f * k / SEG, w[3];
+            for (int y = 0; y < 2; y++) world_of(u, 0.5f * cosf(a), (float)y, 0.5f * sinf(a), w), clip_of(P, w, ring[y][k]);
+        }
+        if (style & 2) {
+            float cap[SEG][4];
+            for (int y = 0; y < 2; y++) {
+                for (int k = 0; k < SEG; k++) memcpy(cap[k], ring[y][k], sizeof cap[0]);
+                draw_face(dl, P, cap, SEG, fill);
+            }
+            for (int k = 0; k < SEG; k++) {
+                float q[4][4];
+                memcpy(q[0], ring[0][k], 16), memcpy(q[1], ring[0][(k + 1) % SEG], 16);
+                memcpy(q[2], ring[1][(k + 1) % SEG], 16), memcpy(q[3], ring[1][k], 16);
+                draw_face(dl, P, q, 4, fill);
+            }
+        }
+        if (style & 1)
+            for (int k = 0; k < SEG; k++) {
+                for (int y = 0; y < 2; y++) draw_edge(dl, P, ring[y][k], ring[y][(k + 1) % SEG], line, th);
+                if (k % 5 == 0) draw_edge(dl, P, ring[0][k], ring[1][k], line, th);
+            }
+        return;
+    }
+    float c[8][4];
+    for (int i = 0; i < 8; i++) {
+        float w[3];
+        world_of(u, (i & 1) ? 0.5f : -0.5f, (i & 2) ? 1.0f : 0.0f, (i & 4) ? 0.5f : -0.5f, w);
+        clip_of(P, w, c[i]);
+    }
+    if (style & 2) {
+        static const int f[6][4] = {{0, 1, 3, 2}, {4, 5, 7, 6}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 3, 7, 5}};
+        for (const auto &q : f) {
+            float fc[4][4];
+            for (int k = 0; k < 4; k++) memcpy(fc[k], c[q[k]], sizeof fc[0]);
+            draw_face(dl, P, fc, 4, fill);
+        }
+    }
+    if (style & 1) {
+        static const int e[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto &q : e) draw_edge(dl, P, c[q[0]], c[q[1]], line, th);
+    }
+}
+
+// The eye: the point where clip x, y and w are all 0 (rows 0, 1 and 3 of the view-projection), by Cramer's rule.
+static bool eye_of(const ViewProj &P, float e[3]) {
+    const float *a = P.vp, *b = P.vp + 4, *c = P.vp + 12;
+    float det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+    if (fabsf(det) < 1e-9f) return false;
+    float r[3] = {-a[3], -b[3], -c[3]};
+    e[0] = (r[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (r[1] * c[2] - b[2] * r[2]) + a[2] * (r[1] * c[1] - b[1] * r[2])) / det;
+    e[1] = (a[0] * (r[1] * c[2] - b[2] * r[2]) - r[0] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * r[2] - r[1] * c[0])) / det;
+    e[2] = (a[0] * (b[1] * r[2] - r[1] * c[1]) - a[1] * (b[0] * r[2] - r[1] * c[0]) + r[0] * (b[0] * c[1] - b[1] * c[0])) / det;
+    return true;
+}
+
+// p inside the volume (box or cylinder; an object's marker never holds the eye)
+static bool inside(const DbgVolume &v, const float p[3]) {
+    if (v.shape == DBG_SHAPE_MARKER) return false;
+    float d[3] = {p[0] - v.pos[0], p[1] - v.pos[1], p[2] - v.pos[2]}, l[3];
+    for (int k = 0; k < 3; k++) l[k] = d[0] * v.axes[k * 3] + d[1] * v.axes[k * 3 + 1] + d[2] * v.axes[k * 3 + 2];
+    if (l[1] < 0 || l[1] > v.scale[1]) return false;
+    if (v.shape == DBG_SHAPE_CYLINDER) {
+        float x = v.scale[0] > 0 ? l[0] / (0.5f * v.scale[0]) : 2, z = v.scale[2] > 0 ? l[2] / (0.5f * v.scale[2]) : 2;
+        return x * x + z * z <= 1;
+    }
+    return fabsf(l[0]) <= 0.5f * v.scale[0] && fabsf(l[2]) <= 0.5f * v.scale[2];
+}
+
+static void draw_volumes(float scale) {
+    enum { MAXV = 1024 };
+    static DbgVolume vol[MAXV];
+    ViewProj P;
+    float aspect = 16.0f / 9.0f;
+    if (!vk_dbgcam_vp(P.vp, &aspect)) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    if (ds.x <= 0 || ds.y <= 0) return;
+    if (aspect <= 0.1f || aspect > 10) aspect = 16.0f / 9.0f;
+    if (ds.x / ds.y > aspect) P.h = ds.y, P.w = ds.y * aspect;
+    else P.w = ds.x, P.h = ds.x / aspect;
+    P.x0 = (ds.x - P.w) * 0.5f, P.y0 = (ds.y - P.h) * 0.5f;
+    const char *st = cfg_value("NX2NAVI_DEBUG_VIEW_STYLE");
+    int style = !strcmp(st, "solid") ? 2 : !strcmp(st, "both") ? 3 : 1;
+    int opacity = cfg_int("NX2NAVI_DEBUG_VIEW_OPACITY");
+    opacity = opacity < 10 ? 10 : opacity > 100 ? 100 : opacity;
+    float range = (float)cfg_int("NX2NAVI_DEBUG_VIEW_RANGE");
+    bool labels = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
+    ImU32 line[DBG_VOL_KINDS], fill[DBG_VOL_KINDS];
+    for (int k = 0; k < DBG_VOL_KINDS; k++) {
+        int i = neon_index(cfg_value(kKindKey[k]));
+        line[k] = IM_COL32(kNeon[i].r, kNeon[i].g, kNeon[i].b, 235);
+        fill[k] = IM_COL32(kNeon[i].r, kNeon[i].g, kNeon[i].b, opacity * 255 / 100);
+    }
+    int n = dbg_view_volumes(vol, MAXV, range);
+    float eye[3];
+    bool have_eye = eye_of(P, eye);
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    float me[3];
+    bool have_me = dbg_player_pos(me) != 0;
+    // trigger zones first: the walls, loading zones and hidden things drawn after them stay on top
+    static const int order[] = {DBG_VOL_TRIGGER, DBG_VOL_LOAD, DBG_VOL_WALL, DBG_VOL_HIDDEN};
+    static int idx[MAXV];
+    int m = 0;
+    for (int o : order)
+        for (int i = 0; i < n; i++)
+            if (vol[i].kind == o) idx[m++] = i;
+    for (int t = 0; t < m; t++) {
+        const DbgVolume &v = vol[idx[t]];
+        int k = kind_slot(v.kind);
+        // seen from inside, a filled volume would tint the whole picture: its edges only
+        int vs = have_eye && (style & 2) && inside(v, eye) ? 1 : style;
+        draw_volume(dl, P, v, vs, line[k], fill[k], 1.6f * scale);
+        if (!labels) continue;
+        float d2 = 0;
+        if (have_me)
+            for (int j = 0; j < 3; j++) d2 += (v.pos[j] - me[j]) * (v.pos[j] - me[j]);
+        if (d2 > 60.0f * 60.0f) continue;   // names only close by, or the far field fills with text
+        float top[3], c[4];   // the name over the volume's top middle (an object's: 1 m over it)
+        if (v.shape == DBG_SHAPE_MARKER) memcpy(top, v.pos, sizeof top), top[1] += 1.0f;
+        else world_of(v, 0, 1, 0, top);
+        clip_of(P, top, c);
+        if (c[3] < kNear) continue;
+        ImVec2 at = screen_of(P, c);
+        char text_buf[112];   // a trigger says what it acts on
+        if (v.kind != DBG_VOL_LOAD && v.target[0]) snprintf(text_buf, sizeof text_buf, "%s > %s", v.name, v.target);
+        const char *text = v.kind == DBG_VOL_LOAD ? "Loading zone" : v.target[0] ? text_buf : v.name;
+        ImVec2 sz = ImGui::CalcTextSize(text);
+        at.x -= sz.x * 0.5f, at.y -= sz.y;
+        dl->AddText(ImVec2(at.x + 1, at.y + 1), IM_COL32(0, 0, 0, 200), text);
+        dl->AddText(at, line[k], text);
+    }
+}
+
 extern "C" void debug_overlay_draw(float scale) {
+    if (dbg_view_kinds() && dbg_available()) draw_volumes(scale);
     int mask = dbg_overlay_mask();
     const char *toast_msg = dbg_toast(plat_now_ns());
     bool igt = dbg_igt_enabled() != 0;

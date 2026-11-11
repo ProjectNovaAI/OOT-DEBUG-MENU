@@ -194,6 +194,38 @@ void dbg_frame_teleport(struct Cpu *c, const float pos[3], const float *face);
 // an address still holds such an actor.
 int dbg_find_actors(const char *name, uint64_t *out, int max);
 int dbg_actor_named(uint64_t actor, const char *name);
+// Every actor of that class with its name; fn returns 0 to stop. Helper threads only (a heap scan).
+int dbg_each_actor(int (*fn)(uint64_t actor, const char *name, void *ctx), void *ctx);
+// 1 when an Area trigger is a loading zone (its link leads to the area's entrance actor).
+int dbg_area_is_loading_zone(uint64_t area);
+// The actor an Area trigger acts on (its link's target: an entrance, an event, another Area, a chest...), 0: none.
+uint64_t dbg_area_target(uint64_t area);
+
+// Volume overlay (debug_view.c): the placed volumes and objects the game does not draw, for the menu's overlay
+// (ui/debug_tab.cpp debug_overlay_draw). Kinds, as bits of the wanted set:
+enum {
+    DBG_VOL_WALL = 1,      // invisible walls: actors named *AirWall* / *Airwall*
+    DBG_VOL_LOAD = 2,      // loading zones: Area triggers that lead to an entrance
+    DBG_VOL_TRIGGER = 4,   // every other Area trigger and *Area* volume (events, camera, music, spawning, horse jumps)
+    DBG_VOL_HIDDEN = 8,    // hidden things: grotto covers, Gold Skulltulas, heart pieces, chests, hidden-hole markers
+    DBG_VOL_KINDS = 4,
+};
+enum { DBG_SHAPE_BOX, DBG_SHAPE_CYLINDER, DBG_SHAPE_MARKER };
+typedef struct {
+    float pos[3];      // the actor's position (+0x31c)
+    float axes[9];     // its placement rotation, three unit columns (+0x328)
+    float scale[3];    // its placement scale (+0x34c): a box's or cylinder's full size in metres
+    int kind;          // one DBG_VOL_ bit
+    int shape;         // DBG_SHAPE_
+    char name[48];
+    char target[48];   // an Area trigger: the name of the actor it acts on (its link), else empty
+} DbgVolume;
+// The kinds to collect (0 stops the helper thread's rescans). The list is rescanned every 1.5 s while any is wanted.
+void dbg_view_want(int kinds);
+// The volumes of the wanted kinds within range metres of the player, with their positions read now; at most max.
+int dbg_view_volumes(DbgVolume *out, int max, float range);
+// The kinds the settings switch on (debug_view_walls, _loading, _triggers, _hidden); keeps dbg_view_want in step.
+int dbg_view_kinds(void);
 
 // Fly, hover and infinite Hover Boots (debug_move.c, run by the frame hook). Fly: the left stick moves where the camera
 // looks, X rises, B sinks, A held is three times faster; walls do not stop it. Hover: the height is held where it was
