@@ -115,6 +115,43 @@ extern "C" void tab_debug(float scale) {
             dbg_health_set_max(m - 4);
     }
 
+    opt_group_text("Magic and items");
+    {
+        const char *wait = dbg_flags_locating() ? "searching the game's memory (about half a minute)..." : "not found: load a save";
+        int c = 0, m = 0;
+        bool ok = dbg_magic_get(&c, &m) != 0;
+        if (ok && m > 0)
+            snprintf(value, sizeof value, "%d of %d", c, m);
+        else
+            snprintf(value, sizeof value, "%s", ok ? "no magic meter yet" : wait);
+        int r = opt_text_row("##dbg_magic", "Magic", value, nullptr,
+                             "The player's magic meter. Left and right change it by a tenth of the maximum; A fills it.", false);
+        if (ok && m > 0 && r) dbg_magic_set(r == 2 ? m : c + r * (m / 10 > 0 ? m / 10 : 1));
+        bool inf = dbg_magic_infinite_on() != 0;
+        if (opt_toggle_text("##dbg_infmagic", "Infinite magic", "Fills the magic meter again on every frame.", inf)) dbg_magic_infinite(!inf);
+        bool infi = dbg_items_infinite_on() != 0;
+        if (opt_toggle_text("##dbg_infitems", "Infinite items", "Keeps rupees, arrows, bombs, bombchus, Deku sticks, nuts and seeds and "
+                            "magic beans at their largest value on every frame, so nothing runs out. Gold Skulltula tokens and "
+                            "small keys are not touched. Use Infinite magic above for the magic meter.", infi))
+            dbg_items_infinite(!infi);
+        for (int i = 0; i < dbg_item_count(); i++) {
+            char id[32];
+            int v = 0, max = 0, step = 1;
+            const char *label = dbg_item_label(i, &max, &step);
+            bool have = dbg_item_get(i, &v) != 0;
+            snprintf(id, sizeof id, "##dbg_item%d", i);
+            if (have)
+                snprintf(value, sizeof value, "%d", v);
+            else
+                snprintf(value, sizeof value, "%s", wait);
+            r = opt_text_row(id, label, value, nullptr,
+                             "Written to the game's own counter. Left and right change it by one step; A sets the largest value. "
+                             "The game's capacity (wallet, quiver, bag) is not checked, and a count for an item that was never "
+                             "obtained does not add the item.", false);
+            if (have && r) dbg_item_set(i, r == 2 ? max : v + r * step);
+        }
+    }
+
     opt_group_text("Saved positions");
     opt_text_str("Saves only where the player stands, not the game's state. The game may pull the actor back if its "
                  "physics body disagrees: loading is experimental.");

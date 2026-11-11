@@ -162,54 +162,223 @@ static void health_tick(void) {
     if (c != want) health_write(atomic_load(&health_addr), (uint32_t)want);
 }
 
-// ---- counted item nodes
+// ---- int flags, magic and counted items
 
-#define NODE_MAX 2048
-static uint64_t node_addr[NODE_MAX];
-static _Atomic int node_n, node_busy;
+#define FLAG_ENTRY_CLASS 0x4c20718ull   // main+: the first 8 bytes of every int flag entry
+#define FLAG_ENTRY_SIZE 0x28
+#define FLAG_ENTRY_VALUE 0x1c           // the value, and the same value again 4 bytes later
+#define FLAG_ENTRY_MAX 8192
+#define FLAG_KEYS_SPAN 0x8000           // the {key, index} table lies in this many bytes before the first entry
+#define MAGIC_HASH 0x76B18200u          // PlayerStatus.MP
+#define MAGIC_MAX_HASH 0x12D63A97u      // PlayerStatus.MPMax
+#define MAGIC_LIMIT 2000
 
-static void nodes_thread(void *arg) {
+static _Atomic uint64_t flag_base, magic_addr;
+static _Atomic int flag_count, flags_locating;
+static uint32_t flag_keys[FLAG_KEYS_SPAN / 4];   // a copy of the table, read once when the entries are found
+
+// MurmurHash3 (32 bit, seed 0) of a flag's name: the key the game stores the flag under.
+uint32_t dbg_flag_key(const char *name) {
+    size_t n = strlen(name), i;
+    uint32_t h = 0, k;
+    for (i = 0; i + 4 <= n; i += 4) {
+        memcpy(&k, name + i, 4);
+        k *= 0xcc9e2d51u, k = k << 15 | k >> 17, k *= 0x1b873593u;
+        h ^= k, h = h << 13 | h >> 19, h = h * 5 + 0xe6546b64u;
+    }
+    k = 0;
+    for (size_t j = n; j > i; j--) k = k << 8 | (uint8_t)name[j - 1];
+    if (n > i) k *= 0xcc9e2d51u, k = k << 15 | k >> 17, k *= 0x1b873593u, h ^= k;
+    h ^= (uint32_t)n;
+    h ^= h >> 16, h *= 0x85ebca6bu, h ^= h >> 13, h *= 0xc2b2ae35u, h ^= h >> 16;
+    return h;
+}
+
+// The index of a key in the copied table, -1 when it is not there. Entries are {key, index} pairs; empty slots are zero.
+static int flag_index(uint32_t key) {
+    int count = atomic_load(&flag_count);
+    for (size_t i = 0; i + 1 < FLAG_KEYS_SPAN / 4; i += 2)
+        if (flag_keys[i] == key && flag_keys[i + 1] < (uint32_t)count) return (int)flag_keys[i + 1];
+    return -1;
+}
+
+// A run of entries starts at `base`: count it, copy the key table before it and accept it when the table knows the maximum
+// health key and that entry holds a plausible maximum.
+static int flags_try(uint64_t base) {
+    const uint64_t cls = MOD_MAIN_BASE + FLAG_ENTRY_CLASS;
+    int n = 0;
+    while (n < FLAG_ENTRY_MAX && guest_ptr(base + (uint64_t)n * FLAG_ENTRY_SIZE) == cls) n++;
+    if (n < 64 || !guest_read(base - FLAG_KEYS_SPAN, flag_keys, sizeof flag_keys)) return 0;
+    atomic_store(&flag_count, n);
+    int i = flag_index(HEALTH_MAX_HASH);
+    uint32_t v = 0;
+    if (i < 0 || !guest_read(base + (uint64_t)i * FLAG_ENTRY_SIZE + FLAG_ENTRY_VALUE, &v, 4) || v < 4 || v > 400) return 0;
+    atomic_store(&flag_base, base);
+    return 1;
+}
+
+// One pass over the heap finds both: the first entry of the int flag array (three entries in a row that start with the class
+// pointer, none before them) and the magic meter of the player, which keeps the two magic keys right before its value.
+static void flags_locate_thread(void *arg) {
     (void)arg;
-    enum { CHUNK = 1 << 20 };
-    static uint32_t buf[CHUNK / 4 + 16];
-    const uint32_t lo = (uint32_t)(MOD_MAIN_BASE + 0x4c20718ull), hi = (uint32_t)(MOD_MAIN_BASE >> 32);
-    uint64_t addr = 0x100000000ull;
-    while (addr < 0x700000000ull) {
+    enum { CHUNK = 1 << 20, OVER = 32 };
+    static uint32_t buf[CHUNK / 4 + OVER];
+    const uint64_t cls = MOD_MAIN_BASE + FLAG_ENTRY_CLASS;
+    const uint32_t lo = (uint32_t)cls, hi = (uint32_t)(cls >> 32);
+    const int step = FLAG_ENTRY_SIZE / 4;
+    uint64_t addr = HEALTH_SCAN_FROM;
+    while (addr < HEALTH_SCAN_TO && !(atomic_load(&flag_base) && atomic_load(&magic_addr))) {
         uint64_t end = 0;
-        int st = plat_mem_state(addr, 0x700000000ull, &end);
+        int st = plat_mem_state(addr, HEALTH_SCAN_TO, &end);
         if (end <= addr) break;
         if (st == PLAT_PROT_RW) {
             for (uint64_t at = addr; at < end; at += CHUNK) {
                 uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 4;
-                uint64_t rn = end - at >= (n + 16) * 4 ? n + 16 : n;
+                uint64_t rn = end - at >= (n + OVER) * 4 ? n + OVER : n;
                 if (!plat_mem_read(at, buf, rn * 4)) continue;
-                for (uint64_t i = 0; i + 9 < rn && i < n; i++)
-                    if (buf[i] == lo && buf[i + 1] == hi && buf[i + 7] == buf[i + 8] && buf[i + 7] > 0 && buf[i + 7] < 1000) {
-                        int k = atomic_load(&node_n);
-                        if (k < NODE_MAX) { node_addr[k] = at + (i + 7) * 4; atomic_store(&node_n, k + 1); }
-                    }
+                for (uint64_t i = 0; i < n && i + 2 * step + 1 < rn; i++) {
+                    if (!(i & 1) && buf[i] == lo && buf[i + 1] == hi && buf[i + step] == lo && buf[i + step + 1] == hi &&
+                        buf[i + 2 * step] == lo && buf[i + 2 * step + 1] == hi && !atomic_load(&flag_base) &&
+                        guest_ptr(at + i * 4 - FLAG_ENTRY_SIZE) != cls)
+                        flags_try(at + i * 4);
+                    if (buf[i] == MAGIC_HASH && buf[i + 1] == MAGIC_MAX_HASH && buf[i + 3] <= MAGIC_LIMIT && !atomic_load(&magic_addr))
+                        atomic_store(&magic_addr, at + (i + 3) * 4);
+                }
             }
         }
         addr = end;
     }
-    atomic_store(&node_busy, 0);
+    atomic_store(&flags_locating, 0);
 }
 
-int dbg_nodes_busy(void) { return atomic_load(&node_busy); }
-int dbg_nodes_scan(void) {
-    if (!dbg_available()) return 0;
+static void flags_locate(void) {
     int zero = 0;
-    if (!atomic_compare_exchange_strong(&node_busy, &zero, 1)) return 0;
-    atomic_store(&node_n, 0);
-    if (!plat_thread_spawn(nodes_thread, NULL, "debug-nodes", 0)) { atomic_store(&node_busy, 0); return 0; }
+    if (!dbg_available() || !atomic_compare_exchange_strong(&flags_locating, &zero, 1)) return;
+    if (!plat_thread_spawn(flags_locate_thread, NULL, "debug-flags", 0)) atomic_store(&flags_locating, 0);
+}
+
+int dbg_flags_locating(void) { return atomic_load(&flags_locating); }
+
+// The address of a flag's value, 0 when the array or the key is not known. A first entry that no longer starts with the
+// class pointer means the array moved (the game was restarted from the title): it is looked for again.
+static uint64_t flag_value_addr(uint32_t key) {
+    uint64_t base = atomic_load(&flag_base);
+    if (base && guest_ptr(base) != MOD_MAIN_BASE + FLAG_ENTRY_CLASS) atomic_store(&flag_base, 0), base = 0;
+    if (!base) {
+        flags_locate();
+        return 0;
+    }
+    int i = flag_index(key);
+    return i < 0 ? 0 : base + (uint64_t)i * FLAG_ENTRY_SIZE + FLAG_ENTRY_VALUE;
+}
+
+int dbg_flag_get(uint32_t key, int *value) {
+    uint64_t a = flag_value_addr(key);
+    uint32_t v = 0;
+    if (!a || !guest_read(a, &v, 4)) return 0;
+    if (value) *value = (int)v;
     return 1;
 }
-uint64_t dbg_nodes_get(int i, int *value) {
-    if (i < 0 || i >= atomic_load(&node_n)) return 0;
-    uint32_t v = 0;
-    if (!guest_read(node_addr[i], &v, 4)) return 0;
-    if (value) *value = (int)v;
-    return node_addr[i];
+
+int dbg_flag_set(uint32_t key, int value) {
+    uint64_t a = flag_value_addr(key);
+    return a && health_write(a, (uint32_t)value) && health_write(a + 4, (uint32_t)value);
+}
+
+// The magic meter: the player's own copy is the one the game uses (it writes it over the flag on every frame), so that is
+// what is read and written. The maximum is only a flag.
+int dbg_magic_get(int *cur, int *max) {
+    uint64_t a = atomic_load(&magic_addr);
+    uint32_t e[4];
+    if (a && (!guest_read(a - 12, e, sizeof e) || e[0] != MAGIC_HASH || e[1] != MAGIC_MAX_HASH || e[3] > MAGIC_LIMIT))
+        atomic_store(&magic_addr, 0), a = 0;
+    if (!a) {
+        flags_locate();
+        return 0;
+    }
+    int m = 0;
+    if (cur) *cur = (int)e[3];
+    if (max) *max = dbg_flag_get(MAGIC_MAX_HASH, &m) ? m : 0;
+    return 1;
+}
+
+int dbg_magic_set(int value) {
+    int c, m;
+    if (!dbg_magic_get(&c, &m)) return 0;
+    if (value < 0) value = 0;
+    if (m > 0 && value > m) value = m;
+    return health_write(atomic_load(&magic_addr), (uint32_t)value);
+}
+
+static _Atomic int magic_hold;
+
+void dbg_magic_infinite(int on) { atomic_store(&magic_hold, on != 0); }
+int dbg_magic_infinite_on(void) { return atomic_load(&magic_hold); }
+
+static void magic_tick(void) {
+    int c, m;
+    if (atomic_load(&magic_hold) && dbg_magic_get(&c, &m) && m > 0 && c != m) dbg_magic_set(m);
+}
+
+// The counted things the menu can change. `flag` is the game's name of the int flag; `key` is filled in on first use.
+// The first ITEMS_CONSUMED entries are the ones that get used up: the infinite items switch holds those at their largest value.
+#define ITEMS_CONSUMED 8
+static struct Item {
+    const char *label, *flag;
+    int max, step;
+    uint32_t key;
+} items[] = {
+    {"Rupees", "PlayerStatus.CurrentRupee", 999, 10, 0},
+    {"Arrows", "PouchData.Item_Arrow_Normal.StockNum", 50, 5, 0},
+    {"Bombs", "PouchData.Item_Bomb.StockNum", 40, 5, 0},
+    {"Bombchus", "PouchData.Item_Bombchu.StockNum", 50, 5, 0},
+    {"Deku sticks", "PouchData.Item_DekuStick.StockNum", 30, 5, 0},
+    {"Deku nuts", "PouchData.Item_DekuNut.StockNum", 40, 5, 0},
+    {"Deku seeds", "PouchData.Item_DekuSeed.StockNum", 50, 5, 0},
+    {"Magic beans", "PouchData.Item_MagicBean.StockNum", 10, 1, 0},
+    {"Gold Skulltula tokens", "PouchData.Item_Token_Gold.StockNum", 100, 5, 0},
+    {"Small keys: Forest Temple", "DungeonInfo.ForestTemple.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Fire Temple", "DungeonInfo.FireTemple.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Water Temple", "DungeonInfo.WaterTemple.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Spirit Temple", "DungeonInfo.SpiritTemple.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Shadow Temple", "DungeonInfo.ShadowTemple.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Bottom of the Well", "DungeonInfo.BottomOfTheWell.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Gerudo Training Ground", "DungeonInfo.GerudoTrainingGround.SmallKeyNum", 9, 1, 0},
+    {"Small keys: Ganon's Castle", "DungeonInfo.InsideGanonCastle.SmallKeyNum", 9, 1, 0},
+};
+
+int dbg_item_count(void) { return (int)(sizeof items / sizeof items[0]); }
+
+const char *dbg_item_label(int i, int *max, int *step) {
+    if (i < 0 || i >= dbg_item_count()) return NULL;
+    if (max) *max = items[i].max;
+    if (step) *step = items[i].step;
+    return items[i].label;
+}
+
+static uint32_t item_key(int i) {
+    if (!items[i].key) items[i].key = dbg_flag_key(items[i].flag);
+    return items[i].key;
+}
+
+int dbg_item_get(int i, int *value) { return i >= 0 && i < dbg_item_count() && dbg_flag_get(item_key(i), value); }
+
+int dbg_item_set(int i, int value) {
+    if (i < 0 || i >= dbg_item_count()) return 0;
+    if (value < 0) value = 0;
+    if (value > items[i].max) value = items[i].max;
+    return dbg_flag_set(item_key(i), value);
+}
+
+static _Atomic int items_hold;
+
+void dbg_items_infinite(int on) { atomic_store(&items_hold, on != 0); }
+int dbg_items_infinite_on(void) { return atomic_load(&items_hold); }
+
+static void items_tick(void) {
+    if (!atomic_load(&items_hold)) return;
+    for (int i = 0, v; i < ITEMS_CONSUMED; i++)
+        if (dbg_item_get(i, &v) && v != items[i].max) dbg_item_set(i, items[i].max);
 }
 
 // ---- speed
@@ -228,6 +397,8 @@ void dbg_tick(uint64_t now_ns) {
         if (plat_getenv("NX2NAVI_DEBUG_REMOTE", v, sizeof v) && v[0] && v[0] != '0') dbg_remote_set(1);
     }
     health_tick();
+    magic_tick();
+    items_tick();
     float pos[3];
     if (!dbg_player_pos(pos)) {
         have_last = 0;

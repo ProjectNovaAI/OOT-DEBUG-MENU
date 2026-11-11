@@ -453,16 +453,33 @@ static void run_command(char *line) {
         dbg_health_lock(atoi(a1));
         out_put("lock %d\n", dbg_health_lock_value());
     } else if (!strcmp(cmd, "nodes")) {
-        if (a1 && !strcmp(a1, "scan")) out_put("nodes scan %s\n", dbg_nodes_scan() ? "started" : "not started");
-        else {
-            int v, want = a1 ? atoi(a1) : -1, shown = 0;
-            out_put("nodes busy=%d\n", dbg_nodes_busy());
-            for (int i = 0; shown < 60; i++) {
-                uint64_t a = dbg_nodes_get(i, &v);
-                if (!a) break;
-                if (want < 0 || v == want) { out_put("  %llx = %d\n", (unsigned long long)a, v); shown++; }
-            }
+        out_put("replaced by: flag NAME [VALUE], items, item INDEX VALUE, magic [VALUE], infmagic 0|1, infitems 0|1\n");
+    } else if (!strcmp(cmd, "flag") && a1) {   // flag NAME [VALUE]: an int flag by its name in the game's flag list
+        int v = 0;
+        uint32_t key = dbg_flag_key(a1);
+        if (a2) out_put("flag %s (key %08x) set %s\n", a1, key, dbg_flag_set(key, atoi(a2)) ? "done" : "failed");
+        if (dbg_flag_get(key, &v)) out_put("flag %s (key %08x) = %d\n", a1, key, v);
+        else out_put("flag %s (key %08x): %s\n", a1, key, dbg_flags_locating() ? "searching" : "not found");
+    } else if (!strcmp(cmd, "items")) {
+        for (int i = 0; i < dbg_item_count(); i++) {
+            int v = 0, max = 0;
+            const char *label = dbg_item_label(i, &max, NULL);
+            if (dbg_item_get(i, &v)) out_put("%2d %s = %d (max %d)\n", i, label, v, max);
+            else out_put("%2d %s: %s\n", i, label, dbg_flags_locating() ? "searching" : "not found");
         }
+    } else if (!strcmp(cmd, "item") && a1 && a2) {
+        out_put("item %s\n", dbg_item_set(atoi(a1), atoi(a2)) ? "done" : "failed");
+    } else if (!strcmp(cmd, "magic")) {
+        int c, m;
+        if (a1) out_put("magic set %s\n", dbg_magic_set(atoi(a1)) ? "done" : "failed");
+        if (dbg_magic_get(&c, &m)) out_put("magic %d of %d, infinite %d\n", c, m, dbg_magic_infinite_on());
+        else out_put("magic: %s\n", dbg_flags_locating() ? "searching" : "not found");
+    } else if (!strcmp(cmd, "infmagic") && a1) {
+        dbg_magic_infinite(atoi(a1));
+        out_put("infmagic %d\n", dbg_magic_infinite_on());
+    } else if (!strcmp(cmd, "infitems") && a1) {
+        dbg_items_infinite(atoi(a1));
+        out_put("infitems %d\n", dbg_items_infinite_on());
     } else if (!strcmp(cmd, "god") && a1) {
         dbg_invulnerable(atoi(a1));
         out_put("god %d\n", dbg_invulnerable_on());
@@ -470,7 +487,7 @@ static void run_command(char *line) {
         dbg_set_time_scale(strtof(a1, NULL));
         out_put("speed %.3f\n", dbg_time_scale());
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag items item magic infmagic infitems\n");
     }
 }
 

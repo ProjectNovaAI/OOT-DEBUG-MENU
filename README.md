@@ -18,8 +18,9 @@
 - **Keyboard hotkeys** with the menu closed: F5 save, F6 load, F7/F8 game speed, F9 timer
 - **Memory scanner** (find and edit values) and a **remote console** for inspecting the running game (`NX2NAVI_DEBUG_REMOTE=1`), with hardware watchpoints and execution breakpoints
 - **Health**: live health readout, invulnerable (always full), hold health at a chosen number of hearts, refill, set to a quarter heart, add or remove heart containers
+- **Magic and items**: magic readout and fill, infinite magic, infinite items (rupees and ammunition never run out), and live counts you can change for rupees, arrows, bombs, bombchus, Deku sticks, nuts and seeds, magic beans, Gold Skulltula tokens and each dungeon's small keys
 - **Everything here is a work in progress and still being worked on**; features may be incomplete or change.
-- *Being built next*: collision/invisible-wall/death-barrier visibility (with a solid-colour option), warp to every location (all teleport destinations), items and flags, child/adult switch
+- *Being built next*: collision/invisible-wall/death-barrier visibility (with a solid-colour option), warp to every location (all teleport destinations), giving and removing items, flag editing, child/adult switch
 <!-- DEBUG-MENU-FEATURES:END -->
 
 ---

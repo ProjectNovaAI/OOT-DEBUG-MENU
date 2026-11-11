@@ -79,12 +79,30 @@ int dbg_health_set_max(int max);      // quarter hearts, 4..80
 // after any damage or healing. 0 switches the lock off. With both a lock and the invulnerable switch on, the lock wins.
 void dbg_health_lock(int quarters);
 int dbg_health_lock_value(void);
-// Counted item values (arrows, bombs, rupees...) are heap nodes that start with a pointer to one class (main+0x4c20718) and keep the
-// value twice, at +0x1c and +0x20. dbg_nodes_scan starts a background scan of the heap for them (about half a minute);
-// dbg_nodes_get returns the address of the i-th node found (0 past the end) and its value.
-int dbg_nodes_scan(void);
-int dbg_nodes_busy(void);
-uint64_t dbg_nodes_get(int i, int *value);
+// Int flags (rupees, item counts, small keys ...). The game keeps every int flag of its flag list in one heap array of
+// 0x28-byte entries, in list order: a pointer to one class (main+0x4c20718), then the value at +0x1c and again at +0x20.
+// A table of {key, index} pairs right before the array maps a flag's key (dbg_flag_key of its name) to its entry. A helper
+// thread finds the array once (about half a minute); get and set return 0 until then, or when the key is unknown.
+// Health and magic are the exception: the player keeps its own copy and writes it over the flag on every frame.
+uint32_t dbg_flag_key(const char *name);
+int dbg_flag_get(uint32_t key, int *value);
+int dbg_flag_set(uint32_t key, int value);
+int dbg_flags_locating(void);
+// Magic, in the game's units (the maximum is 0 before the meter is obtained). Infinite: refilled on every presented frame.
+int dbg_magic_get(int *cur, int *max);
+int dbg_magic_set(int value);         // clamps to 0..max; 1 when written
+void dbg_magic_infinite(int on);
+int dbg_magic_infinite_on(void);
+// The counted things of the menu (rupees, ammunition, small keys): label, largest value and step of entry i (NULL past the
+// end), and its value. dbg_item_set clamps to 0..max.
+int dbg_item_count(void);
+const char *dbg_item_label(int i, int *max, int *step);
+int dbg_item_get(int i, int *value);
+int dbg_item_set(int i, int value);
+// Infinite items: rupees and the ammunition (arrows, bombs, bombchus, sticks, nuts, seeds, beans) are set back to their
+// largest value on every presented frame. Gold tokens and small keys are left alone.
+void dbg_items_infinite(int on);
+int dbg_items_infinite_on(void);
 void dbg_invulnerable(int on);
 int dbg_invulnerable_on(void);
 
