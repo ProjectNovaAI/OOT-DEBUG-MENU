@@ -908,7 +908,7 @@ int plat_hw_watch(int slot, uint64_t addr, int len, int rw) {
     if (slot < 0 || slot > 3 || (len != 0 && len != 1 && len != 2 && len != 4 && len != 8) || (len && (addr & (uint64_t)(len - 1)))) return 0;
     hw_addr[slot] = len ? addr : 0;
     hw_len[slot] = len;
-    hw_rw[slot] = rw == 3 ? 3 : 1;
+    hw_rw[slot] = rw == 3 ? 3 : rw == 0 ? 0 : 1;   // 0: trap before the instruction at addr runs (len 1)
     return hw_apply();
 }
 
@@ -920,6 +920,7 @@ static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep) {
             if ((dr6 >> i) & 1) {
                 hw_hook(i, hw_addr[i], (uint64_t)ep->ContextRecord->Rip, (uint64_t)ep->ContextRecord->Rsp);
                 ep->ContextRecord->Dr6 = 0;
+                ep->ContextRecord->EFlags |= 0x10000;   // resume flag: an execution breakpoint does not trap again at once
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
     }

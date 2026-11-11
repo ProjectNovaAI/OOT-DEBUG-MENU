@@ -1704,6 +1704,7 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     }
     menu_art_start();      // the game's interface textures decode on a worker from the first present on
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
+    dbg_tick(plat_now_ns());   // every present, also with no overlay drawn: the debug tools' readings and remote console
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
@@ -1782,7 +1783,6 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     ImGui::NewFrame();
     if (open) layout_menu(t->width, t->height, scale);
     perf_draw(t, scale);
-    dbg_tick(plat_now_ns());
     debug_overlay_draw(scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);

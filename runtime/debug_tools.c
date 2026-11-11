@@ -67,7 +67,8 @@ void dbg_tick(uint64_t now_ns) {
     static int remote_checked;
     if (!remote_checked) {   // NX2NAVI_DEBUG_REMOTE=1 (environment or nx2navi.ini) starts the remote console without the menu
         remote_checked = 1;
-        if (cfg_bool("NX2NAVI_DEBUG_REMOTE")) dbg_remote_set(1);
+        char v[8];
+        if (plat_getenv("NX2NAVI_DEBUG_REMOTE", v, sizeof v) && v[0] && v[0] != '0') dbg_remote_set(1);
     }
     float pos[3];
     if (!dbg_player_pos(pos)) {
