@@ -55,6 +55,113 @@ int dbg_player_set_pos(const float pos[3]) {
     return 1;
 }
 
+// ---- health
+
+#define HEALTH_HASH 0x31AB5580u
+#define HEALTH_MAX_HASH 0xFBE01DA1u
+#define HEALTH_SCAN_FROM 0x100000000ull   // the guest heap lies between these (host addresses = guest addresses)
+#define HEALTH_SCAN_TO 0x700000000ull
+
+static _Atomic uint64_t health_addr;
+static _Atomic int health_locating, god_on;
+
+static int health_entry_ok(uint64_t a, uint32_t out[8]) {
+    uint32_t e[8];
+    if (!a || !guest_read(a, e, sizeof e)) return 0;
+    uint64_t p0 = e[2] | (uint64_t)e[3] << 32, p1 = e[6] | (uint64_t)e[7] << 32;
+    if (e[1] != HEALTH_HASH || e[5] != HEALTH_MAX_HASH) return 0;
+    if (p0 < MOD_MAIN_BASE || p0 >= MOD_MAIN_BASE + 0x10000000ull || p1 < MOD_MAIN_BASE || p1 >= MOD_MAIN_BASE + 0x10000000ull) return 0;
+    if (e[0] > 400 || e[4] < 4 || e[4] > 400) return 0;
+    if (out) memcpy(out, e, sizeof e);
+    return 1;
+}
+
+static void health_locate_thread(void *arg) {
+    (void)arg;
+    enum { CHUNK = 1 << 20 };
+    static uint32_t buf[CHUNK / 4];
+    uint64_t addr = HEALTH_SCAN_FROM;
+    while (addr < HEALTH_SCAN_TO && !atomic_load(&health_addr)) {
+        uint64_t end = 0;
+        int st = plat_mem_state(addr, HEALTH_SCAN_TO, &end);
+        if (end <= addr) break;
+        if (st == PLAT_PROT_RW) {
+            for (uint64_t at = addr; at < end; at += CHUNK) {
+                uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 4;
+                if (!plat_mem_read(at, buf, n * 4)) continue;
+                for (uint64_t i = 1; i < n; i++)
+                    if (buf[i] == HEALTH_HASH && health_entry_ok(at + (i - 1) * 4, NULL)) {
+                        atomic_store(&health_addr, at + (i - 1) * 4);
+                        break;
+                    }
+                if (atomic_load(&health_addr)) break;
+            }
+        }
+        addr = end;
+    }
+    atomic_store(&health_locating, 0);
+}
+
+int dbg_health_locating(void) { return atomic_load(&health_locating); }
+
+int dbg_health_get(int *cur, int *max) {
+    if (!dbg_available()) return 0;
+    uint32_t e[8];
+    uint64_t a = atomic_load(&health_addr);
+    if (a && health_entry_ok(a, e)) {
+        if (cur) *cur = (int)e[0];
+        if (max) *max = (int)e[4];
+        return 1;
+    }
+    if (a) atomic_store(&health_addr, 0);   // moved (a new save was loaded): look again
+    int zero = 0;
+    if (atomic_compare_exchange_strong(&health_locating, &zero, 1)) {
+        if (!plat_thread_spawn(health_locate_thread, NULL, "debug-health", 0)) atomic_store(&health_locating, 0);
+    }
+    return 0;
+}
+
+static int health_write(uint64_t at, uint32_t v) {
+    uint64_t end;
+    if (plat_mem_state(at & ~0xFFFull, (at & ~0xFFFull) + 0x2000, &end) != PLAT_PROT_RW) return 0;
+    plat_mem_prepare_write(at, 4);
+    memcpy((void *)(uintptr_t)at, &v, 4);
+    return 1;
+}
+
+int dbg_health_set(int cur) {
+    int c, m;
+    if (!dbg_health_get(&c, &m)) return 0;
+    if (cur < 0) cur = 0;
+    if (cur > m) cur = m;
+    return health_write(atomic_load(&health_addr), (uint32_t)cur);
+}
+
+int dbg_health_set_max(int max) {
+    int c, m;
+    if (!dbg_health_get(&c, &m)) return 0;
+    if (max < 4) max = 4;
+    if (max > 80) max = 80;
+    return health_write(atomic_load(&health_addr) + 0x10, (uint32_t)max);
+}
+
+void dbg_invulnerable(int on) { atomic_store(&god_on, on != 0); }
+int dbg_invulnerable_on(void) { return atomic_load(&god_on); }
+
+static _Atomic int lock_val;
+
+void dbg_health_lock(int quarters) { atomic_store(&lock_val, quarters < 0 ? 0 : quarters > 80 ? 80 : quarters); }
+int dbg_health_lock_value(void) { return atomic_load(&lock_val); }
+
+static void health_tick(void) {
+    int lock = atomic_load(&lock_val);
+    if (!lock && !atomic_load(&god_on)) return;
+    int c, m;
+    if (!dbg_health_get(&c, &m)) return;
+    int want = lock ? (lock < m ? lock : m) : m;
+    if (c != want) health_write(atomic_load(&health_addr), (uint32_t)want);
+}
+
 // ---- speed
 
 static float last_pos[3];
@@ -70,6 +177,7 @@ void dbg_tick(uint64_t now_ns) {
         char v[8];
         if (plat_getenv("NX2NAVI_DEBUG_REMOTE", v, sizeof v) && v[0] && v[0] != '0') dbg_remote_set(1);
     }
+    health_tick();
     float pos[3];
     if (!dbg_player_pos(pos)) {
         have_last = 0;

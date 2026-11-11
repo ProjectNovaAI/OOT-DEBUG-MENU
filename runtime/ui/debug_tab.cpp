@@ -63,6 +63,46 @@ extern "C" void tab_debug(float scale) {
                  "loading screen) is not counted.",
                  false);
 
+    opt_group_text("Health");
+    {
+        int c = 0, m = 0;
+        bool ok = dbg_health_get(&c, &m) != 0;
+        if (ok)
+            snprintf(value, sizeof value, "%.2f of %.2f hearts", c / 4.0, m / 4.0);
+        else
+            snprintf(value, sizeof value, "%s", dbg_health_locating() ? "searching the game's memory (about half a minute)..." : "not found: load a save");
+        opt_text_row("##dbg_health", "Health", value, nullptr,
+                     "Read from the game's flag store, found by its key on first use. A quarter heart is one unit.", false);
+        bool god = dbg_invulnerable_on() != 0;
+        if (opt_toggle_text("##dbg_god", "Invulnerable", "Raises health back to full on every frame. A hit that would kill in a single "
+                            "frame can still get through.", god))
+            dbg_invulnerable(!god);
+        {
+            int lk = dbg_health_lock_value();
+            if (lk)
+                snprintf(value, sizeof value, "held at %.2f hearts%s", lk / 4.0, ok && lk > m ? " (capped at the maximum)" : "");
+            else
+                snprintf(value, sizeof value, "off");
+            int r = opt_text_row("##dbg_lock", "Hold health at", value, nullptr,
+                                 "Keeps health at exactly this value on every frame, whatever damage or healing happens: for "
+                                 "testing a fixed amount of health. Left and right change it by a heart; A switches it on or off "
+                                 "(on starts from the current health). The invulnerable switch above only keeps it full.", false);
+            if (r == -1 && lk > 4) dbg_health_lock(lk - 4);
+            if (r == 1) dbg_health_lock(lk ? (lk + 4 > 80 ? 80 : lk + 4) : (ok ? (c ? c : 4) : 4));
+            if (r == 2) dbg_health_lock(lk ? 0 : (ok ? (c ? c : 4) : 48));
+        }
+        if (opt_text_row("##dbg_refill", "Refill health", "A: full", nullptr, "Sets health to the current maximum.", false) == 2 && ok)
+            dbg_health_set(m);
+        if (opt_text_row("##dbg_onehp", "Set to one quarter heart", "A: set", nullptr, "For testing low health (damage warning, death).", false) == 2 && ok)
+            dbg_health_set(1);
+        if (opt_text_row("##dbg_addheart", "Add a heart container", "A: +1", nullptr, "Raises the maximum by one heart (up to 20) and refills.", false) == 2 && ok) {
+            dbg_health_set_max(m + 4);
+            dbg_health_set(m + 4);
+        }
+        if (opt_text_row("##dbg_subheart", "Remove a heart container", "A: -1", nullptr, "Lowers the maximum by one heart (down to 1).", false) == 2 && ok)
+            dbg_health_set_max(m - 4);
+    }
+
     opt_group_text("Saved positions");
     opt_text_str("Saves only where the player stands, not the game's state. The game may pull the actor back if its "
                  "physics body disagrees: loading is experimental.");

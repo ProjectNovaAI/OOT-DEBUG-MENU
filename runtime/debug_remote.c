@@ -441,11 +441,25 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "teleport") && a1 && a2 && a3) {
         float p[3] = {strtof(a1, NULL), strtof(a2, NULL), strtof(a3, NULL)};
         out_put("%s\n", dbg_player_set_pos(p) ? "moved" : "failed");
+    } else if (!strcmp(cmd, "health")) {
+        int c, m;
+        if (dbg_health_get(&c, &m)) out_put("health %d of %d quarter hearts, invulnerable %d\n", c, m, dbg_invulnerable_on());
+        else out_put("health: %s\n", dbg_health_locating() ? "searching" : "not found yet");
+    } else if (!strcmp(cmd, "sethealth") && a1) {
+        out_put("sethealth %s\n", dbg_health_set(atoi(a1)) ? "done" : "failed");
+    } else if (!strcmp(cmd, "setmaxhealth") && a1) {
+        out_put("setmaxhealth %s\n", dbg_health_set_max(atoi(a1)) ? "done" : "failed");
+    } else if (!strcmp(cmd, "lock") && a1) {
+        dbg_health_lock(atoi(a1));
+        out_put("lock %d\n", dbg_health_lock_value());
+    } else if (!strcmp(cmd, "god") && a1) {
+        dbg_invulnerable(atoi(a1));
+        out_put("god %d\n", dbg_invulnerable_on());
     } else if (!strcmp(cmd, "speed") && a1) {
         dbg_set_time_scale(strtof(a1, NULL));
         out_put("speed %.3f\n", dbg_time_scale());
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock\n");
     }
 }
 

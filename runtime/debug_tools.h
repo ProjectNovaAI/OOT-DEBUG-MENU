@@ -64,6 +64,24 @@ void dbg_hotkeys_set(int on);
 int dbg_hotkey(int fkey);
 const char *dbg_toast(uint64_t now_ns);   // NULL when there is none to show
 
+// Health, in quarter hearts. The game keeps it as flag entries in the heap: 16 bytes {value, key hash, pointer into the game's
+// code}, the health flag (key 0x31AB5580) followed by the maximum (key 0xFBE01DA1). The entry moves between runs, so a helper
+// thread finds it once by its key (about half a minute) and the address is re-checked on every use.
+// dbg_health_get: 1 and the values when the entry is known and valid; 0 while it is being looked for (the first call starts the
+// search) or before a save is loaded.
+int dbg_health_get(int *cur, int *max);
+int dbg_health_locating(void);
+int dbg_health_set(int cur);          // clamps to 0..max; 1 when written
+int dbg_health_set_max(int max);      // quarter hearts, 4..80
+// Invulnerable: health is raised back to the maximum on every presented frame (a single hit that kills in the same frame is
+// not caught).
+// Lock: health is held at exactly this many quarter hearts (capped at the maximum) on every presented frame, so it is the same
+// after any damage or healing. 0 switches the lock off. With both a lock and the invulnerable switch on, the lock wins.
+void dbg_health_lock(int quarters);
+int dbg_health_lock_value(void);
+void dbg_invulnerable(int on);
+int dbg_invulnerable_on(void);
+
 #ifdef __cplusplus
 }
 #endif
