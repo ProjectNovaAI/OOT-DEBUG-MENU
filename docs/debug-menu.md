@@ -78,3 +78,6 @@ Chunks are big-endian `size|flags<<30` + 4-char tag: `TAG0` > `SDKV`, `DATA`, `T
 ### Writing the player position does not stick
 Tried a "raise 5 m" / "hold height" feature on top of `dbg_player_set_pos`: the write succeeds (the remote console reports done) but the actor position reads back unchanged a frame later, so the actor position is an output of the physics/character controller, not an input. Position teleports (and the saved slots) are therefore unreliable; moving the player needs the character controller's own state, which is not found yet. The feature was reverted.
 - Do not set `hexec` on `f_70006823b0` (the actor transform writer): the game exited as soon as the player moved.
+
+### Air walls in the data files
+`Phive/Shape/**` holds 5877 shape files (`.bphsh.zs`), named by model: `<Model>__Physical` (4012), `<Model>__Airwall` (436), `AirWall` (5), `CameraAirWall` (3), `AirwallForClimb` (2), plus StairStep/StairSlope. So an invisible wall is a shape file with an Airwall name; the layer is not stored in the area's compound body (`Market_Adult.bphsc` contains no name strings beyond the area name; its 150 instances point at 70 embedded polytope shapes). The link from an instance to a named shape (a name hash in the instance's user data or the shape's properties) is not decoded yet.
