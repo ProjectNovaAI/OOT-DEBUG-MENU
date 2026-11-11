@@ -81,3 +81,6 @@ Tried a "raise 5 m" / "hold height" feature on top of `dbg_player_set_pos`: the 
 
 ### Air walls in the data files
 `Phive/Shape/**` holds 5877 shape files (`.bphsh.zs`), named by model: `<Model>__Physical` (4012), `<Model>__Airwall` (436), `AirWall` (5), `CameraAirWall` (3), `AirwallForClimb` (2), plus StairStep/StairSlope. So an invisible wall is a shape file with an Airwall name; the layer is not stored in the area's compound body (`Market_Adult.bphsc` contains no name strings beyond the area name; its 150 instances point at 70 embedded polytope shapes). The link from an instance to a named shape (a name hash in the instance's user data or the shape's properties) is not decoded yet.
+
+### Health (found by hand, game build 1.1.1)
+Health is in quarter hearts. A `{current, max}` int pair (52 = 13 hearts) sits in a heap object (it was at 0x17455f6b0 in one run; the address moves between runs). It follows damage (29 -> 21) but is a copy: writing max into it from the console is overwritten back within a frame, and no float form of the hearts matches. A hardware write watch on that pair, set while writing to it from the console, crashed the game. The source the game copies it from is not found yet.
