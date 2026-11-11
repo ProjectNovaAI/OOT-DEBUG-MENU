@@ -59,3 +59,11 @@ aabb 0x60, shape 0x78, motionId 0x80, nextAttachedBodyIndex 0x84, firstAttachedC
 qualityId 0x8d, materialId 0x8e, collisionFilterInfo 0x90, maxContactDistance 0x94, userData 0xb8.
 collisionFilterInfo carries the layer, which is what separates AirWall / Barrier bodies from ordinary ones.
 Still to find: the world's body array and the camera matrix, needed before any collision shape can be drawn.
+
+## Searching for the physics body list (negative results, so they are not repeated)
+- A layer-name table is at about main-heap 0x18b0ab4c0 (AirWall, AirWallForShop, FakeWall, EdgeOfTheWorld ...): 16-byte name, next pointer, two numbers. It mixes several enums, so its numbers are not the filter layer ids.
+- `find` on the ASCII names hknpWorld, hknpBodyManager, bodyManager, motionManager, bodyArray finds nothing in the game (only the console's own pattern buffer): the reflection data keeps the type table, not those names.
+- Dumping every writable region (about 7 GB) and scanning for a 0xC0-byte hknpBody array (consecutive index at +0x58) finds none; scanning for an orthonormal 3x4 matrix with the player's position as translation at +0x30 and plausible shape/index fields finds copies in animation and snapshot data only, no body. The player's collision is probably a character controller with another layout.
+- The position writes of the player actor come from `f_70006823b0` (called by `f_70006822f0` <- `f_7000af8520` / `f_70009501e0+0x8b0`).
+- Static analysis (Ghidra through rea) does not work here: it needs JDK 21 and a PE target, the game is ARM64.
+Next: break on the reads of a static body's collision filter instead of the player's.
