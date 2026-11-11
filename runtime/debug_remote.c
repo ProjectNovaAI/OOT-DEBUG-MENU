@@ -134,6 +134,9 @@ struct log_entry {
     uint64_t seq, addr, ip, before, tid, now_ns;
     int write, nstack;
     uint64_t stack[STACK_KEEP];
+    uint64_t regs[9];       // execution breakpoints in lifted code: guest x0..x8
+    uint64_t guest_sp;
+    char text[3][40];       // C strings x1..x3 pointed to, when printable
 };
 static struct watch_entry watches[MAX_WATCH];
 static int nwatch;
@@ -199,7 +202,7 @@ static void watch_clear(void) {
 // Hardware data breakpoints (platform.h plat_hw_watch): precise, one log entry per access, with the real stack.
 static int hw_used;
 static int hw_exec[4];   // slot is an execution breakpoint
-static void hw_trap(int slot, uint64_t addr, uint64_t ip, uint64_t sp) {
+static void hw_trap(int slot, uint64_t addr, uint64_t ip, uint64_t sp, uint64_t arg0) {
     while (__atomic_exchange_n(&wlock, 1, __ATOMIC_ACQUIRE)) {}
     uint64_t n = wseq++;
     struct log_entry *e = &wlog[n % LOG_CAP];
@@ -212,6 +215,22 @@ static void hw_trap(int slot, uint64_t addr, uint64_t ip, uint64_t sp) {
     e->tid = plat_thread_id();
     e->now_ns = plat_now_ns();
     e->nstack = 0;
+    memset(e->regs, 0, sizeof e->regs);
+    memset(e->text, 0, sizeof e->text);
+    e->guest_sp = 0;
+    if (hw_exec[slot & 3] && arg0) {   // the Cpu * of the lifted function: its guest registers are the call's arguments
+        plat_mem_read(arg0, e->regs, sizeof e->regs);
+        plat_mem_read(arg0 + 256, &e->guest_sp, 8);
+        for (int k = 0; k < 3; k++) {
+            char tmp[40];
+            uint64_t a = e->regs[k + 1];
+            if (a > 0x10000 && plat_mem_read(a, tmp, sizeof tmp - 1)) {
+                int n = 0;
+                while (n < 39 && tmp[n] >= 32 && tmp[n] < 127) n++;
+                if (n >= 3) { memcpy(e->text[k], tmp, n); e->text[k][n] = 0; }
+            }
+        }
+    }
     for (uint64_t at = sp; at < sp + 65536 && e->nstack < STACK_KEEP; at += 512) {   // read safely: the stack may end before 64 KiB
         uint64_t q[64];
         if (!plat_mem_read(at, q, sizeof q)) break;
@@ -291,6 +310,13 @@ static void run_command(char *line) {
                     (unsigned long long)(e->now_ns / 1000000), (unsigned long long)e->before);
             for (int k = 0; k < e->nstack; k++) out_put(" %p", (void *)(uintptr_t)e->stack[k]);
             out_put("\n");
+            if (e->write == 2) {
+                out_put("   regs");
+                for (int k = 0; k < 9; k++) out_put(" x%d=%llx", k, (unsigned long long)e->regs[k]);
+                out_put(" sp=%llx\n", (unsigned long long)e->guest_sp);
+                for (int k = 0; k < 3; k++)
+                    if (e->text[k][0]) out_put("   x%d points to \"%s\"\n", k + 1, e->text[k]);
+            }
         }
     } else if (!strcmp(cmd, "dump") && a1 && a2 && a3) {   // dump ADDR LEN FILE: raw bytes to a file next to the game
         uint64_t a = num(a1), n = num(a2);

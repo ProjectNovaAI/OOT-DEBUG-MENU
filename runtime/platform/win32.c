@@ -854,11 +854,11 @@ static int (*access_hook)(uint64_t addr, int write, uint64_t ip);
 // A read or write access violation (ExceptionInformation[0] 0 or 1) goes to the access hook when there is one, then a
 // write to the write-fault hook; registered first, before the crash handler.
 static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep);
-static void (*hw_hook)(int slot, uint64_t addr, uint64_t ip, uint64_t sp);
+static void (*hw_hook)(int slot, uint64_t addr, uint64_t ip, uint64_t sp, uint64_t arg0);
 static uint64_t hw_addr[4];
 static int hw_len[4], hw_rw[4];
 
-void plat_hw_watch_hook(void (*fn)(int, uint64_t, uint64_t, uint64_t)) {
+void plat_hw_watch_hook(void (*fn)(int, uint64_t, uint64_t, uint64_t, uint64_t)) {
     hw_hook = fn;
     AddVectoredExceptionHandler(1, fault_veh);
 }
@@ -918,7 +918,7 @@ static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep) {
         DWORD64 dr6 = ep->ContextRecord->Dr6;
         for (int i = 0; i < 4; i++)
             if ((dr6 >> i) & 1) {
-                hw_hook(i, hw_addr[i], (uint64_t)ep->ContextRecord->Rip, (uint64_t)ep->ContextRecord->Rsp);
+                hw_hook(i, hw_addr[i], (uint64_t)ep->ContextRecord->Rip, (uint64_t)ep->ContextRecord->Rsp, (uint64_t)ep->ContextRecord->Rcx);
                 ep->ContextRecord->Dr6 = 0;
                 ep->ContextRecord->EFlags |= 0x10000;   // resume flag: an execution breakpoint does not trap again at once
                 return EXCEPTION_CONTINUE_EXECUTION;

@@ -269,9 +269,9 @@ void plat_mem_access_hook(int (*fn)(uint64_t addr, int write, uint64_t ip));
 // the len (1, 2, 4 or 8) bytes at addr, which must be aligned to len; rw 0 with len 1 traps before the instruction at addr
 // runs (an execution breakpoint); len 0 clears the slot. Set on the process's threads
 // that exist now. Windows only: 0 elsewhere. The hook gets the slot, the address, the trapped thread's instruction pointer
-// (the instruction after the access) and stack pointer.
+// (the instruction after the access), stack pointer and first argument register (rcx: the Cpu * of a lifted function).
 int plat_hw_watch(int slot, uint64_t addr, int len, int rw);
-void plat_hw_watch_hook(void (*fn)(int slot, uint64_t addr, uint64_t ip, uint64_t sp));
+void plat_hw_watch_hook(void (*fn)(int slot, uint64_t addr, uint64_t ip, uint64_t sp, uint64_t arg0));
 // Starts this program again with the same arguments and ends this process with the new one's exit code (Windows), or
 // replaces this process with it (Linux). Environment changes made before the call are passed on.
 _Noreturn void plat_reexec(void);
