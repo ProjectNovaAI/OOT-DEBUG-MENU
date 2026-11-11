@@ -35,6 +35,7 @@ static volatile int32_t g_block, g_menu;   // text entry / host menu: 0 off, 1 o
 // within one poll (a slow deliberate move does; a desk bump does not), the keyboard with any key or mouse button.
 enum { PAD_USED = 16384, MOUSE_USED = 6 };
 static volatile int32_t g_kbm_last = 1;
+int input_key_held(int key) { return ikb_foreground() && ikb_down(key); }
 int input_kbm_last(void) { return __atomic_load_n(&g_kbm_last, __ATOMIC_RELAXED); }
 static SDL_Gamepad *pad;
 static uint64_t next_scan;

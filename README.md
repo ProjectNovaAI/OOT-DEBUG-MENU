@@ -14,7 +14,7 @@
 - **Player**: live position readout, teleport, 4 saved position slots
 - **Game speed**: slow motion and fast forward from 0.05x to 8x
 - **Timer** with laps, and a **speed** readout
-- **On-screen overlay**: position, speed, timer, and a live **input display** (buttons and sticks)
+- **On-screen overlay**: position, speed, timer, and a live **input display** drawn as a Switch Pro Controller, which switches to a keyboard and mouse view when those were used last
 - **Keyboard hotkeys** with the menu closed: F5 save, F6 load, F7/F8 game speed, F9 timer
 - **Memory scanner** (find and edit values) and a **remote console** for inspecting the running game (`NX2NAVI_DEBUG_REMOTE=1`), with hardware watchpoints and execution breakpoints
 - **Everything here is a work in progress and still being worked on**; features may be incomplete or change.

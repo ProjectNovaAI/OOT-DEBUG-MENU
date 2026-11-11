@@ -13,6 +13,7 @@ extern "C" {
 #include "debug_remote.h"
 #include "debug_scan.h"
 #include "input.h"
+#include "input_map.h"
 #include "debug_tools.h"
 #include "host.h"
 #include "layout.h"
@@ -240,38 +241,111 @@ extern "C" void debug_overlay_draw(float scale) {
         dl->AddRectFilled(ImVec2(cx - sz.x / 2 - pad2, y - pad2), ImVec2(cx + sz.x / 2 + pad2, y + sz.y + pad2), IM_COL32(0, 0, 0, 170), 4.0f * scale);
         dl->AddText(ImVec2(cx - sz.x / 2, y), IM_COL32(255, 255, 255, 255), toast_msg);
     }
-    if (mask & DBG_SHOW_INPUT) {
+    if ((mask & DBG_SHOW_INPUT) && input_kbm_last()) {
+        // Keyboard and mouse were used last: show the keys, like the pad below shows the Switch buttons.
+        const ImU32 body = IM_COL32(38, 40, 46, 215), edge = IM_COL32(110, 114, 124, 235), idle = IM_COL32(24, 25, 29, 255);
+        const ImU32 lit = IM_COL32(255, 205, 50, 255), txt = IM_COL32(205, 208, 216, 255), txt_lit = IM_COL32(20, 20, 20, 255);
+        float u = 23.0f * scale, W = 31.0f * u, H = 12.5f * u;
+        float ox = 18.0f * scale, oy = ImGui::GetIO().DisplaySize.y - 18.0f * scale - H;
+        dl->AddRectFilled(ImVec2(ox, oy), ImVec2(ox + W, oy + H), body, 1.2f * u);
+        dl->AddRect(ImVec2(ox, oy), ImVec2(ox + W, oy + H), edge, 1.2f * u, 0, 1.5f * scale);
+        struct K { int key; const char *n; float x, y, w; };
+        static const K keys[] = {
+            {KEY_1, "1", 1.0f, 1.0f, 2}, {KEY_2, "2", 3.1f, 1.0f, 2}, {KEY_3, "3", 5.2f, 1.0f, 2}, {KEY_4, "4", 7.3f, 1.0f, 2},
+            {KEY_TAB, "Tab", 1.0f, 3.1f, 3}, {KEY_Q, "Q", 4.1f, 3.1f, 2}, {KEY_W, "W", 6.2f, 3.1f, 2}, {KEY_E, "E", 8.3f, 3.1f, 2}, {KEY_R, "R", 10.4f, 3.1f, 2},
+            {KEY_A, "A", 4.6f, 5.2f, 2}, {KEY_S, "S", 6.7f, 5.2f, 2}, {KEY_D, "D", 8.8f, 5.2f, 2}, {KEY_F, "F", 10.9f, 5.2f, 2},
+            {KEY_LSHIFT, "Shift", 1.0f, 7.3f, 4}, {KEY_Z, "Z", 5.1f, 7.3f, 2}, {KEY_X, "X", 7.2f, 7.3f, 2}, {KEY_C, "C", 9.3f, 7.3f, 2}, {KEY_V, "V", 11.4f, 7.3f, 2},
+            {KEY_LCTRL, "Ctrl", 1.0f, 9.4f, 3}, {KEY_LALT, "Alt", 4.1f, 9.4f, 2.5f}, {KEY_SPACE, "Space", 6.7f, 9.4f, 8.5f},
+            {KEY_UP, "^", 19.5f, 7.3f, 2}, {KEY_LEFT, "<", 17.4f, 9.4f, 2}, {KEY_DOWN, "v", 19.5f, 9.4f, 2}, {KEY_RIGHT, ">", 21.6f, 9.4f, 2},
+            {KEY_MOUSE_L, "L", 25.0f, 1.0f, 1.7f}, {KEY_MOUSE_M, "M", 26.8f, 1.0f, 1.2f}, {KEY_MOUSE_R, "R", 28.1f, 1.0f, 1.7f},
+        };
+        for (auto &k : keys) {
+            bool dn = input_key_held(k.key) != 0;
+            ImVec2 a(ox + k.x * u, oy + k.y * u), b(ox + (k.x + k.w) * u - 0.1f * u, a.y + 1.9f * u);
+            if (k.key >= KEY_MOUSE_L && k.key <= KEY_MOUSE_R) b.x = ox + (k.x + k.w) * u - 0.05f * u;
+            dl->AddRectFilled(a, b, dn ? lit : idle, 0.4f * u);
+            dl->AddRect(a, b, edge, 0.4f * u, 0, 1.0f * scale);
+            ImVec2 ts = ImGui::CalcTextSize(k.n);
+            dl->AddText(ImVec2(a.x + (b.x - a.x - ts.x) / 2, a.y + (b.y - a.y - ts.y) / 2), dn ? txt_lit : txt, k.n);
+        }
+        ImVec2 ml = ImGui::CalcTextSize("mouse");
+        dl->AddText(ImVec2(ox + 25.0f * u + (4.8f * u - ml.x) / 2, oy + 3.2f * u), txt, "mouse");
+    } else if (mask & DBG_SHOW_INPUT) {
         uint64_t btn = 0;
         int32_t lx = 0, ly = 0, rx = 0, ry = 0;
         input_poll_ui(&btn, &lx, &ly, &rx, &ry);
-        // Switch npad bits: A B X Y, stick clicks, L R ZL ZR, plus minus, d-pad left up right down
-        static const struct { int bit; const char *name; float x, y; } keys[] = {
-            {8, "ZL", 0, 0}, {6, "L", 1, 0}, {7, "R", 5, 0}, {9, "ZR", 6, 0},
-            {13, "^", 1, 1.6f}, {12, "<", 0, 2.4f}, {14, ">", 2, 2.4f}, {15, "v", 1, 3.2f},
-            {11, "-", 3, 2.4f}, {10, "+", 4, 2.4f},
-            {2, "X", 6, 1.6f}, {3, "Y", 5, 2.4f}, {0, "A", 7, 2.4f}, {1, "B", 6, 3.2f},
+        // Switch npad bits: A B X Y, stick clicks, L R ZL ZR, plus minus, d-pad left up right down.
+        // Drawn like a Pro Controller: shoulders on top, left stick and d-pad on the left, face buttons and right stick on the right.
+        auto down = [&](int bit) { return ((btn >> bit) & 1) != 0; };
+        const ImU32 body = IM_COL32(38, 40, 46, 215), edge = IM_COL32(110, 114, 124, 235), idle = IM_COL32(24, 25, 29, 255);
+        const ImU32 lit = IM_COL32(255, 205, 50, 255), txt = IM_COL32(205, 208, 216, 255), txt_lit = IM_COL32(20, 20, 20, 255);
+        float u = 21.0f * scale;                                   // layout unit
+        float W = 26.0f * u, H = 15.5f * u;
+        float ox = 18.0f * scale, oy = ImGui::GetIO().DisplaySize.y - 18.0f * scale - H;
+        auto P = [&](float x, float y) { return ImVec2(ox + x * u, oy + y * u); };
+        auto label = [&](ImVec2 c, const char *s, ImU32 col, float k) {
+            ImVec2 ts = ImGui::CalcTextSize(s);
+            dl->AddText(ImVec2(c.x - ts.x * k / 2, c.y - ts.y * k / 2), col, s);
         };
-        float u = 30.0f * scale, ox = 14.0f * scale, oy = ImGui::GetIO().DisplaySize.y - 14.0f * scale - 4.4f * u;
-        dl->AddRectFilled(ImVec2(ox - 6 * scale, oy - 6 * scale), ImVec2(ox + 8.2f * u, oy + 4.4f * u), IM_COL32(0, 0, 0, 120), 6.0f * scale);
-        for (auto &k : keys) {
-            bool down = (btn >> k.bit) & 1;
-            ImVec2 a(ox + k.x * u, oy + k.y * u), b(a.x + u * 0.9f, a.y + u * 0.7f);
-            dl->AddRectFilled(a, b, down ? IM_COL32(255, 210, 60, 235) : IM_COL32(60, 60, 60, 200), 4.0f * scale);
-            ImVec2 ts = ImGui::CalcTextSize(k.name);
-            dl->AddText(ImVec2(a.x + (b.x - a.x - ts.x) / 2, a.y + (b.y - a.y - ts.y) / 2), down ? IM_COL32(0, 0, 0, 255) : IM_COL32(220, 220, 220, 255), k.name);
+        // shoulder triggers (ZL/ZR behind, L/R in front)
+        struct Sh { int bit; const char *n; float x0, x1, y0, y1; } sh[] = {
+            {8, "ZL", 1.5f, 8.5f, 0.0f, 1.7f}, {9, "ZR", 17.5f, 24.5f, 0.0f, 1.7f},
+            {6, "L", 1.0f, 8.0f, 1.9f, 3.6f}, {7, "R", 18.0f, 25.0f, 1.9f, 3.6f},
+        };
+        for (auto &s : sh) {
+            dl->AddRectFilled(P(s.x0, s.y0), P(s.x1, s.y1), down(s.bit) ? lit : edge, 0.8f * u);
+            label(P((s.x0 + s.x1) / 2, (s.y0 + s.y1) / 2), s.n, down(s.bit) ? txt_lit : IM_COL32(20, 20, 24, 255), 1);
         }
-        float r = u * 0.9f;
-        ImVec2 c1(ox + 7.2f * u - r * 2.2f, oy + 0.2f * u + r * 2.2f);   // sticks: left and right, dot at the deflection
-        for (int s2 = 0; s2 < 2; s2++) {
-            ImVec2 c(ox + (s2 ? 7.0f : 2.4f) * u, oy + (s2 ? 3.6f : 0.9f) * u);
-            float cr = u * 0.65f;
-            dl->AddCircleFilled(c, cr, IM_COL32(40, 40, 40, 200), 24);
-            dl->AddCircle(c, cr, IM_COL32(150, 150, 150, 220), 24, 1.5f * scale);
-            float sx = (s2 ? rx : lx) / 32767.0f, sy = (s2 ? ry : ly) / 32767.0f;
-            bool click = (btn >> (s2 ? 5 : 4)) & 1;
-            dl->AddCircleFilled(ImVec2(c.x + sx * cr, c.y - sy * cr), cr * 0.28f, click ? IM_COL32(255, 210, 60, 255) : IM_COL32(230, 230, 230, 255), 12);
+        // grips and body
+        dl->AddRectFilled(P(0.0f, 3.4f), P(W / u, 13.2f), body, 3.0f * u);
+        dl->AddCircleFilled(P(3.6f, 11.2f), 4.4f * u, body, 40);
+        dl->AddCircleFilled(P(22.4f, 11.2f), 4.4f * u, body, 40);
+        dl->AddRect(P(0.0f, 3.4f), P(W / u, 13.2f), edge, 3.0f * u, 0, 1.5f * scale);
+        // sticks
+        auto stick = [&](ImVec2 c, int32_t sx, int32_t sy, int clickbit) {
+            float R = 2.5f * u;
+            dl->AddCircleFilled(c, R, idle, 32);
+            dl->AddCircle(c, R, edge, 32, 1.5f * scale);
+            float tx = sx / 32767.0f, ty = -sy / 32767.0f, m = sqrtf(tx * tx + ty * ty);
+            if (m > 1) { tx /= m; ty /= m; }
+            ImVec2 k(c.x + tx * R * 0.55f, c.y + ty * R * 0.55f);
+            dl->AddCircleFilled(k, R * 0.72f, down(clickbit) ? lit : IM_COL32(88, 92, 102, 255), 28);
+            dl->AddCircle(k, R * 0.72f, edge, 28, 1.2f * scale);
+        };
+        stick(P(5.4f, 6.2f), lx, ly, 4);
+        stick(P(16.6f, 10.6f), rx, ry, 5);
+        // d-pad
+        {
+            ImVec2 c = P(9.4f, 10.6f);
+            struct D { int bit; float dx, dy; const char *n; } d[] = {{13, 0, -1, "^"}, {15, 0, 1, "v"}, {12, -1, 0, "<"}, {14, 1, 0, ">"}};
+            float a = 1.15f * u;
+            for (auto &e : d) {
+                ImVec2 m(c.x + e.dx * 1.55f * u, c.y + e.dy * 1.55f * u);
+                dl->AddRectFilled(ImVec2(m.x - a, m.y - a), ImVec2(m.x + a, m.y + a), down(e.bit) ? lit : idle, 0.5f * u);
+                dl->AddRect(ImVec2(m.x - a, m.y - a), ImVec2(m.x + a, m.y + a), edge, 0.5f * u, 0, 1.0f * scale);
+                label(m, e.n, down(e.bit) ? txt_lit : txt, 1);
+            }
+            dl->AddRectFilled(ImVec2(c.x - a, c.y - a), ImVec2(c.x + a, c.y + a), idle);
         }
-        (void)c1; (void)r;
+        // face buttons: X top, B bottom, Y left, A right
+        {
+            ImVec2 c = P(21.0f, 6.2f);
+            struct F { int bit; float dx, dy; const char *n; } f[] = {{2, 0, -1, "X"}, {1, 0, 1, "B"}, {3, -1, 0, "Y"}, {0, 1, 0, "A"}};
+            for (auto &e : f) {
+                ImVec2 m(c.x + e.dx * 2.0f * u, c.y + e.dy * 2.0f * u);
+                dl->AddCircleFilled(m, 1.35f * u, down(e.bit) ? lit : idle, 24);
+                dl->AddCircle(m, 1.35f * u, edge, 24, 1.2f * scale);
+                label(m, e.n, down(e.bit) ? txt_lit : txt, 1);
+            }
+        }
+        // minus and plus
+        const struct { int bit; const char *n; float x; } mp[] = {{11, "-", 10.6f}, {10, "+", 15.4f}};
+        for (auto &e : mp) {
+            ImVec2 m = P(e.x, 4.7f);
+            dl->AddCircleFilled(m, 0.9f * u, down(e.bit) ? lit : idle, 20);
+            dl->AddCircle(m, 0.9f * u, edge, 20, 1.0f * scale);
+            label(m, e.n, down(e.bit) ? txt_lit : txt, 1);
+        }
     }
     if (!n) return;
     float pad = 6.0f * scale, line_h = ImGui::GetTextLineHeight();
