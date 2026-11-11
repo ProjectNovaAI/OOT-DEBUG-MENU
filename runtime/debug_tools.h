@@ -216,18 +216,29 @@ enum {
     DBG_VOL_LOAD = 2,      // loading zones: Area triggers that lead to an entrance
     DBG_VOL_TRIGGER = 4,   // every other Area trigger and *Area* volume (events, camera, music, spawning, horse jumps)
     DBG_VOL_HIDDEN = 8,    // hidden things: grotto covers, Gold Skulltulas, heart pieces, chests, hidden-hole markers
-    DBG_VOL_KINDS = 4,
+    DBG_VOL_DEATH = 16,    // death barriers and hazards: the kill volume under the world, lava surfaces, pits, quicksand
+    DBG_VOL_KINDS = 5,
 };
 enum { DBG_SHAPE_BOX, DBG_SHAPE_CYLINDER, DBG_SHAPE_MARKER };
 typedef struct {
     float pos[3];      // the actor's position (+0x31c)
     float axes[9];     // its placement rotation, three unit columns (+0x328)
-    float scale[3];    // its placement scale (+0x34c): a box's or cylinder's full size in metres
+    float scale[3];    // a box's or cylinder's full size in metres (the placement scale at +0x34c, times the base
+                       // shape's size for the death barriers)
     int kind;          // one DBG_VOL_ bit
     int shape;         // DBG_SHAPE_
     char name[48];
     char target[48];   // an Area trigger: the name of the actor it acts on (its link), else empty
 } DbgVolume;
+// One placed actor of a stage file (debug_place.c): its name (valid during the callback only), position, rotation as three
+// unit columns, and placement scale.
+typedef struct {
+    const char *name;
+    float pos[3], axes[9], scale[3];
+} DbgPlacement;
+// Calls fn for each actor placed in the stage files of banc (e.g. "DeathMountainCrater_Child"), Static then Dynamic, until
+// fn returns 0. The count seen, -1 when the area has no stage files.
+int dbg_place_each(const char *banc, int (*fn)(const DbgPlacement *, void *), void *ctx);
 // The kinds to collect (0 stops the helper thread's rescans). The list is rescanned every 1.5 s while any is wanted.
 void dbg_view_want(int kinds);
 // The volumes of the wanted kinds within range metres of the player, with their positions read now; at most max.

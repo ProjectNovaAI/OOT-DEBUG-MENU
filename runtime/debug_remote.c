@@ -551,7 +551,7 @@ static void run_command(char *line) {
         out_put("fog %s\n", cfg_bool("NX2NAVI_DEBUG_FOG_OFF") ? "off" : "on");
     } else if (!strcmp(cmd, "view")) {   // view [RANGE]: the volume overlay's list near the player (kinds as set)
         static DbgVolume v[256];
-        static const char *const kind[] = {"", "wall", "load", "", "trigger", "", "", "", "hidden"};
+        static const char *const kind[] = {"", "wall", "load", "", "trigger", "", "", "", "hidden", "death"};
         int n = dbg_view_volumes(v, 256, a1 ? (float)atof(a1) : 60.0f);
         float vp[16], asp = 0;
         int cam = vk_dbgcam_vp(vp, &asp);
@@ -561,7 +561,7 @@ static void run_command(char *line) {
             float c[4] = {0, 0, 0, 1};
             for (int r = 0; cam && r < 4; r++)
                 c[r] = vp[r * 4] * v[i].pos[0] + vp[r * 4 + 1] * v[i].pos[1] + vp[r * 4 + 2] * v[i].pos[2] + vp[r * 4 + 3];
-            out_put("%-7s %-40s pos %.1f %.1f %.1f scale %.2f %.2f %.2f ndc %.2f %.2f w %.1f%s%s\n", kind[v[i].kind & 15],
+            out_put("%-7s %-40s pos %.1f %.1f %.1f scale %.2f %.2f %.2f ndc %.2f %.2f w %.1f%s%s\n", kind[v[i].kind == DBG_VOL_DEATH ? 9 : v[i].kind & 15],
                     v[i].name, v[i].pos[0], v[i].pos[1], v[i].pos[2], v[i].scale[0], v[i].scale[1], v[i].scale[2],
                     c[0] / c[3], c[1] / c[3], c[3], v[i].target[0] ? " > " : "", v[i].target);
         }

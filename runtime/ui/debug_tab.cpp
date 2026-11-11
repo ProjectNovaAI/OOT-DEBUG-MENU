@@ -50,7 +50,8 @@ static const struct { const char *name; uint8_t r, g, b; } kNeon[] = {
 };
 enum { NEON = sizeof kNeon / sizeof *kNeon };
 static const char *const kKindKey[DBG_VOL_KINDS] = {"NX2NAVI_DEBUG_VIEW_COLOR_WALLS", "NX2NAVI_DEBUG_VIEW_COLOR_LOADING",
-                                                    "NX2NAVI_DEBUG_VIEW_COLOR_TRIGGERS", "NX2NAVI_DEBUG_VIEW_COLOR_HIDDEN"};
+                                                    "NX2NAVI_DEBUG_VIEW_COLOR_TRIGGERS", "NX2NAVI_DEBUG_VIEW_COLOR_HIDDEN",
+                                                    "NX2NAVI_DEBUG_VIEW_COLOR_DEATH"};
 
 static int neon_index(const char *name) {
     for (int i = 0; i < NEON; i++)
@@ -439,6 +440,9 @@ extern "C" void tab_debug(float scale) {
              "Draws every other trigger volume: event, camera, music and spawn areas, horse jump limits and the like."},
             {"NX2NAVI_DEBUG_VIEW_HIDDEN", "##dbg_v_hidden", "Show hidden things",
              "Marks hidden holes (grottos), Gold Skulltulas, pieces of heart, chests and magic bean spots."},
+            {"NX2NAVI_DEBUG_VIEW_DEATH", "##dbg_v_death", "Show death barriers",
+             "Draws what kills or sends the player back: the kill volume under the world (fall out of the level and "
+             "it catches you), lava surfaces, and marks bottomless pits and quicksand."},
         };
         for (const auto &s : vs) {
             bool on = cfg_bool(s.key) != 0;
@@ -472,7 +476,8 @@ extern "C" void tab_debug(float scale) {
             opt_save_soon();
         }
         static const char *const kind_names[DBG_VOL_KINDS] = {"Colour: invisible walls", "Colour: loading zones",
-                                                              "Colour: trigger zones", "Colour: hidden things"};
+                                                              "Colour: trigger zones", "Colour: hidden things",
+                                                              "Colour: death barriers"};
         for (int k = 0; k < DBG_VOL_KINDS; k++) {
             int ci = neon_index(cfg_value(kKindKey[k]));
             char id[32];
@@ -674,7 +679,9 @@ extern "C" void tab_debug(float scale) {
 // with the scene camera (vk_debug_cam.c), as wireframe, solid colour or both. Nothing hides them: they show through
 // walls, which is what finding them needs.
 
-static int kind_slot(int kind) { return kind == DBG_VOL_WALL ? 0 : kind == DBG_VOL_LOAD ? 1 : kind == DBG_VOL_TRIGGER ? 2 : 3; }
+static int kind_slot(int kind) {
+    return kind == DBG_VOL_WALL ? 0 : kind == DBG_VOL_LOAD ? 1 : kind == DBG_VOL_TRIGGER ? 2 : kind == DBG_VOL_HIDDEN ? 3 : 4;
+}
 
 // The scene camera and the rectangle of the window the 3D picture fills (the game's aspect, fitted in the window).
 struct ViewProj {
@@ -771,6 +778,26 @@ static void draw_volume(ImDrawList *dl, const ViewProj &P, const DbgVolume &v, i
         world_of(u, (i & 1) ? 0.5f : -0.5f, (i & 2) ? 1.0f : 0.0f, (i & 4) ? 0.5f : -0.5f, w);
         clip_of(P, w, c[i]);
     }
+    if (v.kind == DBG_VOL_DEATH) {
+        // A lava surface or the kill volume is a plate tens to thousands of metres wide: filled, it would cover the
+        // whole picture from above, so it is drawn as its outline and a grid over its top, the surface that kills, in
+        // any style.
+        static const int e[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto &q : e) draw_edge(dl, P, c[q[0]], c[q[1]], line, th);
+        for (int axis = 0; axis < 2; axis++) {
+            float size = v.scale[axis == 0 ? 0 : 2];
+            int n = (int)(size / 5.0f);
+            n = n < 4 ? 4 : n > 24 ? 24 : n;
+            for (int k = 1; k < n; k++) {
+                float t = -0.5f + (float)k / n, a[3], b[3], ca[4], cb[4];
+                if (axis == 0) world_of(u, t, 1, -0.5f, a), world_of(u, t, 1, 0.5f, b);
+                else world_of(u, -0.5f, 1, t, a), world_of(u, 0.5f, 1, t, b);
+                clip_of(P, a, ca), clip_of(P, b, cb);
+                draw_edge(dl, P, ca, cb, line, th * 0.6f);
+            }
+        }
+        return;
+    }
     if (style & 2) {
         static const int f[6][4] = {{0, 1, 3, 2}, {4, 5, 7, 6}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 3, 7, 5}};
         for (const auto &q : f) {
@@ -841,7 +868,7 @@ static void draw_volumes(float scale) {
     float me[3];
     bool have_me = dbg_player_pos(me) != 0;
     // trigger zones first: the walls, loading zones and hidden things drawn after them stay on top
-    static const int order[] = {DBG_VOL_TRIGGER, DBG_VOL_LOAD, DBG_VOL_WALL, DBG_VOL_HIDDEN};
+    static const int order[] = {DBG_VOL_TRIGGER, DBG_VOL_DEATH, DBG_VOL_LOAD, DBG_VOL_WALL, DBG_VOL_HIDDEN};
     static int idx[MAXV];
     int m = 0;
     for (int o : order)
@@ -857,16 +884,21 @@ static void draw_volumes(float scale) {
         float d2 = 0;
         if (have_me)
             for (int j = 0; j < 3; j++) d2 += (v.pos[j] - me[j]) * (v.pos[j] - me[j]);
-        if (d2 > 60.0f * 60.0f) continue;   // names only close by, or the far field fills with text
+        // The kill volume under the world is kilometres wide and far below: its name goes on its surface straight
+        // under the player, with the height, at any distance.
+        bool under = v.kind == DBG_VOL_DEATH && v.shape == DBG_SHAPE_BOX && v.scale[0] > 1000.0f && have_me;
+        if (d2 > 60.0f * 60.0f && !under) continue;   // names only close by, or the far field fills with text
         float top[3], c[4];   // the name over the volume's top middle (an object's: 1 m over it)
         if (v.shape == DBG_SHAPE_MARKER) memcpy(top, v.pos, sizeof top), top[1] += 1.0f;
         else world_of(v, 0, 1, 0, top);
+        if (under) top[0] = me[0], top[2] = me[2];
         clip_of(P, top, c);
         if (c[3] < kNear) continue;
         ImVec2 at = screen_of(P, c);
         char text_buf[112];   // a trigger says what it acts on
         if (v.kind != DBG_VOL_LOAD && v.target[0]) snprintf(text_buf, sizeof text_buf, "%s > %s", v.name, v.target);
-        const char *text = v.kind == DBG_VOL_LOAD ? "Loading zone" : v.target[0] ? text_buf : v.name;
+        if (under) snprintf(text_buf, sizeof text_buf, "%s, y %.0f (%.0f m below)", v.name, top[1], me[1] - top[1]);
+        const char *text = v.kind == DBG_VOL_LOAD ? "Loading zone" : (v.target[0] || under) ? text_buf : v.name;
         ImVec2 sz = ImGui::CalcTextSize(text);
         at.x -= sz.x * 0.5f, at.y -= sz.y;
         dl->AddText(ImVec2(at.x + 1, at.y + 1), IM_COL32(0, 0, 0, 200), text);

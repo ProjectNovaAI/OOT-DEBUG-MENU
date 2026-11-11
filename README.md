@@ -18,7 +18,7 @@
 - **Reload area** (menu, console or F12): back into the area at the entrance you came in by, to retry a trick or a route
 - **Fog off**: removes the volumetric fog live (the haze of the forests and the field), from the menu or the console
 - **Best quality** in one press: 4K picture, full-size 3D scene with DLAA (or FSR 3.1 Native AA), sharpest shadows, 16x texture filtering, full texture detail; and back to the game's quality
-- **See the invisible**: invisible walls, loading zones, trigger zones (each named with what it triggers) and hidden things (grottos, Gold Skulltulas, heart pieces, chests) drawn over the game and through walls, as wireframe, solid colour or both, with a neon colour per kind
+- **See the invisible**: invisible walls, loading zones, trigger zones (each named with what it triggers), hidden things (grottos, Gold Skulltulas, heart pieces, chests) and **death barriers** (the kill plane under the world, lava surfaces, bottomless pits, quicksand) drawn over the game and through walls, as wireframe, solid colour or both, with a neon colour per kind
 - **Game speed**: slow motion and fast forward from 0.05x to 8x
 - **Speedrun timer**: in-game time without the loading screens plus real time, splits on every area change or by hand (F3), compared with your best run in green/red, auto-start when a save loads; switched on in the settings (`debug_igt`)
 - **Timer** with laps, and a **speed** readout

@@ -622,12 +622,14 @@
 # switch applies at once. Default: 0.
 # debug_fog_off = 0
 # Volume overlay of the debug menu (Debug tab, View; docs/debug-menu.md): placed invisible walls, loading zones, other
-# trigger zones and hidden things (grottos, Gold Skulltulas, heart pieces, chests), drawn over the picture and seen
-# through walls. 1 shows a kind. Default: 0 each.
+# trigger zones, hidden things (grottos, Gold Skulltulas, heart pieces, chests) and death barriers (the kill volume under
+# the world, lava surfaces, bottomless pits, quicksand), drawn over the picture and seen through walls. 1 shows a kind.
+# Default: 0 each.
 # debug_view_walls = 0
 # debug_view_loading = 0
 # debug_view_triggers = 0
 # debug_view_hidden = 0
+# debug_view_death = 0
 # wire (edges), solid (see-through colour) or both. Default: wire.
 # debug_view_style = wire
 # How strongly a solid face covers what is behind it, in percent (10 to 100). Default: 35.
@@ -637,6 +639,7 @@
 # debug_view_color_loading = cyan
 # debug_view_color_triggers = yellow
 # debug_view_color_hidden = green
+# debug_view_color_death = red
 # 1: each volume's name over it, within 60 m. Default: 1.
 # debug_view_labels = 1
 # Volumes further from the player than this many metres are not drawn (10 to 1000). Default: 150.
