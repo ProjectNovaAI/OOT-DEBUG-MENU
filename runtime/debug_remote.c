@@ -117,6 +117,108 @@ static void region_find(uint64_t a, uint64_t e, int prot, void *vctx) {
     }
 }
 
+
+// ---- write/read watchpoints. A watched page is made read-only (or no-access to catch reads too); the first access
+// faults, is logged with the faulting host address and the return addresses found on the stack, and the page is
+// opened so the access runs again. The helper thread closes it again a millisecond later, so several accesses inside
+// that millisecond are not all logged ("faults" counts the real ones). Commands: watch, unwatch, wlog.
+#define MAX_WATCH 4
+#define LOG_CAP 256
+#define STACK_KEEP 14
+struct watch_entry {
+    uint64_t addr, len;
+    int mode;               // 1: writes, 2: reads and writes
+    uint64_t open_page;     // the page a fault opened, to close again (0: none)
+};
+struct log_entry {
+    uint64_t seq, addr, ip, before, tid, now_ns;
+    int write, nstack;
+    uint64_t stack[STACK_KEEP];
+};
+static struct watch_entry watches[MAX_WATCH];
+static int nwatch;
+static struct log_entry wlog[LOG_CAP];
+static uint64_t wseq, wfaults;
+static volatile int wlock;
+static uint64_t anchor_lo, anchor_hi;   // return addresses are taken from this range around this program's own code
+
+int mem_access_fault(uint64_t a, int write, uint64_t ip);   // memory.c
+
+static int watch_hook(uint64_t addr, int write, uint64_t ip) {
+    uint64_t page = addr & ~0xFFFull;
+    int hit = -1;
+    for (int i = 0; i < nwatch; i++)
+        if (page == (watches[i].addr & ~0xFFFull) || page == ((watches[i].addr + watches[i].len - 1) & ~0xFFFull)) hit = i;
+    if (hit < 0) return mem_access_fault(addr, write, ip);
+    __atomic_fetch_add(&wfaults, 1, __ATOMIC_RELAXED);
+    for (int i = 0; i < nwatch; i++)
+        if (addr >= watches[i].addr && addr < watches[i].addr + watches[i].len && (write || watches[i].mode == 2)) {
+            while (__atomic_exchange_n(&wlock, 1, __ATOMIC_ACQUIRE)) {}
+            uint64_t n = wseq++;
+            struct log_entry *e = &wlog[n % LOG_CAP];
+            uint64_t left = watches[i].addr + watches[i].len - addr;
+            e->seq = n;
+            e->addr = addr;
+            e->ip = ip;
+            e->write = write;
+            e->before = 0;
+            memcpy(&e->before, (void *)(uintptr_t)addr, left < 8 ? (size_t)left : 8);
+            e->tid = plat_thread_id();
+            e->now_ns = plat_now_ns();
+            e->nstack = 0;
+            volatile uint64_t marker = 0;
+            const uint64_t *sp = (const uint64_t *)&marker;
+            for (int k = 0; k < 4096 && e->nstack < STACK_KEEP; k++)   // the exception frames, then the faulting thread's stack
+                if (sp[k] >= anchor_lo && sp[k] < anchor_hi) e->stack[e->nstack++] = sp[k];
+            __atomic_store_n(&wlock, 0, __ATOMIC_RELEASE);
+            break;
+        }
+    plat_mem_protect(page, 0x1000, PLAT_PROT_RW);
+    watches[hit].open_page = page;
+    return 1;
+}
+
+static void watch_rearm(void) {
+    for (int i = 0; i < nwatch; i++) {
+        uint64_t pg = __atomic_exchange_n(&watches[i].open_page, 0, __ATOMIC_ACQ_REL);
+        if (pg) plat_mem_protect(pg, 0x1000, watches[i].mode == 2 ? PLAT_PROT_NONE : PLAT_PROT_READ);
+    }
+}
+
+static void watch_clear(void) {
+    int n = nwatch;
+    nwatch = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t a = watches[i].addr & ~0xFFFull, e = (watches[i].addr + watches[i].len + 0xFFF) & ~0xFFFull;
+        plat_mem_protect(a, e - a, PLAT_PROT_RW);
+        watches[i].open_page = 0;
+    }
+}
+
+
+// Hardware data breakpoints (platform.h plat_hw_watch): precise, one log entry per access, with the real stack.
+static int hw_used;
+static void hw_trap(int slot, uint64_t addr, uint64_t ip, uint64_t sp) {
+    (void)slot;
+    while (__atomic_exchange_n(&wlock, 1, __ATOMIC_ACQUIRE)) {}
+    uint64_t n = wseq++;
+    struct log_entry *e = &wlog[n % LOG_CAP];
+    e->seq = n;
+    e->addr = addr;
+    e->ip = ip;
+    e->write = 1;
+    e->before = 0;
+    memcpy(&e->before, (void *)(uintptr_t)addr, 8);   // the value after the access
+    e->tid = plat_thread_id();
+    e->now_ns = plat_now_ns();
+    e->nstack = 0;
+    const uint64_t *p = (const uint64_t *)(uintptr_t)sp;
+    for (int k = 0; k < 2048 && e->nstack < STACK_KEEP; k++)
+        if (p[k] >= anchor_lo && p[k] < anchor_hi) e->stack[e->nstack++] = p[k];
+    __atomic_fetch_add(&wfaults, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&wlock, 0, __ATOMIC_RELEASE);
+}
+
 static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }
 
 static void run_command(char *line) {
@@ -127,6 +229,79 @@ static void run_command(char *line) {
     out_put("> %s%s%s%s%s\n", cmd, a1 ? " " : "", a1 ? a1 : "", a2 ? " " : "", a2 ? a2 : "");
     if (!strcmp(cmd, "main")) {
         out_put("main base 0x%llx, v111 %d\n", (unsigned long long)MOD_MAIN_BASE, dbg_available());
+    } else if (!strcmp(cmd, "anchor")) {   // the host address of this program's code: map symbol dbg_remote_set minus this = slide
+        out_put("anchor dbg_remote_set %p\n", (void *)dbg_remote_set);
+    } else if (!strcmp(cmd, "watch") && a1) {   // watch ADDR [LEN] [w|rw]: log the next accesses to these bytes
+        if (nwatch >= MAX_WATCH) { out_put("too many watches (%d); unwatch first\n", MAX_WATCH); return; }
+        uint64_t a = num(a1), n = a2 ? num(a2) : 8;
+        int mode = a3 && !strcmp(a3, "rw") ? 2 : 1;
+        uint64_t end;
+        if (!n || n > 0x10000 || plat_mem_state(a & ~0xFFFull, ((a + n) & ~0xFFFull) + 0x1000, &end) != PLAT_PROT_RW) {
+            out_put("not writable memory\n");
+            return;
+        }
+        anchor_lo = (uint64_t)(uintptr_t)dbg_remote_set - (400ull << 20);
+        anchor_hi = (uint64_t)(uintptr_t)dbg_remote_set + (400ull << 20);
+        plat_mem_access_hook(watch_hook);
+        watches[nwatch].addr = a;
+        watches[nwatch].len = n;
+        watches[nwatch].mode = mode;
+        watches[nwatch].open_page = 0;
+        nwatch++;
+        plat_mem_protect(a & ~0xFFFull, ((a + n - 1) & ~0xFFFull) + 0x1000 - (a & ~0xFFFull), mode == 2 ? PLAT_PROT_NONE : PLAT_PROT_READ);
+        out_put("watching 0x%llx +%llu (%s)\n", (unsigned long long)a, (unsigned long long)n, mode == 2 ? "reads and writes" : "writes");
+    } else if (!strcmp(cmd, "hwatch") && a1) {   // hwatch ADDR [LEN] [w|rw]: precise hardware breakpoints, up to 4 aligned 8-byte pieces
+        uint64_t a = num(a1), n = a2 ? num(a2) : 8;
+        int rw = a3 && !strcmp(a3, "rw") ? 3 : 1;
+        anchor_lo = (uint64_t)(uintptr_t)dbg_remote_set - (400ull << 20);
+        anchor_hi = (uint64_t)(uintptr_t)dbg_remote_set + (400ull << 20);
+        plat_hw_watch_hook(hw_trap);
+        uint64_t at = a & ~7ull, end = (a + n + 7) & ~7ull;
+        int used = 0, threads = 0;
+        for (; at < end && used < 4; at += 8, used++) threads = plat_hw_watch(used, at, 8, rw);
+        hw_used = used;
+        out_put("hardware watch on %d piece(s) from 0x%llx, %d threads armed%s\n", used, (unsigned long long)(a & ~7ull), threads,
+                at < end ? " (range longer than 32 bytes: the end is not watched)" : "");
+    } else if (!strcmp(cmd, "hunwatch")) {
+        for (int i = 0; i < 4; i++) plat_hw_watch(i, 0, 0, 1);
+        hw_used = 0;
+        out_put("hardware watches cleared\n");
+    } else if (!strcmp(cmd, "unwatch")) {
+        watch_clear();
+        out_put("watches cleared\n");
+    } else if (!strcmp(cmd, "wlog")) {   // wlog [clear]: the logged accesses, oldest first
+        if (a1 && !strcmp(a1, "clear")) { wseq = 0; out_put("log cleared\n"); return; }
+        uint64_t first = wseq > LOG_CAP ? wseq - LOG_CAP : 0;
+        out_put("%llu accesses logged, %llu faults\n", (unsigned long long)wseq, (unsigned long long)wfaults);
+        for (uint64_t n = first; n < wseq; n++) {
+            struct log_entry *e = &wlog[n % LOG_CAP];
+            out_put("#%llu %s addr 0x%llx ip %p tid %llu t %llu before %016llx stack", (unsigned long long)e->seq, e->write ? "W" : "R",
+                    (unsigned long long)e->addr, (void *)(uintptr_t)e->ip, (unsigned long long)e->tid,
+                    (unsigned long long)(e->now_ns / 1000000), (unsigned long long)e->before);
+            for (int k = 0; k < e->nstack; k++) out_put(" %p", (void *)(uintptr_t)e->stack[k]);
+            out_put("\n");
+        }
+    } else if (!strcmp(cmd, "dump") && a1 && a2 && a3) {   // dump ADDR LEN FILE: raw bytes to a file next to the game
+        uint64_t a = num(a1), n = num(a2);
+        FILE *f = n <= (1ull << 30) ? fopen(a3, "wb") : NULL;
+        if (!f) { out_put("cannot write\n"); return; }
+        static uint8_t buf[1 << 20];
+        for (uint64_t done = 0; done < n; done += sizeof buf) {
+            size_t k = n - done < sizeof buf ? (size_t)(n - done) : sizeof buf;
+            if (!plat_mem_read(a + done, buf, k)) memset(buf, 0, k);
+            fwrite(buf, 1, k, f);
+        }
+        fclose(f);
+        out_put("wrote %llu bytes to %s\n", (unsigned long long)n, a3);
+    } else if (!strcmp(cmd, "vtable") && a1) {   // vtable OBJECT [N]: the object's first qword as a table of N guest function addresses
+        uint64_t obj = num(a1), n = a2 ? num(a2) : 24, vt;
+        if (!plat_mem_read(obj, &vt, 8)) { out_put("unreadable\n"); return; }
+        out_put("vtable 0x%llx (main%+lld)\n", (unsigned long long)vt, (long long)(vt - MOD_MAIN_BASE));
+        for (uint64_t i = 0; i < n; i++) {
+            uint64_t f;
+            if (!plat_mem_read(vt + i * 8, &f, 8)) break;
+            out_put("  [%llu] 0x%llx (main%+lld)\n", (unsigned long long)i, (unsigned long long)f, (long long)(f - MOD_MAIN_BASE));
+        }
     } else if (!strcmp(cmd, "regions")) {
         each_region(region_print, NULL);
     } else if (!strcmp(cmd, "read") && a1) {   // read ADDR [LEN]
@@ -227,7 +402,7 @@ static void run_command(char *line) {
         dbg_set_time_scale(strtof(a1, NULL));
         out_put("speed %.3f\n", dbg_time_scale());
     } else {
-        out_put("unknown or incomplete command. Commands: main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed\n");
+        out_put("unknown or incomplete command. Commands: hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed\n");
     }
 }
 
@@ -242,7 +417,8 @@ static void remote_thread(void *arg) {
         }
     }
     for (;;) {
-        plat_sleep_ns(50ull * 1000 * 1000);
+        plat_sleep_ns(nwatch ? 1000ull * 1000 : 50ull * 1000 * 1000);
+        if (nwatch) watch_rearm();
         if (!enabled) continue;
         FILE *f = fopen(CMD_FILE, "rb");
         if (!f) continue;

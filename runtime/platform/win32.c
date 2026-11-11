@@ -10,6 +10,7 @@
 #include <restartmanager.h>
 #include <shellapi.h>
 #include <timeapi.h>
+#include <tlhelp32.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
@@ -852,8 +853,76 @@ static int (*access_hook)(uint64_t addr, int write, uint64_t ip);
 
 // A read or write access violation (ExceptionInformation[0] 0 or 1) goes to the access hook when there is one, then a
 // write to the write-fault hook; registered first, before the crash handler.
+static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep);
+static void (*hw_hook)(int slot, uint64_t addr, uint64_t ip, uint64_t sp);
+static uint64_t hw_addr[4];
+static int hw_len[4], hw_rw[4];
+
+void plat_hw_watch_hook(void (*fn)(int, uint64_t, uint64_t, uint64_t)) {
+    hw_hook = fn;
+    AddVectoredExceptionHandler(1, fault_veh);
+}
+
+// Writes the four address registers and the control register into every other thread of the process.
+static int hw_apply(void) {
+    DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    uint64_t dr7 = 0;
+    for (int i = 0; i < 4; i++)
+        if (hw_len[i]) {
+            int lenbits = hw_len[i] == 1 ? 0 : hw_len[i] == 2 ? 1 : hw_len[i] == 8 ? 2 : 3;
+            dr7 |= 1ull << (i * 2);
+            dr7 |= (uint64_t)(hw_rw[i] & 3) << (16 + i * 4);
+            dr7 |= (uint64_t)lenbits << (18 + i * 4);
+        }
+    int done = 0;
+    THREADENTRY32 te;
+    te.dwSize = sizeof te;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == me) continue;
+        HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, te.th32ThreadID);
+        if (!t) continue;
+        if (SuspendThread(t) != (DWORD)-1) {
+            CONTEXT c;
+            memset(&c, 0, sizeof c);
+            c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(t, &c)) {
+                c.Dr0 = hw_addr[0];
+                c.Dr1 = hw_addr[1];
+                c.Dr2 = hw_addr[2];
+                c.Dr3 = hw_addr[3];
+                c.Dr6 = 0;
+                c.Dr7 = dr7;
+                if (SetThreadContext(t, &c)) done++;
+            }
+            ResumeThread(t);
+        }
+        CloseHandle(t);
+    }
+    CloseHandle(snap);
+    return done;
+}
+
+int plat_hw_watch(int slot, uint64_t addr, int len, int rw) {
+    if (slot < 0 || slot > 3 || (len != 0 && len != 1 && len != 2 && len != 4 && len != 8) || (len && (addr & (uint64_t)(len - 1)))) return 0;
+    hw_addr[slot] = len ? addr : 0;
+    hw_len[slot] = len;
+    hw_rw[slot] = rw == 3 ? 3 : 1;
+    return hw_apply();
+}
+
 static LONG CALLBACK fault_veh(EXCEPTION_POINTERS *ep) {
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    if (er->ExceptionCode == EXCEPTION_SINGLE_STEP && hw_hook) {   // a hardware data breakpoint: DR6 bits 0 to 3 name the slot
+        DWORD64 dr6 = ep->ContextRecord->Dr6;
+        for (int i = 0; i < 4; i++)
+            if ((dr6 >> i) & 1) {
+                hw_hook(i, hw_addr[i], (uint64_t)ep->ContextRecord->Rip, (uint64_t)ep->ContextRecord->Rsp);
+                ep->ContextRecord->Dr6 = 0;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+    }
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 || er->ExceptionInformation[0] > 1)
         return EXCEPTION_CONTINUE_SEARCH;
     int write = er->ExceptionInformation[0] == 1;

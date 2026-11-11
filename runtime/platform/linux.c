@@ -1284,6 +1284,9 @@ void plat_mem_access_hook(int (*fn)(uint64_t addr, int write, uint64_t ip)) {
     fault_install();
 }
 
+int plat_hw_watch(int slot, uint64_t addr, int len, int rw) { (void)slot, (void)addr, (void)len, (void)rw; return 0; }   // Windows only
+void plat_hw_watch_hook(void (*fn)(int, uint64_t, uint64_t, uint64_t)) { (void)fn; }
+
 void plat_crash_context(const char *s) { (void)s; }   // the Windows crash notes only
 int plat_crash_filter_reassert(char *who, size_t n) { (void)who, (void)n; return 0; }   // Windows only
 

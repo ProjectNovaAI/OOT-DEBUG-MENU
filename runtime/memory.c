@@ -524,6 +524,10 @@ static int access_fault(uint64_t a, int write, uint64_t ip) {
     return plat_mem_state(a & ~(PAGE - 1), (a & ~(PAGE - 1)) + PAGE, &end) >= PLAT_PROT_READ;
 }
 
+// The access-fault hook for code that installs its own in front of it (debug_remote.c watchpoints): everything that is not
+// its own goes on to the lazy write-back and the probe.
+int mem_access_fault(uint64_t a, int write, uint64_t ip) { return access_fault(a, write, ip); }
+
 // One log block for the probe since the last one: how many regions were armed, how many probes a read or a write
 // ended, and the first accesses by instruction (an address inside the executable as nx2navi+offset, for the linker
 // map or nm). Nothing while the probe is off.

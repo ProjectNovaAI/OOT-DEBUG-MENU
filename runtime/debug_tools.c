@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "cfg.h"
+#include "debug_remote.h"
 #include "debug_tools.h"
 #include "host.h"
 #include "layout.h"
@@ -62,6 +64,11 @@ static int have_last;
 static _Atomic float ground_speed, vertical_speed;
 
 void dbg_tick(uint64_t now_ns) {
+    static int remote_checked;
+    if (!remote_checked) {   // NX2NAVI_DEBUG_REMOTE=1 (environment or nx2navi.ini) starts the remote console without the menu
+        remote_checked = 1;
+        if (cfg_bool("NX2NAVI_DEBUG_REMOTE")) dbg_remote_set(1);
+    }
     float pos[3];
     if (!dbg_player_pos(pos)) {
         have_last = 0;
