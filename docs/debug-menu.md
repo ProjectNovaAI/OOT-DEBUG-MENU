@@ -74,3 +74,6 @@ Next: break on the reads of a static body's collision filter instead of the play
 
 ### Tag file layout (Market_Adult.bphsc, found by hand)
 Chunks are big-endian `size|flags<<30` + 4-char tag: `TAG0` > `SDKV`, `DATA`, `TYPE` (`TPTR TST1 TNA1 FST1 TBDY THSH TPAD`), `INDX` > `ITEM`. ITEM entries are 12 bytes little-endian: `type|flags<<28` (0x10 object, 0x20 array), offset in DATA, count. DATA starts 8 bytes after the `DATA` tag. Item 1 is the compound shape (type 1, offset 0); item 2 is an array of 150 `hknpShapeInstance` of 64 bytes at DATA+0xc0: quaternion xyzw (0x00), translation (0x10), scale (0x20), instance index u16 (0x2c), 0xffff, then a relative pointer (from its own address) to the shape (0x30). The collision layer is not in the instance; it is in the shape or its tags (not decoded yet). Type body table (TBDY) encoding not decoded yet.
+
+### Writing the player position does not stick
+Tried a "raise 5 m" / "hold height" feature on top of `dbg_player_set_pos`: the write succeeds (the remote console reports done) but the actor position reads back unchanged a frame later, so the actor position is an output of the physics/character controller, not an input. Position teleports (and the saved slots) are therefore unreliable; moving the player needs the character controller's own state, which is not found yet. The feature was reverted.
