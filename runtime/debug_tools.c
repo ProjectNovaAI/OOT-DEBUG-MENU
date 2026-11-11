@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -492,6 +493,151 @@ static void items_tick(void) {
     if (!atomic_load(&items_hold)) return;
     for (int i = 0, v; i < ITEMS_CONSUMED; i++)
         if (dbg_item_get(i, &v) && v != items[i].max) dbg_item_set(i, items[i].max);
+}
+
+// Owned things. The game keeps an item in two flags: PouchData.<name>.StockNum (1 for an item that is not counted; the
+// count for ammunition) and IsGet.<name> (bool: ever got, which also skips the first-get scene). Songs have the bool
+// only. Giving sets both; removing sets the count to 0 and the bool off. Tested: the pouch item appears and disappears
+// in the menus; double magic (below) doubles the meter on screen at once.
+static struct Owned {
+    const char *group, *label, *name;
+    int pouch;   // has a PouchData count
+    uint32_t stock_key, get_key;
+} owned[] = {
+    {"Equipment", "Kokiri Sword", "Weapon_Sword_Kokiri", 1},
+    {"Equipment", "Master Sword", "Weapon_Sword_Master", 1},
+    {"Equipment", "Biggoron's Sword", "Weapon_Sword_Giant", 1},
+    {"Equipment", "Deku Shield", "Weapon_Shield_Deku", 1},
+    {"Equipment", "Hylian Shield", "Weapon_Shield_Hylian", 1},
+    {"Equipment", "Mirror Shield", "Weapon_Shield_Mirror", 1},
+    {"Equipment", "Goron Tunic", "Armor_Adult_Goron", 1},
+    {"Equipment", "Zora Tunic", "Armor_Adult_Zora", 1},
+    {"Equipment", "Iron Boots", "Armor_Adult_HeavyBoot", 1},
+    {"Equipment", "Hover Boots", "Armor_Adult_HoverBoot", 1},
+    {"Items", "Fairy Slingshot", "Weapon_Range_SlingShot", 1},
+    {"Items", "Fairy Bow", "Weapon_Range_Bow", 1},
+    {"Items", "Fire Arrows", "Item_Arrow_Fire", 1},
+    {"Items", "Ice Arrows", "Item_Arrow_Ice", 1},
+    {"Items", "Light Arrows", "Item_Arrow_Light", 1},
+    {"Items", "Boomerang", "Item_Boomerang", 1},
+    {"Items", "Hookshot", "Item_Hookshot", 1},
+    {"Items", "Longshot", "Item_Longshot", 1},
+    {"Items", "Megaton Hammer", "Item_Hammer", 1},
+    {"Items", "Lens of Truth", "Armor_GlassTruth", 1},
+    {"Items", "Din's Fire", "Item_DinFire", 1},
+    {"Items", "Farore's Wind", "Item_FaroreWind", 1},
+    {"Items", "Nayru's Love", "Item_NayruLove", 1},
+    {"Items", "Fairy Ocarina", "Item_Ocarina_Fairy", 1},
+    {"Items", "Ocarina of Time", "Item_Ocarina_Time", 1},
+    {"Upgrades", "Goron's Bracelet", "Armor_Child_Gauntlet_Goron", 1},
+    {"Upgrades", "Silver Gauntlets", "Armor_Adult_Gauntlet_Silver", 1},
+    {"Upgrades", "Golden Gauntlets", "Armor_Adult_Gauntlet_Gold", 1},
+    {"Upgrades", "Silver Scale", "Item_Scale_Silver", 1},
+    {"Upgrades", "Golden Scale", "Item_Scale_Gold", 1},
+    {"Upgrades", "Bomb Bag", "Item_BombBag_Small", 1},
+    {"Upgrades", "Big Bomb Bag", "Item_BombBag_Medium", 1},
+    {"Upgrades", "Biggest Bomb Bag", "Item_BombBag_Large", 1},
+    {"Upgrades", "Quiver", "Item_Quiver_Small", 1},
+    {"Upgrades", "Big Quiver", "Item_Quiver_Medium", 1},
+    {"Upgrades", "Biggest Quiver", "Item_Quiver_Large", 1},
+    {"Upgrades", "Bullet Bag", "Item_BulletBag_Small", 1},
+    {"Upgrades", "Bigger Bullet Bag", "Item_BulletBag_Medium", 1},
+    {"Upgrades", "Biggest Bullet Bag", "Item_BulletBag_Large", 1},
+    {"Upgrades", "Adult's Wallet", "Item_Wallet_Medium", 1},
+    {"Upgrades", "Giant's Wallet", "Item_Wallet_Large", 1},
+    {"Upgrades", "Stone of Agony", "Item_AgonyStone", 1},
+    {"Upgrades", "Gerudo's Card", "Item_Token_Gerudo", 1},
+    {"Quest", "Kokiri's Emerald", "Item_Stone_Forest", 1},
+    {"Quest", "Goron's Ruby", "Item_Stone_Fire", 1},
+    {"Quest", "Zora's Sapphire", "Item_Stone_Water", 1},
+    {"Quest", "Forest Medallion", "Item_Medal_Forest", 1},
+    {"Quest", "Fire Medallion", "Item_Medal_Fire", 1},
+    {"Quest", "Water Medallion", "Item_Medal_Water", 1},
+    {"Quest", "Spirit Medallion", "Item_Medal_Spirit", 1},
+    {"Quest", "Shadow Medallion", "Item_Medal_Shadow", 1},
+    {"Quest", "Light Medallion", "Item_Medal_Light", 1},
+    {"Songs", "Zelda's Lullaby", "Item_Melody_ZeldaLullaby", 0},
+    {"Songs", "Epona's Song", "Item_Melody_EponaSong", 0},
+    {"Songs", "Saria's Song", "Item_Melody_SariaSong", 0},
+    {"Songs", "Sun's Song", "Item_Melody_SunSong", 0},
+    {"Songs", "Song of Time", "Item_Melody_TimeSong", 0},
+    {"Songs", "Song of Storms", "Item_Melody_StormSong", 0},
+    {"Songs", "Scarecrow's Song", "Item_Melody_ScarecrowSong", 0},
+    {"Songs", "Minuet of Forest", "Item_Melody_ForestMinuet", 0},
+    {"Songs", "Bolero of Fire", "Item_Melody_FireBolero", 0},
+    {"Songs", "Serenade of Water", "Item_Melody_WaterSerenade", 0},
+    {"Songs", "Requiem of Spirit", "Item_Melody_SpiritRequiem", 0},
+    {"Songs", "Nocturne of Shadow", "Item_Melody_ShadowNocturne", 0},
+    {"Songs", "Prelude of Light", "Item_Melody_LightPrelude", 0},
+    {"Masks", "Keaton Mask", "Armor_Child_Mask_Keaton", 1},
+    {"Masks", "Skull Mask", "Armor_Child_Mask_Skull", 1},
+    {"Masks", "Spooky Mask", "Armor_Child_Mask_Spooky", 1},
+    {"Masks", "Bunny Hood", "Armor_Child_Mask_Bunny", 1},
+    {"Masks", "Goron Mask", "Armor_Child_Mask_Goron", 1},
+    {"Masks", "Zora Mask", "Armor_Child_Mask_Zora", 1},
+    {"Masks", "Gerudo Mask", "Armor_Child_Mask_Gerudo", 1},
+    {"Masks", "Mask of Truth", "Armor_Child_Mask_Truth", 1},
+};
+#define NOWNED ((int)(sizeof owned / sizeof owned[0]))
+
+static void owned_keys(struct Owned *o) {
+    if (o->get_key) return;
+    char name[96];
+    snprintf(name, sizeof name, "PouchData.%s.StockNum", o->name);
+    o->stock_key = o->pouch ? dbg_flag_key(name) : 0;
+    snprintf(name, sizeof name, "IsGet.%s", o->name);
+    o->get_key = dbg_flag_key(name);
+}
+
+int dbg_owned_count(void) { return NOWNED; }
+
+const char *dbg_owned_label(int i, const char **group) {
+    if (i < 0 || i >= NOWNED) return NULL;
+    if (group) *group = owned[i].group;
+    return owned[i].label;
+}
+
+int dbg_owned_get(int i) {
+    if (i < 0 || i >= NOWNED) return -1;
+    owned_keys(&owned[i]);
+    int v = 0;
+    if (owned[i].pouch) return dbg_flag_get(owned[i].stock_key, &v) ? v > 0 : -1;
+    return dbg_flag_get_bool(owned[i].get_key);
+}
+
+int dbg_owned_set(int i, int on) {
+    if (i < 0 || i >= NOWNED) return 0;
+    owned_keys(&owned[i]);
+    int v = 0, ok = 1;
+    if (owned[i].pouch && dbg_flag_get(owned[i].stock_key, &v) && (on ? v <= 0 : v != 0))
+        ok = dbg_flag_set(owned[i].stock_key, on ? 1 : 0);
+    return dbg_flag_set_bool(owned[i].get_key, on) && ok;
+}
+
+// Magic level: the meter's maximum is PlayerStatus.MPMax (240 a level), and the two fairy blessings record the levels
+// got. The current magic is kept within the new maximum.
+#define MAGIC_LEVEL_UNITS 240
+static const char *const magic_items[2] = {"Item_FairyBless_MP", "Item_FairyBless_MPDouble"};
+
+int dbg_magic_level(void) {
+    int m = 0;
+    if (!dbg_flag_get(MAGIC_MAX_HASH, &m)) return -1;
+    return m <= 0 ? 0 : m <= MAGIC_LEVEL_UNITS ? 1 : 2;
+}
+
+int dbg_magic_set_level(int level) {
+    if (level < 0 || level > 2) return 0;
+    char name[96];
+    for (int k = 0; k < 2; k++) {
+        snprintf(name, sizeof name, "PouchData.%s.StockNum", magic_items[k]);
+        dbg_flag_set(dbg_flag_key(name), level > k);
+        snprintf(name, sizeof name, "IsGet.%s", magic_items[k]);
+        dbg_flag_set_bool(dbg_flag_key(name), level > k);
+    }
+    if (!dbg_flag_set(MAGIC_MAX_HASH, level * MAGIC_LEVEL_UNITS)) return 0;
+    int c;
+    if (dbg_magic_get(&c, NULL) && c > level * MAGIC_LEVEL_UNITS) dbg_magic_set(level * MAGIC_LEVEL_UNITS);
+    return 1;
 }
 
 // ---- speed

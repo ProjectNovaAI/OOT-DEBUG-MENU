@@ -123,6 +123,15 @@ int dbg_items_infinite_on(void);
 void dbg_invulnerable(int on);
 int dbg_invulnerable_on(void);
 uint64_t dbg_player_actor(void);   // the player actor's address, 0 when there is none
+// Owned things (equipment, items, upgrades, quest items, songs, masks): label and menu group of entry i (NULL past the
+// end); get is 1 owned, 0 not, -1 unknown (flags not found yet); set gives or removes.
+int dbg_owned_count(void);
+const char *dbg_owned_label(int i, const char **group);
+int dbg_owned_get(int i);
+int dbg_owned_set(int i, int on);
+// Magic meter level: 0 none, 1 single, 2 double (-1 unknown).
+int dbg_magic_level(void);
+int dbg_magic_set_level(int level);
 
 // Warps (debug_warp.c). Destination i is an area file, an entrance actor in it and the arrival event. A warp is armed:
 // the next area change the game makes (a loading zone, a door, a warp song, an instant warp) goes to the destination

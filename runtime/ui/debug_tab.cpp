@@ -232,6 +232,12 @@ extern "C" void tab_debug(float scale) {
         int r = opt_text_row("##dbg_magic", "Magic", value, nullptr,
                              "The player's magic meter. Left and right change it by a tenth of the maximum; A fills it.", false);
         if (ok && m > 0 && r) dbg_magic_set(r == 2 ? m : c + r * (m / 10 > 0 ? m / 10 : 1));
+        int lvl = dbg_magic_level();
+        r = opt_text_row("##dbg_magiclvl", "Magic meter",
+                         lvl == 0 ? "none" : lvl == 1 ? "single" : lvl == 2 ? "double" : wait, nullptr,
+                         "No magic, the single meter or the double meter (the great fairies' gifts). Left and right change it.",
+                         false);
+        if (lvl >= 0 && (r == -1 || r == 1)) dbg_magic_set_level((lvl + r + 3) % 3);
         bool inf = dbg_magic_infinite_on() != 0;
         if (opt_toggle_text("##dbg_infmagic", "Infinite magic", "Fills the magic meter again on every frame.", inf)) dbg_magic_infinite(!inf);
         bool infi = dbg_items_infinite_on() != 0;
@@ -254,6 +260,36 @@ extern "C" void tab_debug(float scale) {
                              "The game's capacity (wallet, quiver, bag) is not checked, and a count for an item that was never "
                              "obtained does not add the item.", false);
             if (have && r) dbg_item_set(i, r == 2 ? max : v + r * step);
+        }
+    }
+
+    opt_group_text("Owned items");
+    {
+        // One group of things at a time (equipment, items, upgrades, quest, songs, masks): the group row chooses.
+        static const char *groups[] = {"Equipment", "Items", "Upgrades", "Quest", "Songs", "Masks"};
+        const int ng = (int)(sizeof groups / sizeof groups[0]);
+        static int gi = 0;
+        int r = opt_text_row("##dbg_owngroup", "Show", groups[gi], nullptr, "Which things to list. Left and right choose.", false);
+        if (r == -1 || r == 1) gi = (gi + r + ng) % ng;
+        int all_on = -1;
+        if (opt_text_row("##dbg_ownall", "Give all of these", "A", nullptr, "Gives every thing listed below.", false) == 2) all_on = 1;
+        if (opt_text_row("##dbg_ownnone", "Remove all of these", "A", nullptr, "Removes every thing listed below.", false) == 2) all_on = 0;
+        for (int i = 0; i < dbg_owned_count(); i++) {
+            const char *group = nullptr, *label = dbg_owned_label(i, &group);
+            if (strcmp(group, groups[gi])) continue;
+            if (all_on >= 0) dbg_owned_set(i, all_on);
+            int have = dbg_owned_get(i);
+            char id[32];
+            snprintf(id, sizeof id, "##dbg_own%d", i);
+            if (have < 0) {
+                opt_text_row(id, label, dbg_flags_locating() ? "searching..." : "not found", nullptr, "", false);
+                continue;
+            }
+            if (opt_toggle_text(id, label,
+                                "Gives or removes it through the game's own item flags (the pouch count and the got-it flag). "
+                                "Removing something that is equipped leaves it in the hand until the next change.",
+                                have == 1))
+                dbg_owned_set(i, have != 1);
         }
     }
 
