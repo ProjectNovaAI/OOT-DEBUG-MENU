@@ -102,13 +102,19 @@ struct find_ctx {
 static void region_find(uint64_t a, uint64_t e, int prot, void *vctx) {
     struct find_ctx *c = vctx;
     if (c->found >= MAX_FIND || (c->want_rw_only && prot != PLAT_PROT_RW) || e - a < c->len) return;
-    const uint8_t *p = (const uint8_t *)(uintptr_t)a;
-    uint64_t n = e - a - c->len + 1;
-    for (uint64_t i = 0; i < n && c->found < MAX_FIND; i += c->align)
-        if (p[i] == c->pat[0] && !memcmp(p + i, c->pat, c->len)) {
-            out_put("0x%llx (main%+lld)\n", (unsigned long long)(a + i), (long long)(a + i - MOD_MAIN_BASE));
-            c->found++;
-        }
+    enum { CHUNK = 1 << 20 };
+    static uint8_t buf[CHUNK + 64];
+    for (uint64_t at = a; at < e && c->found < MAX_FIND;) {
+        uint64_t n = e - at < CHUNK + c->len - 1 ? e - at : CHUNK + c->len - 1;   // overlap so a hit on the seam is not missed
+        if (n < c->len) break;
+        if (!plat_mem_read(at, buf, n)) { at += CHUNK; continue; }   // reads without faulting; GPU-mapped pages can fault
+        for (uint64_t i = 0; i + c->len <= n && i < CHUNK && c->found < MAX_FIND; i += c->align)
+            if (buf[i] == c->pat[0] && !memcmp(buf + i, c->pat, c->len)) {
+                out_put("0x%llx (main%+lld)\n", (unsigned long long)(at + i), (long long)(at + i - MOD_MAIN_BASE));
+                c->found++;
+            }
+        at += CHUNK;
+    }
 }
 
 static uint64_t num(const char *s) { return strtoull(s, NULL, 0); }

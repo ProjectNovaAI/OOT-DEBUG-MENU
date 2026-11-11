@@ -35,14 +35,18 @@ int dbg_scan_first(int32_t value) {
         int st = plat_mem_state(addr, 1ull << 47, &end);
         if (end <= addr) break;
         if (st == PLAT_PROT_RW) {
-            const int32_t *p = (const int32_t *)(uintptr_t)addr;
-            uint64_t n = (end - addr) / 4;
-            for (uint64_t i = 0; i < n; i++)
-                if (p[i] == value) {
-                    if (hits >= SCAN_CAP) { truncated = 1; return (int)hits; }
-                    hit_addr[hits] = addr + i * 4;
-                    hit_val[hits++] = value;
-                }
+            enum { CHUNK = 1 << 20 };
+            static int32_t buf[CHUNK / 4];
+            for (uint64_t at = addr; at < end; at += CHUNK) {
+                uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 4;
+                if (!plat_mem_read(at, buf, n * 4)) continue;   // never read pages directly: GPU-mapped ones can fault
+                for (uint64_t i = 0; i < n; i++)
+                    if (buf[i] == value) {
+                        if (hits >= SCAN_CAP) { truncated = 1; return (int)hits; }
+                        hit_addr[hits] = at + i * 4;
+                        hit_val[hits++] = value;
+                    }
+            }
         }
         addr = end;
     }
