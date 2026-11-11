@@ -84,3 +84,4 @@ Tried a "raise 5 m" / "hold height" feature on top of `dbg_player_set_pos`: the 
 
 ### Health (found by hand, game build 1.1.1)
 Health is in quarter hearts. A `{current, max}` int pair (52 = 13 hearts) sits in a heap object (it was at 0x17455f6b0 in one run; the address moves between runs). It follows damage (29 -> 21) but is a copy: writing max into it from the console is overwritten back within a frame, and no float form of the hearts matches. A hardware write watch on that pair, set while writing to it from the console, crashed the game. The source the game copies it from is not found yet.
+- Hardware write watches on the health copy (`{current, max}` pair, e.g. 0x174564540 at 15/52) crashed the game every time (also four at once froze it). Only the position watch on the player actor has been safe. Do not `hwatch` heap addresses outside the actor; use reads and snapshots.
