@@ -54,6 +54,25 @@ uint64_t dbg_timer_ns(void);
 uint64_t dbg_timer_ticks(void);
 int dbg_timer_laps(uint64_t ns[DBG_LAPS]);   // the number of laps, their times in order
 
+// Speedrun timer (debug_igt.c): in-game time without the loading screens, real time, splits by hand or on every area
+// change, each compared with the best run (kept in debug_splits.txt). Shown on screen while the setting
+// NX2NAVI_DEBUG_IGT is on; NX2NAVI_DEBUG_IGT_AUTOSPLIT and NX2NAVI_DEBUG_IGT_AUTOSTART (start when a save's player first
+// appears) are settings too. Hotkeys F2 start and stop, F3 split, F4 reset.
+enum { DBG_SPLITS = 64 };
+int dbg_igt_enabled(void);
+int dbg_igt_autosplit(void);
+int dbg_igt_autostart(void);
+void dbg_igt_tick(uint64_t now_ns);
+void dbg_igt_toggle(void);
+int dbg_igt_running(void);
+void dbg_igt_split(void);
+int dbg_igt_reset(void);              // 1 when the finished run became the best
+void dbg_igt_times(uint64_t *igt, uint64_t *rta);
+int dbg_igt_splits(void);
+int dbg_igt_split_at(int i, uint64_t *ns, char name[48], int64_t *delta, int *has_delta);
+int dbg_igt_best_count(void);
+void dbg_igt_clear_best(void);
+
 // On-screen readout lines (bit mask).
 enum { DBG_SHOW_POS = 1, DBG_SHOW_SPEED = 2, DBG_SHOW_TIMER = 4, DBG_SHOW_INPUT = 8 };
 int dbg_overlay_mask(void);

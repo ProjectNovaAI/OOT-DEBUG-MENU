@@ -11,6 +11,7 @@
 #include "ui/option_rows.h"
 
 extern "C" {
+#include "cfg.h"
 #include "debug_remote.h"
 #include "debug_scan.h"
 #include "input.h"
@@ -374,6 +375,60 @@ extern "C" void tab_debug(float scale) {
         }
     }
 
+    opt_group_text("Speedrun timer");
+    {
+        // The three switches are settings (nx2navi.ini [debug]), so they stay as set.
+        static const struct { const char *key, *id, *label, *desc; } sw[] = {
+            {"NX2NAVI_DEBUG_IGT", "##dbg_igt_on", "Show speedrun timer",
+             "In-game time (real time without the loading screens), real time and the splits, at the top right of the screen. "
+             "Saved in the settings."},
+            {"NX2NAVI_DEBUG_IGT_AUTOSPLIT", "##dbg_igt_as", "Split on every area change",
+             "Takes a split each time the game loads another area, named after the area left. Saved in the settings."},
+            {"NX2NAVI_DEBUG_IGT_AUTOSTART", "##dbg_igt_ast", "Start when a save loads",
+             "Starts the timer by itself the moment a save's player first appears (from the title screen or a reset). "
+             "Saved in the settings."},
+        };
+        for (const auto &s : sw) {
+            bool on = cfg_bool(s.key) != 0;
+            if (opt_toggle_text(s.id, s.label, s.desc, on)) {
+                cfg_set(s.key, on ? "0" : "1");
+                opt_save_soon();
+            }
+        }
+        uint64_t igt = 0, rta = 0;
+        dbg_igt_times(&igt, &rta);
+        char a[32], b[32];
+        format_time(a, sizeof a, igt);
+        format_time(b, sizeof b, rta);
+        snprintf(value, sizeof value, "%s IGT %s  RTA %s", dbg_igt_running() ? "running" : "stopped", a, b);
+        if (opt_text_row("##dbg_igt_go", "Start / stop (F2)", value, nullptr,
+                         "Starts or pauses the speedrun timer. With the hotkeys on, F2 does the same, F3 splits and F4 resets.",
+                         false) == 2)
+            dbg_igt_toggle();
+        if (opt_text_row("##dbg_igt_split", "Split (F3)", "A", nullptr, "Takes a split now, named after the current area.", false) == 2)
+            dbg_igt_split();
+        if (opt_text_row("##dbg_igt_reset", "Reset (F4)", "A", nullptr,
+                         "Clears the timer and the splits. A stopped run that is faster than the best run (or the first run) "
+                         "becomes the best run, kept in debug_splits.txt in the game's folder; splits are compared with it.",
+                         false) == 2)
+            dbg_igt_reset();
+        snprintf(value, sizeof value, "%d splits", dbg_igt_best_count());
+        if (dbg_igt_best_count() &&
+            opt_text_row("##dbg_igt_clear", "Forget the best run", value, nullptr, "Deletes the kept best run.", false) == 2)
+            dbg_igt_clear_best();
+        for (int i = 0; i < dbg_igt_splits(); i++) {
+            uint64_t ns;
+            int64_t d;
+            int hd;
+            char name[48], line[128], dt[32];
+            if (!dbg_igt_split_at(i, &ns, name, &d, &hd)) break;
+            format_time(a, sizeof a, ns);
+            format_time(dt, sizeof dt, (uint64_t)(d < 0 ? -d : d));
+            snprintf(line, sizeof line, "%d. %s  %s%s%s", i + 1, name, a, hd ? (d < 0 ? "  -" : "  +") : "", hd ? dt : "");
+            opt_text_str(line);
+        }
+    }
+
     opt_group_text("On-screen readout");
     {
         int mask = dbg_overlay_mask();
@@ -459,7 +514,8 @@ extern "C" void tab_debug(float scale) {
 extern "C" void debug_overlay_draw(float scale) {
     int mask = dbg_overlay_mask();
     const char *toast_msg = dbg_toast(plat_now_ns());
-    if ((!mask && !toast_msg) || !dbg_available()) return;
+    bool igt = dbg_igt_enabled() != 0;
+    if ((!mask && !toast_msg && !igt) || !dbg_available()) return;
     char lines[4][96];
     int n = 0;
     float pos[3];
@@ -484,6 +540,52 @@ extern "C" void debug_overlay_draw(float scale) {
         }
     }
     ImDrawList *dl = ImGui::GetForegroundDrawList();
+    if (igt) {
+        // Speedrun panel, top right: IGT large, RTA, then the last few splits with their difference to the best run
+        // (green ahead, red behind).
+        uint64_t t_igt = 0, t_rta = 0;
+        dbg_igt_times(&t_igt, &t_rta);
+        char big[32], rta[48];
+        format_time(big, sizeof big, t_igt);
+        char tmp[32];
+        format_time(tmp, sizeof tmp, t_rta);
+        snprintf(rta, sizeof rta, "RTA %s%s", tmp, dbg_igt_running() ? "" : "  (stopped)");
+        ImFont *font = ImGui::GetFont();
+        float fs = ImGui::GetFontSize(), big_fs = fs * 1.8f, pad = 8.0f * scale, w = 480.0f * scale;
+        int ns = dbg_igt_splits(), first = ns > 5 ? ns - 5 : 0;
+        float h = pad * 2 + big_fs + fs * (1 + (ns - first)) + 4.0f * scale;
+        // Below the game's item buttons at the top right.
+        float x1 = ImGui::GetIO().DisplaySize.x - 14.0f * scale, x0 = x1 - w, y0 = ImGui::GetIO().DisplaySize.y * 0.24f;
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y0 + h), IM_COL32(0, 0, 0, 170), 6.0f * scale);
+        ImVec2 bs = font->CalcTextSizeA(big_fs, 1e9f, 0.0f, big);
+        ImU32 col = dbg_igt_running() ? IM_COL32(255, 255, 255, 255) : IM_COL32(170, 170, 170, 255);
+        dl->AddText(font, big_fs, ImVec2(x1 - pad - bs.x, y0 + pad), col, big);
+        float y = y0 + pad + big_fs + 2.0f * scale;
+        ImVec2 rs = ImGui::CalcTextSize(rta);
+        dl->AddText(ImVec2(x1 - pad - rs.x, y), IM_COL32(190, 190, 190, 255), rta);
+        y += fs + 2.0f * scale;
+        for (int i = first; i < ns; i++) {
+            uint64_t sn;
+            int64_t d;
+            int hd;
+            char name[48], st[32], dt[40];
+            if (!dbg_igt_split_at(i, &sn, name, &d, &hd)) break;
+            format_time(st, sizeof st, sn);
+            char ad[32];
+            format_time(ad, sizeof ad, (uint64_t)(d < 0 ? -d : d));
+            snprintf(dt, sizeof dt, "%s%s", d < 0 ? "-" : "+", ad);
+            ImVec2 ss = ImGui::CalcTextSize(st), ds = hd ? ImGui::CalcTextSize(dt) : ImVec2(0, 0);
+            float name_end = x1 - pad - ss.x - 10.0f * scale - (hd ? ds.x + 10.0f * scale : 0.0f);
+            dl->PushClipRect(ImVec2(x0, y), ImVec2(name_end, y + fs), true);
+            dl->AddText(ImVec2(x0 + pad, y), IM_COL32(220, 220, 220, 255), name);
+            dl->PopClipRect();
+            dl->AddText(ImVec2(x1 - pad - ss.x, y), IM_COL32(255, 255, 255, 255), st);
+            if (hd)
+                dl->AddText(ImVec2(x1 - pad - ss.x - 10.0f * scale - ds.x, y),
+                            d < 0 ? IM_COL32(90, 230, 120, 255) : IM_COL32(240, 90, 90, 255), dt);
+            y += fs;
+        }
+    }
     if (toast_msg) {
         ImVec2 sz = ImGui::CalcTextSize(toast_msg);
         float pad2 = 8.0f * scale, cx = ImGui::GetIO().DisplaySize.x * 0.5f, y = ImGui::GetIO().DisplaySize.y * 0.12f;

@@ -544,6 +544,21 @@ static void run_command(char *line) {
         if (a1) (cmd[0] == 'f' ? dbg_fly : !strcmp(cmd, "hover") ? dbg_hover : dbg_hover_boots)(atoi(a1));
         if (a2 && cmd[0] == 'f') dbg_set_fly_speed((float)atof(a2));   // fly 1 SPEED
         out_put("fly %d (%.1f m/s), hover %d, infinite hover boots %d\n", dbg_fly_on(), dbg_fly_speed(), dbg_hover_on(), dbg_hover_boots_on());
+    } else if (!strcmp(cmd, "igt")) {   // igt [toggle|split|reset]: the speedrun timer and its splits
+        if (a1 && !strcmp(a1, "toggle")) dbg_igt_toggle();
+        if (a1 && !strcmp(a1, "split")) dbg_igt_split();
+        if (a1 && !strcmp(a1, "reset")) out_put("reset%s\n", dbg_igt_reset() ? ", new best run" : "");
+        uint64_t igt = 0, rta = 0;
+        dbg_igt_times(&igt, &rta);
+        out_put("igt %s %.3f s, rta %.3f s, shown %d, autosplit %d, best %d splits\n", dbg_igt_running() ? "running" : "stopped",
+                igt / 1e9, rta / 1e9, dbg_igt_enabled(), dbg_igt_autosplit(), dbg_igt_best_count());
+        for (int i = 0; i < dbg_igt_splits(); i++) {
+            uint64_t ns;
+            int64_t d;
+            int hd;
+            char name[48];
+            if (dbg_igt_split_at(i, &ns, name, &d, &hd)) out_put("%2d %-32s %.3f%s%+.3f\n", i + 1, name, ns / 1e9, hd ? " " : " (no best) ", d / 1e9);
+        }
     } else if (!strcmp(cmd, "magiclvl")) {   // magiclvl [0|1|2]: the magic meter's level
         if (a1) dbg_magic_set_level(atoi(a1));
         out_put("magic level %d\n", dbg_magic_level());
@@ -587,7 +602,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw warpage own give magiclvl fly hover hoverboots igt area perf gcall gres\n");
     }
 }
 

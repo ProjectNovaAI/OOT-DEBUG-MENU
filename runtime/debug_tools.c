@@ -658,6 +658,7 @@ void dbg_tick(uint64_t now_ns) {
     health_tick();
     magic_tick();
     items_tick();
+    if (dbg_igt_enabled() || dbg_igt_running()) dbg_igt_tick(now_ns);
     float pos[3];
     if (!dbg_player_pos(pos)) {
         have_last = 0;
@@ -793,9 +794,19 @@ const char *dbg_toast(uint64_t now_ns) { return now_ns < toast_until ? toast_tex
 
 int dbg_hotkey(int fkey) {
     static const float scales[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
-    if (!dbg_hotkeys() || !dbg_available() || fkey < 5 || fkey > 9) return 0;
+    if (!dbg_hotkeys() || !dbg_available() || fkey < 2 || fkey > 9) return 0;
     char t[64];
     switch (fkey) {
+    case 2:
+        dbg_igt_toggle();
+        toast(dbg_igt_running() ? "Speedrun timer started" : "Speedrun timer stopped");
+        break;
+    case 3:
+        dbg_igt_split();
+        snprintf(t, sizeof t, "Split %d", dbg_igt_splits());
+        toast(dbg_igt_running() ? t : "Start the speedrun timer first (F2)");
+        break;
+    case 4: toast(dbg_igt_reset() ? "Speedrun timer reset: new best run saved" : "Speedrun timer reset"); break;
     case 5: toast(dbg_slot_save(0) ? "Position saved to slot 1" : "No player to save"); break;
     case 6: toast(dbg_slot_load(0) ? "Moved to slot 1" : "Slot 1 is empty or no player"); break;
     case 7:

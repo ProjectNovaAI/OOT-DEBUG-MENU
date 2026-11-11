@@ -617,6 +617,15 @@
 # Default: every cheat off.
 # cheat_0123abcd = 1
 
+[debug]
+# Speedrun timer of the debug menu (F1, Debug tab; docs/debug-menu.md), game build 1.1.1: in-game time without the
+# loading screens, real time and splits, drawn at the top right. 1 shows it. Default: 0.
+# debug_igt = 0
+# 1: a split is taken on every area change, named after the area left. Default: 1.
+# debug_igt_autosplit = 1
+# 1: the timer starts by itself when a save's player first appears. Default: 0.
+# debug_igt_autostart = 0
+
 [diagnostics]
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's
 # Performance log sets perf (frame timings). Default: none.

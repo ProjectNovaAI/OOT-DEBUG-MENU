@@ -16,16 +16,17 @@
 - **Warp to every area, as child or adult**: 135 entrances in all areas. "Warp now" drops the player into the nearest loading zone and sends that area change to the chosen place, or arm a warp for the next area change the game makes (door, loading zone, warp song, void out)
 - **Switch between child and adult** anywhere the area has both versions, staying at the same entrance; an "age flag on arrival" switch for glitch hunting
 - **Game speed**: slow motion and fast forward from 0.05x to 8x
+- **Speedrun timer**: in-game time without the loading screens plus real time, splits on every area change or by hand (F3), compared with your best run in green/red, auto-start when a save loads; switched on in the settings (`debug_igt`)
 - **Timer** with laps, and a **speed** readout
 - **On-screen overlay**: position, speed, timer, and a live **input display** drawn as a Switch Pro Controller, which switches to a keyboard and mouse view when those were used last
-- **Keyboard hotkeys** with the menu closed: F5 save, F6 load, F7/F8 game speed, F9 timer
+- **Keyboard hotkeys** with the menu closed: F2 start/stop the speedrun timer, F3 split, F4 reset, F5 save, F6 load, F7/F8 game speed, F9 timer
 - **Memory scanner** (find and edit values) and a **remote console** for inspecting the running game (`NX2NAVI_DEBUG_REMOTE=1`), with hardware watchpoints and execution breakpoints
 - **Health**: live health readout, invulnerable (always full), hold health at a chosen number of hearts, refill, set to a quarter heart, add or remove heart containers
 - **Give and remove items**: every sword, shield, tunic, boot, item, upgrade, stone, medallion, song and mask, one by one or a whole group at once
 - **Magic and items**: no magic, single or double magic meter, magic readout and fill, infinite magic, infinite items (rupees and ammunition never run out), and live counts you can change for rupees, arrows, bombs, bombchus, Deku sticks, nuts and seeds, magic beans, Gold Skulltula tokens and each dungeon's small keys
 - **Everything here is a work in progress and still being worked on**; features may be incomplete or change.
 - **Flag editing** from the remote console: any bool, int, float, enum, string or vector flag by name
-- *Being built next*: fog off, draw distance and quality, collision/invisible-wall/death-barrier visibility (with a solid-colour option), an in-game-time timer with splits
+- *Being built next*: fog off, draw distance and quality, collision/invisible-wall/death-barrier visibility (with a solid-colour option),
 <!-- DEBUG-MENU-FEATURES:END -->
 
 ---

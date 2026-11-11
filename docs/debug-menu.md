@@ -116,3 +116,10 @@ Health is stored in quarter hearts in the player's heap data as 16-byte records 
 - Infinite Hover Boots: with `PlayerStatus.EquipBoot` = `Armor_Adult_HoverBoot`, a fall faster than 1.5 m/s starts a hold at the height it started from; B or taking the boots off ends it.
 - Tested: fly up 8 m/s and along the view, right on the stick goes right on screen; hover walks across at a constant height; the boots hold stops a fall and walks on air.
 - Console: `fly 0|1 [SPEED]`, `hover 0|1`, `hoverboots 0|1`.
+
+### Speedrun timer (working, tested in game 2026-11-11)
+- `runtime/debug_igt.c`, ticked on every present (`dbg_tick`). IGT is real time minus the loading screens: it stops while `Sequence_IsLoadingBanc` is set or there is no player actor. The game keeps no play-time flag of its own (searched the flag names: only minigame timers). RTA runs alongside.
+- Splits: by hand (F3, menu, console `igt split`) or on every area change (`Sequence_CurrentBanc` differs from the last area seen outside a load), named after the area left. A stopped run that beats the best run's last split becomes the best run on reset, kept as `debug_splits.txt` (one `nanoseconds name` line a split) in the game's folder; every split shows its difference to the same split of the best run.
+- Settings (nx2navi.ini `[debug]`, live): `debug_igt` shows the panel (top right, under the item buttons), `debug_igt_autosplit`, `debug_igt_autostart` (starts when a save's player first appears). The menu's switches write them.
+- Hotkeys (with the hotkeys on): F2 start/stop, F3 split, F4 reset. Console: `igt [toggle|split|reset]`.
+- Tested: auto-start on loading a save; a warp's 4.7 s load left out of IGT; the auto split on an area change; a second run's split shown 25.5 s ahead in green.
