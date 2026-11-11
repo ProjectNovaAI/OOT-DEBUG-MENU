@@ -185,3 +185,49 @@ static _Atomic int overlay_mask;
 int dbg_overlay_mask(void) { return atomic_load_explicit(&overlay_mask, memory_order_relaxed); }
 
 void dbg_overlay_set(int mask) { atomic_store_explicit(&overlay_mask, mask, memory_order_relaxed); }
+
+// ---- hotkeys
+
+static _Atomic int hotkeys_on;
+static char toast_text[64];
+static uint64_t toast_until;
+
+int dbg_hotkeys(void) { return atomic_load_explicit(&hotkeys_on, memory_order_relaxed); }
+void dbg_hotkeys_set(int on) { atomic_store_explicit(&hotkeys_on, on != 0, memory_order_relaxed); }
+
+static void toast(const char *s) {
+    strncpy(toast_text, s, sizeof toast_text - 1);
+    toast_text[sizeof toast_text - 1] = 0;
+    toast_until = plat_now_ns() + 2000000000ull;
+}
+
+const char *dbg_toast(uint64_t now_ns) { return now_ns < toast_until ? toast_text : NULL; }
+
+int dbg_hotkey(int fkey) {
+    static const float scales[] = {0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
+    if (!dbg_hotkeys() || !dbg_available() || fkey < 5 || fkey > 9) return 0;
+    char t[64];
+    switch (fkey) {
+    case 5: toast(dbg_slot_save(0) ? "Position saved to slot 1" : "No player to save"); break;
+    case 6: toast(dbg_slot_load(0) ? "Moved to slot 1" : "Slot 1 is empty or no player"); break;
+    case 7:
+    case 8: {
+        float s = dbg_time_scale();
+        int idx = 0, n = (int)(sizeof scales / sizeof *scales);
+        for (int i = 1; i < n; i++)
+            if (fabsf(scales[i] - s) < fabsf(scales[idx] - s)) idx = i;
+        idx += fkey == 8 ? 1 : -1;
+        if (idx < 0) idx = 0;
+        if (idx >= n) idx = n - 1;
+        dbg_set_time_scale(scales[idx]);
+        snprintf(t, sizeof t, "Game speed %.3gx", dbg_time_scale());
+        toast(t);
+        break;
+    }
+    default:
+        dbg_timer_toggle();
+        toast(dbg_timer_running() ? "Timer started" : "Timer stopped");
+        break;
+    }
+    return 1;
+}

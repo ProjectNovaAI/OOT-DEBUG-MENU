@@ -9,6 +9,9 @@
 #include <windowsx.h>
 
 #include "imgui.h"
+extern "C" {
+#include "debug_tools.h"
+}
 
 extern "C" {
 #include "input.h"
@@ -53,6 +56,10 @@ extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res)
         // Esc with the menu open (opened by F1 too) is not a toggle here: it goes to the menu, which closes itself
         if (!(l & (1 << 30)) && (w == VK_F1 || (w == VK_ESCAPE && !menu_is_open()))) {
             menu_toggle();
+            *res = 0;
+            return 1;
+        }
+        if (w >= VK_F5 && w <= VK_F9 && !(l & (1 << 30)) && !menu_is_open() && dbg_hotkey((int)(w - VK_F1) + 1)) {
             *res = 0;
             return 1;
         }

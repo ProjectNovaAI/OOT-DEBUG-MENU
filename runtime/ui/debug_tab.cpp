@@ -12,6 +12,7 @@
 extern "C" {
 #include "debug_remote.h"
 #include "debug_scan.h"
+#include "input.h"
 #include "debug_tools.h"
 #include "host.h"
 #include "layout.h"
@@ -128,10 +129,15 @@ extern "C" void tab_debug(float scale) {
             {DBG_SHOW_POS, "##dbg_o_pos", "Show position", "Draws the player's position in the top left corner."},
             {DBG_SHOW_SPEED, "##dbg_o_speed", "Show speed", "Draws the ground and vertical speed."},
             {DBG_SHOW_TIMER, "##dbg_o_timer", "Show timer", "Draws the timer and the last lap."},
+            {DBG_SHOW_INPUT, "##dbg_o_input", "Show inputs", "Draws the buttons and sticks the game is being given, bottom left: for checking a route or an input sequence."},
         };
         for (auto &r : rows)
             if (opt_toggle_text(r.id, r.label, r.desc, (mask & r.bit) != 0)) mask ^= r.bit;
         dbg_overlay_set(mask);
+        bool hk = dbg_hotkeys() != 0;
+        if (opt_toggle_text("##dbg_hotkeys", "Keyboard hotkeys", "With the menu closed: F5 saves the position in slot 1, F6 goes to it, "
+                            "F7 and F8 lower and raise the game speed, F9 starts and stops the timer.", hk))
+            dbg_hotkeys_set(!hk);
     }
 
     opt_group_text("Remote console");
@@ -202,7 +208,8 @@ extern "C" void tab_debug(float scale) {
 
 extern "C" void debug_overlay_draw(float scale) {
     int mask = dbg_overlay_mask();
-    if (!mask || !dbg_available()) return;
+    const char *toast_msg = dbg_toast(plat_now_ns());
+    if ((!mask && !toast_msg) || !dbg_available()) return;
     char lines[4][96];
     int n = 0;
     float pos[3];
@@ -226,8 +233,47 @@ extern "C" void debug_overlay_draw(float scale) {
             snprintf(lines[n++], sizeof lines[0], "Lap %d  %s", laps_n, t);
         }
     }
-    if (!n) return;
     ImDrawList *dl = ImGui::GetForegroundDrawList();
+    if (toast_msg) {
+        ImVec2 sz = ImGui::CalcTextSize(toast_msg);
+        float pad2 = 8.0f * scale, cx = ImGui::GetIO().DisplaySize.x * 0.5f, y = ImGui::GetIO().DisplaySize.y * 0.12f;
+        dl->AddRectFilled(ImVec2(cx - sz.x / 2 - pad2, y - pad2), ImVec2(cx + sz.x / 2 + pad2, y + sz.y + pad2), IM_COL32(0, 0, 0, 170), 4.0f * scale);
+        dl->AddText(ImVec2(cx - sz.x / 2, y), IM_COL32(255, 255, 255, 255), toast_msg);
+    }
+    if (mask & DBG_SHOW_INPUT) {
+        uint64_t btn = 0;
+        int32_t lx = 0, ly = 0, rx = 0, ry = 0;
+        input_poll_ui(&btn, &lx, &ly, &rx, &ry);
+        // Switch npad bits: A B X Y, stick clicks, L R ZL ZR, plus minus, d-pad left up right down
+        static const struct { int bit; const char *name; float x, y; } keys[] = {
+            {8, "ZL", 0, 0}, {6, "L", 1, 0}, {7, "R", 5, 0}, {9, "ZR", 6, 0},
+            {13, "^", 1, 1.6f}, {12, "<", 0, 2.4f}, {14, ">", 2, 2.4f}, {15, "v", 1, 3.2f},
+            {11, "-", 3, 2.4f}, {10, "+", 4, 2.4f},
+            {2, "X", 6, 1.6f}, {3, "Y", 5, 2.4f}, {0, "A", 7, 2.4f}, {1, "B", 6, 3.2f},
+        };
+        float u = 30.0f * scale, ox = 14.0f * scale, oy = ImGui::GetIO().DisplaySize.y - 14.0f * scale - 4.4f * u;
+        dl->AddRectFilled(ImVec2(ox - 6 * scale, oy - 6 * scale), ImVec2(ox + 8.2f * u, oy + 4.4f * u), IM_COL32(0, 0, 0, 120), 6.0f * scale);
+        for (auto &k : keys) {
+            bool down = (btn >> k.bit) & 1;
+            ImVec2 a(ox + k.x * u, oy + k.y * u), b(a.x + u * 0.9f, a.y + u * 0.7f);
+            dl->AddRectFilled(a, b, down ? IM_COL32(255, 210, 60, 235) : IM_COL32(60, 60, 60, 200), 4.0f * scale);
+            ImVec2 ts = ImGui::CalcTextSize(k.name);
+            dl->AddText(ImVec2(a.x + (b.x - a.x - ts.x) / 2, a.y + (b.y - a.y - ts.y) / 2), down ? IM_COL32(0, 0, 0, 255) : IM_COL32(220, 220, 220, 255), k.name);
+        }
+        float r = u * 0.9f;
+        ImVec2 c1(ox + 7.2f * u - r * 2.2f, oy + 0.2f * u + r * 2.2f);   // sticks: left and right, dot at the deflection
+        for (int s2 = 0; s2 < 2; s2++) {
+            ImVec2 c(ox + (s2 ? 7.0f : 2.4f) * u, oy + (s2 ? 3.6f : 0.9f) * u);
+            float cr = u * 0.65f;
+            dl->AddCircleFilled(c, cr, IM_COL32(40, 40, 40, 200), 24);
+            dl->AddCircle(c, cr, IM_COL32(150, 150, 150, 220), 24, 1.5f * scale);
+            float sx = (s2 ? rx : lx) / 32767.0f, sy = (s2 ? ry : ly) / 32767.0f;
+            bool click = (btn >> (s2 ? 5 : 4)) & 1;
+            dl->AddCircleFilled(ImVec2(c.x + sx * cr, c.y - sy * cr), cr * 0.28f, click ? IM_COL32(255, 210, 60, 255) : IM_COL32(230, 230, 230, 255), 12);
+        }
+        (void)c1; (void)r;
+    }
+    if (!n) return;
     float pad = 6.0f * scale, line_h = ImGui::GetTextLineHeight();
     float w = 0;
     for (int i = 0; i < n; i++) w = fmaxf(w, ImGui::CalcTextSize(lines[i]).x);

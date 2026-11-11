@@ -428,6 +428,12 @@ static void run_command(char *line) {
         }
     } else if (!strcmp(cmd, "set") && a1 && a2) {   // set HITINDEX INT
         out_put("%s\n", dbg_scan_write((int)num(a1), (int32_t)strtol(a2, NULL, 0)) ? "written" : "failed");
+    } else if (!strcmp(cmd, "overlay") && a1) {   // overlay MASK: 1 position, 2 speed, 4 timer, 8 inputs
+        dbg_overlay_set((int)num(a1));
+        out_put("overlay mask %d\n", dbg_overlay_mask());
+    } else if (!strcmp(cmd, "hotkeys") && a1) {   // hotkeys 0|1: F5 save, F6 load, F7/F8 speed, F9 timer
+        dbg_hotkeys_set((int)num(a1));
+        out_put("hotkeys %d\n", dbg_hotkeys());
     } else if (!strcmp(cmd, "player")) {
         float p[3];
         if (dbg_player_pos(p)) out_put("player %.3f %.3f %.3f speed %.2f vert %.2f\n", p[0], p[1], p[2], dbg_ground_speed(), dbg_vertical_speed());
@@ -439,7 +445,7 @@ static void run_command(char *line) {
         dbg_set_time_scale(strtof(a1, NULL));
         out_put("speed %.3f\n", dbg_time_scale());
     } else {
-        out_put("unknown or incomplete command. Commands: hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed\n");
     }
 }
 

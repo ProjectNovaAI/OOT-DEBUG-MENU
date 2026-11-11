@@ -52,9 +52,17 @@ uint64_t dbg_timer_ticks(void);
 int dbg_timer_laps(uint64_t ns[DBG_LAPS]);   // the number of laps, their times in order
 
 // On-screen readout lines (bit mask).
-enum { DBG_SHOW_POS = 1, DBG_SHOW_SPEED = 2, DBG_SHOW_TIMER = 4 };
+enum { DBG_SHOW_POS = 1, DBG_SHOW_SPEED = 2, DBG_SHOW_TIMER = 4, DBG_SHOW_INPUT = 8 };
 int dbg_overlay_mask(void);
 void dbg_overlay_set(int mask);
+
+// Hotkeys on the keyboard while the menu is closed (off by default; the Debug tab switches them): F5 saves the position in
+// slot 1, F6 goes to it, F7 and F8 lower and raise the game speed, F9 starts and stops the timer. dbg_hotkey is called with
+// the function key's number by the window code; it returns 1 when it used the key. dbg_toast is the last message to show.
+int dbg_hotkeys(void);
+void dbg_hotkeys_set(int on);
+int dbg_hotkey(int fkey);
+const char *dbg_toast(uint64_t now_ns);   // NULL when there is none to show
 
 #ifdef __cplusplus
 }
