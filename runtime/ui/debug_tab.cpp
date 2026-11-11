@@ -20,6 +20,7 @@ extern "C" {
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+int vk_dlaa_available(void);   // vk_dlaa.c: NVIDIA DLSS came up on this PC
 }
 
 // ---- formatting
@@ -367,6 +368,40 @@ extern "C" void tab_debug(float scale) {
                 cfg_set(s.key, on ? "0" : "1");
                 opt_save_soon();
             }
+        }
+        // The best picture the renderer's own settings give (the Screen and Graphics tabs set each one): a 4K game
+        // picture, the 3D scene drawn at its full size with DLAA (FSR 3.1 Native AA where DLSS cannot run; without
+        // either the scene is 75% of the picture, widescreen.c scene_share), the sharpest sun shadows, 16x texture
+        // filtering and full texture detail. Most are read at start, so a restart applies them. Render scale and shadow
+        // range are left out: game build 1.1.1 has no scene or cascade patch set (resolution.c res_init).
+        static const struct { const char *key, *best; } q[] = {
+            {"NX2NAVI_GAME_RES", "2160"}, {"NX2NAVI_DLAA", "1"}, {"NX2NAVI_DLSS", "dlaa"},
+            {"NX2NAVI_SHADOW_SCALE", "4"}, {"NX2NAVI_ANISO", "16"}, {"NX2NAVI_TEXTURE_DETAIL", "full"},
+        };
+        enum { NQ = sizeof q / sizeof *q };
+        int best = 0;
+        for (const auto &e : q) {
+            const char *v = cfg_value(e.key);
+            best += v && !strcmp(v, e.best);
+        }
+        snprintf(value, sizeof value, "%d of %d set%s", best, (int)NQ, cfg_pending_count() ? ", restart to apply" : "");
+        if (opt_text_row("##dbg_quality_max", "Best quality", value, nullptr,
+                         "Sets the game picture to 4K (2160p), draws the 3D scene at its full size with DLAA (or AMD "
+                         "FSR 3.1 Native AA where DLSS cannot run) instead of 75% of it, the sharpest sun shadows (4x), "
+                         "16x texture filtering and full texture detail. Needs a fast GPU. Most of these apply after a "
+                         "restart.",
+                         false) == 2) {
+            for (const auto &e : q) opt_apply(e.key, e.best);
+            if (!vk_dlaa_available()) opt_apply("NX2NAVI_TAA", "fsr3");
+        }
+        if (opt_text_row("##dbg_quality_game", "Game's quality", "A", nullptr,
+                         "Puts the settings above back to their defaults (1440p, no DLAA, the game's shadows and "
+                         "filtering).",
+                         false) == 2) {
+            const char *keys[NQ];
+            for (int i = 0; i < NQ; i++) keys[i] = q[i].key + 8;   // without NX2NAVI_
+            cfg_reset(keys, NQ);
+            opt_save_soon();
         }
     }
 
