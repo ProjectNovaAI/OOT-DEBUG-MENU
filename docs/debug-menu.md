@@ -29,3 +29,9 @@ Value search over all read-write guest memory (32-bit integers), narrowed by equ
 
 ## Remote console (`runtime/debug_remote.c`)
 Off until switched on in Debug > Remote console. A helper thread runs the lines of `debug_cmd.txt` (game working directory; `debug_ready.txt` names it) and writes `debug_out.txt` ending in `END`. Commands are listed in `debug_remote.h` (read, ptrs, chain, find, findptr, scan, next, hits, set, write, player, teleport, speed). A file channel, not a socket: nothing is reachable from the network. Untested.
+
+## Live findings, 2026-11-10 (remote console on the dev build)
+- Age is per scene: the area names carry the era (`Market_Adult`, `HyruleField_Adult_00`); crossing eras is a scene change (`CannotWarpToAnotherEra` exists as a string). The word at `*(main+0x4e7eab0)+0x4d0` is recomputed every frame (adult 0x144c0, child 0x104c0 in the saves tried): writing it does nothing.
+- While in Hyrule Field the strings `HyruleField_Adult_00` (at 0x4a19e4cc8, a FixedSafeString at 0x4a19e4ca8: char* to the inline text, then 0x40, ...) and `HyruleField_Adult` (0x5ace57060) held the current area; no raw pointer to either string object was found, so the owner references them some other way. Heap addresses change per run.
+- `find`/`findptr` report one false hit at the host's own stack (the pattern buffer), ignore addresses near 0x39e01f3c0.
+- Snapshot diff (Python ReadProcessMemory of the dev game, memory 0x110000000-0x140000000, adult vs child) is too noisy: 2.7 M changed words as the heap is reloaded per era.
