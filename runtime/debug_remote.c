@@ -60,6 +60,12 @@ static void out_put(const char *fmt, ...) {
     out_buf[out_len] = 0;
 }
 
+static void fcount_line(uint64_t addr, uint32_t n, uint64_t lr, double first_s, void *ctx) {
+    (void)ctx;
+    char d[128];
+    out_put("0x%llx %u from %s first %.4f\n", (unsigned long long)addr, n, ldr_describe(lr, d, sizeof d), first_s);
+}
+
 // The key of a flag named on the console: "#" and eight hex digits is the key itself, for the flags whose names are not
 // known (a struct member found only by its hash in the flag list); anything else is a name, hashed as the game does.
 static uint32_t remote_flag_key(const char *name) {
@@ -585,6 +591,9 @@ static void run_command(char *line) {
         if (a1) (cmd[0] == 'f' ? dbg_fly : !strcmp(cmd, "hover") ? dbg_hover : dbg_hover_boots)(atoi(a1));
         if (a2 && cmd[0] == 'f') dbg_set_fly_speed((float)atof(a2));   // fly 1 SPEED
         out_put("fly %d (%.1f m/s), hover %d, infinite hover boots %d\n", dbg_fly_on(), dbg_fly_speed(), dbg_hover_on(), dbg_hover_boots_on());
+    } else if (!strcmp(cmd, "novoid")) {   // novoid [0|1]: no void-out
+        if (a1) dbg_no_void_out(atoi(a1));
+        out_put("novoid %d\n", dbg_no_void_out_on());
     } else if (!strcmp(cmd, "hook") || !strcmp(cmd, "walls")) {   // hook|walls [RANGE]: the hookshot or wall overlay's state and what is near
         static DbgHookPoly hp[4096];
         static DbgHookLabel hl[64];
@@ -728,6 +737,48 @@ static void run_command(char *line) {
             if (dbg_guest_result(&r)) { out_put("result 0x%llx\n", (unsigned long long)r); break; }
             plat_sleep_ns(20000000ull);
         }
+    } else if (!strcmp(cmd, "ftrace")) {
+        // ftrace ADDR [ADDR ...]: log every entry of these guest functions (up to 16) with the caller; ftrace: the log;
+        // ftrace off. The caller is the return address, inside the calling function.
+        if (a1 && !strcmp(a1, "off")) {
+            dbg_fntrace_off();
+            out_put("tracing off\n");
+            return;
+        }
+        if (a1) {
+            uint64_t w[16];
+            int n = 0;
+            char *t;
+            w[n++] = num(a1);
+            if (a2) w[n++] = num(a2);
+            if (a3) w[n++] = num(a3);
+            while (n < 16 && (t = strtok(NULL, " \t\r\n"))) w[n++] = num(t);
+            dbg_fntrace_watch(w, n);
+            out_put("watching %d function(s)\n", n);
+            return;
+        }
+        uint64_t addr, lr, x0, ns, t0 = 0;
+        char d[128];
+        for (uint64_t i = 0; dbg_fntrace_ring(i, &addr, &lr, &x0, &ns); i++) {
+            if (!t0) t0 = ns;
+            out_put("%8.3f 0x%llx from %s x0 0x%llx\n", (ns - t0) / 1e9, (unsigned long long)addr, ldr_describe(lr, d, sizeof d),
+                    (unsigned long long)x0);
+        }
+    } else if (!strcmp(cmd, "fcount")) {
+        // fcount start; fcount LO [HI]: the functions entered LO to HI times since the start (default HI = LO);
+        // fcount off.
+        if (a1 && !strcmp(a1, "start")) {
+            out_put("%s\n", dbg_fntrace_count_start() ? "counting" : "no memory");
+            return;
+        }
+        if (a1 && !strcmp(a1, "off")) {
+            dbg_fntrace_off();
+            out_put("counting off\n");
+            return;
+        }
+        uint32_t lo = a1 ? (uint32_t)num(a1) : 1, hi = a2 ? (uint32_t)num(a2) : lo, distinct = 0, dropped = 0;
+        int n = dbg_fntrace_counts(lo, hi, fcount_line, NULL, &distinct, &dropped);
+        out_put("%d function(s) entered %u to %u times; %u seen, %u entries dropped\n", n, lo, hi, distinct, dropped);
     } else if (!strcmp(cmd, "gbuf")) {   // the scratch buffer's address (gcall takes bufOFFSET for an address in it)
         out_put("gbuf 0x%llx\n", (unsigned long long)dbg_guest_scratch());
     } else if (!strcmp(cmd, "gres")) {
@@ -735,7 +786,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots novoid igt fog view cfg area perf gcall gres ftrace fcount\n");
     }
 }
 

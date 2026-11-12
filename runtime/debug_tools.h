@@ -403,7 +403,26 @@ void dbg_hover(int on);
 int dbg_hover_on(void);
 void dbg_hover_boots(int on);
 int dbg_hover_boots_on(void);
+// No void-out (debug_move.c; kept from one start to the next): while on, the areas that void the player out (the AI
+// nodes HoldSensorHitInfoGiveAbyssActor, ...Item and ...ActorCondition) see nothing inside them, so falling into a pit
+// or the void goes on instead of returning the player to the last safe ground. Off leaves the game's code as it is.
+// debug_game.c debug_abyss_hits reads it (recomp/patches-v111.txt, set dbgframe).
+void dbg_no_void_out(int on);
+int dbg_no_void_out_on(void);
 void dbg_move_frame(struct Cpu *c);
+
+// Call tracing on the lifted code's function-entry hook (debug_fntrace.c; the console's ftrace and fcount). Watch:
+// every entry of one of up to 16 guest functions goes into a ring of 4096 with its return address and x0
+// (dbg_fntrace_ring, i from 0 the oldest kept). Count: every function entered from now on is counted
+// (dbg_fntrace_counts passes those entered lo to hi times, with the return address and the seconds from the count's
+// start to the first entry, and gives the number of functions seen and the entries the full table dropped). Off
+// ends either. Both slow the game while on.
+void dbg_fntrace_watch(const uint64_t *addrs, int n);
+int dbg_fntrace_count_start(void);
+void dbg_fntrace_off(void);
+int dbg_fntrace_ring(uint64_t i, uint64_t *addr, uint64_t *lr, uint64_t *x0, uint64_t *ns);
+int dbg_fntrace_counts(uint32_t lo, uint32_t hi, void (*fn)(uint64_t addr, uint32_t n, uint64_t lr, double first_s, void *ctx), void *ctx,
+                       uint32_t *distinct, uint32_t *dropped);
 
 #ifdef __cplusplus
 }

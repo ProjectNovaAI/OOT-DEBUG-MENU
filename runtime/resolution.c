@@ -444,7 +444,7 @@ static volatile int size_pending;  // the page holds a size the game has not set
 void res_fn_hit(uint64_t addr, uint64_t x0) {
     if (addr != SET_RENDER_SIZE) return;
     renderer = x0;
-    g_fnprof = 0;
+    g_fnprof = dbg_fntrace_mode() != 0;   // the debug console's call tracing keeps the hook on (debug_fntrace.c)
     rt_log("resolution: renderer at %#llx; the scene size can change while the game runs", (unsigned long long)x0);
 }
 

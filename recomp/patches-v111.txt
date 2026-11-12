@@ -175,3 +175,11 @@ site dbgframe main 2ad9a0 f9401000 152fcd68   # ldr x0, [x0, #0x20] -> b page+0x
 # ActorShort, IsUsableAdult, IsUsableChild, PouchActorShort) calls page+0xf30 in place of its closing mov w0, w21, with
 # the entry in x20. The host function notes the entry and makes the move; x30 is restored from the frame straight after.
 site dbgframe main 33a26c4 2a1503e0 946bfa1b   # mov w0, w21 -> bl page+0xf30
+
+# No void-out (runtime/debug_game.c debug_abyss_hits): the abyss areas' shared per-frame method (main+0x31e4610) calls
+# page+0xf20 in place of its load of the sensor hit count into w24, after it has saved x30. The host function makes the
+# load, or gives 0 while No void-out is on; the method returns straight after for 0, sending no abyss hit.
+site dbgframe main 31e4634 b9403038 9472f23b   # ldr w24, [x1, #0x30] -> bl page+0xf20
+# The player's abyss check (main+0x82c510) stores the abyss type it found with str w8, [x19, #0x191c], after it has
+# saved x30; that store calls page+0xf10, which stores 0 and leaves 0 in w8 while No void-out is on.
+site dbgframe main 82c690 b9191e68 9519d220   # str w8, [x19, #0x191c] -> bl page+0xf10

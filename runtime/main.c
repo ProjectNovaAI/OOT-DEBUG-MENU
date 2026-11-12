@@ -196,7 +196,7 @@ const RtConfig *rt_config(void) { return &cfg; }
 // ---- runtime services the generated code calls (cpu.h)
 volatile int g_fnprof = 0;   // resolution.c switches it on until the game sets its render size (res_fn_hit)
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
-    (void)lr;
+    dbg_fntrace_hit(addr, lr, x0);   // the debug console's call tracing (debug_fntrace.c), when it runs
     res_fn_hit(addr, x0);
 }
 

@@ -457,6 +457,13 @@ extern "C" void tab_debug(float scale) {
                             "B only sinks: it does not put the ocarina away.",
                             fly))
             dbg_fly(!fly);
+        bool novoid = dbg_no_void_out_on() != 0;
+        if (opt_toggle_text("##dbg_novoid", "No void-out",
+                            "Falling into a pit or the void no longer sends the player back to the last safe ground: the "
+                            "fall goes on, so use Fly or a warp to get back. Switching it off puts the game's own "
+                            "void-out back at once. Kept from one start to the next.",
+                            novoid))
+            dbg_no_void_out(!novoid);
         snprintf(value, sizeof value, "%.0f m/s", dbg_fly_speed());
         int r = opt_text_row("##dbg_flyspeed", "Fly speed", value, nullptr, "Left and right change it by 2 m/s.", false);
         if (r == -1 || r == 1) dbg_set_fly_speed(dbg_fly_speed() + 2.0f * r);

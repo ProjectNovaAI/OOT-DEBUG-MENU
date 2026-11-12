@@ -40,6 +40,7 @@ static void readout(int bit, const char *what) {
 static void a_fly(void) { dbg_fly(!dbg_fly_on()), say("Fly", dbg_fly_on()); }
 static void a_hover(void) { dbg_hover(!dbg_hover_on()), say("Hover", dbg_hover_on()); }
 static void a_boots(void) { dbg_hover_boots(!dbg_hover_boots_on()), say("Infinite Hover Boots", dbg_hover_boots_on()); }
+static void a_novoid(void) { dbg_no_void_out(!dbg_no_void_out_on()), say("No void-out", dbg_no_void_out_on()); }
 static void a_god(void) { dbg_invulnerable(!dbg_invulnerable_on()), say("Invulnerable", dbg_invulnerable_on()); }
 static void a_onehit(void) { dbg_one_hit(!dbg_one_hit_on()), say("One-hit kills", dbg_one_hit_on()); }
 static void a_magic(void) { dbg_magic_infinite(!dbg_magic_infinite_on()), say("Infinite magic", dbg_magic_infinite_on()); }
@@ -90,6 +91,7 @@ static const Action actions[] = {
     {{"fly", "Fly (no clip)", "Switches Fly on and off: walls and the ground do not stop the player."}, a_fly},
     {{"hover", "Hover", "Switches Hover on and off: the player keeps the height it was switched on at."}, a_hover},
     {{"hoverboots", "Infinite Hover Boots", "Switches Infinite Hover Boots on and off."}, a_boots},
+    {{"novoid", "No void-out", "Switches No void-out on and off."}, a_novoid},
     {{"god", "Invulnerable", "Switches Invulnerable on and off."}, a_god},
     {{"onehit", "One-hit kills", "Switches One-hit kills on and off."}, a_onehit},
     {{"infmagic", "Infinite magic", "Switches Infinite magic on and off."}, a_magic},

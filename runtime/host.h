@@ -364,6 +364,10 @@ int res_dlss_mode(const char *mode);                       // NX2NAVI_DLSS chang
 void dynres_frame(void);                                   // dynamic resolution: one presented frame (vk_backend.c)
 const char *dynres_override(void);                         // the DLSS mode dynamic resolution uses now, NULL: the setting's
 void res_fn_hit(uint64_t addr, uint64_t x0);               // main.c fnprof_hit: catches the renderer at start
+// The debug console's call tracing (debug_fntrace.c): main.c fnprof_hit passes every guest function entry while it
+// runs; dbg_fntrace_mode is 0 while it does not (1 watch, 2 count).
+void dbg_fntrace_hit(uint64_t addr, uint64_t lr, uint64_t x0);
+int dbg_fntrace_mode(void);
 void res_present(Cpu *c);                                  // nvnQueuePresentTexture: applies a pending scene size
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)

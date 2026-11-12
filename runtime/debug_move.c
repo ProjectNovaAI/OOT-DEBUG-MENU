@@ -25,7 +25,7 @@
 #define FRAME_DT_MAX 0.1f           // seconds: a longer gap (a loading screen) moves nothing
 #define CAMERA_NAME "PlayerCamera"  // its position is the eye: the player minus it is the view direction
 
-static _Atomic int fly_on, hover_on, boots_on;
+static _Atomic int fly_on, hover_on, boots_on, no_void_on;
 static _Atomic float fly_speed = 8.0f;
 
 void dbg_fly(int on) { atomic_store(&fly_on, on != 0); }
@@ -45,12 +45,13 @@ uint64_t dbg_fly_game_mask(void) {
 }
 void dbg_hover(int on) { atomic_store(&hover_on, on != 0); }
 int dbg_hover_on(void) { return atomic_load(&hover_on); }
-// Infinite Hover Boots and the fly speed stay as set from one start to the next (debug_hover_boots, debug_fly_speed;
-// debug_tools.c dbg_keep). Fly and hover do not: a start in the air or inside a wall would surprise.
+// Infinite Hover Boots, No void-out and the fly speed stay as set from one start to the next (debug_hover_boots, debug_fly_speed;
+// debug_no_void_out; debug_tools.c dbg_keep). Fly and hover do not: a start in the air or inside a wall would surprise.
 static void move_load(void) {
     static _Atomic int done;
     if (atomic_load(&done) || atomic_exchange(&done, 1)) return;
     atomic_store(&boots_on, cfg_bool("NX2NAVI_DEBUG_HOVER_BOOTS") != 0);
+    atomic_store(&no_void_on, cfg_bool("NX2NAVI_DEBUG_NO_VOID_OUT") != 0);
     float ms = strtof(cfg_value("NX2NAVI_DEBUG_FLY_SPEED"), NULL);
     atomic_store(&fly_speed, ms >= 1.0f && ms <= 100.0f ? ms : 8.0f);
 }
@@ -61,6 +62,14 @@ void dbg_hover_boots(int on) {
     dbg_keep("NX2NAVI_DEBUG_HOVER_BOOTS", on ? "1" : "0");
 }
 int dbg_hover_boots_on(void) { move_load(); return atomic_load(&boots_on); }
+// No void-out: read by debug_game.c debug_abyss_hits, the host function of the abyss areas' patch site, on every
+// frame such an area is near; kept from one start to the next (debug_no_void_out).
+void dbg_no_void_out(int on) {
+    move_load();
+    atomic_store(&no_void_on, on != 0);
+    dbg_keep("NX2NAVI_DEBUG_NO_VOID_OUT", on ? "1" : "0");
+}
+int dbg_no_void_out_on(void) { move_load(); return atomic_load(&no_void_on); }
 float dbg_fly_speed(void) { move_load(); return atomic_load(&fly_speed); }
 void dbg_set_fly_speed(float ms) {
     move_load();

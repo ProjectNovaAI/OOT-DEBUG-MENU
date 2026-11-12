@@ -66,4 +66,27 @@ static void debug_pouch_entry(Cpu *c) {
 }
 __attribute__((constructor)) static void debug_pouch_register(void) { rt_register_host(HOST_DEBUG_POUCH_ENTRY, debug_pouch_entry); }
 
+// No void-out (debug_move.c dbg_no_void_out): the abyss areas' shared per-frame method (main+0x31e4610, the
+// HoldSensorHitInfoGiveAbyss* nodes; the Condition one calls it once its condition holds) calls +0xf20 in place of
+// its `ldr w24, [x1, #0x30]`, the number of sensor hits in the list at x1. The host function makes the load, or gives
+// 0 while No void-out is on: the method then sends no abyss hit to anything in the area and returns 0, as it does for
+// an empty list. x30 is restored from the frame before the method returns.
+#define HOST_DEBUG_ABYSS_HITS (RT_PATCH_PAGE + 0xf20)
+static void debug_abyss_hits(Cpu *c) { c->x[24] = dbg_no_void_out_on() ? 0 : LD32(c->x[1] + 0x30); }
+
+// The player's own check (main+0x82c510, every frame from the reaction scheduler main+0x82bbb0) gathers every cause
+// of a void-out (the areas above, falls with nowhere to land, and the rest) into one abyss type, which it stores at
+// player+0x191c and in a game-wide record; a non-zero type makes the scheduler pick the PreAbyss reaction. Its
+// `str w8, [x19, #0x191c]` calls +0xf10: the host function stores 0 in place of the type while No void-out is on, and
+// leaves 0 in w8, so the game-wide record the function writes next reads no abyss either.
+#define HOST_DEBUG_ABYSS_TYPE (RT_PATCH_PAGE + 0xf10)
+static void debug_abyss_type(Cpu *c) {
+    if (dbg_no_void_out_on()) c->x[8] = 0;
+    ST32(c->x[19] + 0x191c, (uint32_t)c->x[8]);
+}
+__attribute__((constructor)) static void debug_abyss_register(void) {
+    rt_register_host(HOST_DEBUG_ABYSS_HITS, debug_abyss_hits);
+    rt_register_host(HOST_DEBUG_ABYSS_TYPE, debug_abyss_type);
+}
+
 #endif
