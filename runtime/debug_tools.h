@@ -46,6 +46,8 @@ void dbg_tick(uint64_t now_ns);
 // A Debug tab setting kept from one start to the next: key (NX2NAVI_DEBUG_...) set to value and nx2navi.ini written
 // soon, when it changed.
 void dbg_keep(const char *key, const char *value);
+// Writes a 32-bit value of the game's heap at at: 0 when its page is not committed read-write.
+int dbg_write32(uint64_t at, uint32_t v);
 // Speed over the last few presents in metres per real second: along the ground (x and z) and vertical (y, up positive).
 // Both 0 until two positions have been seen. A jump of more than 20 m in one present (a teleport, a loading screen)
 // is not counted as speed.
@@ -208,12 +210,17 @@ int dbg_items_infinite_on(void);
 void dbg_invulnerable(int on);
 int dbg_invulnerable_on(void);
 uint64_t dbg_player_actor(void);   // the player actor's address, 0 when there is none
-// Owned things (equipment, items, upgrades, quest items, songs, masks): label and menu group of entry i (NULL past the
-// end); get is 1 owned, 0 not, -1 unknown (flags not found yet); set gives or removes.
+// Owned things (equipment, items, upgrades, quest items, songs, masks, bottles, trade items): label and menu group of
+// entry i (NULL past the end); get is 1 owned, 0 not, -1 unknown (flags not found yet); set gives or removes.
 int dbg_owned_count(void);
 const char *dbg_owned_label(int i, const char **group);
 int dbg_owned_get(int i);
 int dbg_owned_set(int i, int on);
+// Bottle contents: the names of what a bottle can hold (n of them); what owned entry i holds as an index into them (-1:
+// not a bottle, or unknown); set puts that content in it.
+const char *const *dbg_bottle_content_labels(int *n);
+int dbg_owned_bottle_content(int i);
+int dbg_owned_set_bottle_content(int i, int content);
 // Magic meter level: 0 none, 1 single, 2 double (-1 unknown).
 int dbg_magic_level(void);
 int dbg_magic_set_level(int level);
@@ -292,14 +299,14 @@ void dbg_draw_distance_init(void);
 // Volume overlay (debug_view.c): the placed volumes and objects the game does not draw, for the menu's overlay
 // (ui/debug_tab.cpp debug_overlay_draw). Kinds, as bits of the wanted set:
 enum {
-    DBG_VOL_WALL = 1,      // invisible walls: actors named *AirWall* / *Airwall* (the collision ones: debug_hook.c)
+    DBG_VOL_WALL = 1,      // invisible walls: actors named *AirWall* / *Airwall* that stop the player (the collision ones: debug_hook.c)
     DBG_VOL_LOAD = 2,      // loading zones: Area triggers that lead to an entrance
     DBG_VOL_TRIGGER = 4,   // every other Area trigger and *Area* volume (events, camera, music, spawning, horse jumps)
     DBG_VOL_HIDDEN = 8,    // hidden things: grotto covers, Gold Skulltulas, heart pieces, chests, hidden-hole markers
     DBG_VOL_DEATH = 16,    // death barriers and hazards: the kill volume under the world, lava surfaces, pits, quicksand
     DBG_VOL_KINDS = 5,
-    // not a volume, so not among the DBG_VOL_KINDS colours: enemies (Enemy_*, *Boss*), drawn as their health
-    // (dbg_view_health)
+    // not a volume, so not among the DBG_VOL_KINDS colours: enemies (Enemy_*, *Boss*) and breakable rocks and walls
+    // (*BrokenRock*, *CrackWall*, *CrackFloor*, *BrokenRubble*), drawn as their health (dbg_view_health)
     DBG_VOL_ENEMY = 32,
 };
 enum { DBG_SHAPE_BOX, DBG_SHAPE_CYLINDER, DBG_SHAPE_MARKER };
@@ -325,6 +332,10 @@ int dbg_place_each(const char *banc, int (*fn)(const DbgPlacement *, void *), vo
 // A zstd-compressed romfs file decompressed with the dictionary `dict` of Pack/ZsDic.pack.zs ("bcett.byml.zsdic",
 // "zs.zsdic"), malloc'd; NULL when path is NULL, missing or does not decompress (debug_place.c).
 uint8_t *dbg_romfs_unzs(const char *path, const char *dict, size_t *n_out);
+// The parts of actor `name` the hookshot sticks to (debug_place.c): the shapes of its physics whose material presets
+// include Wall_StickHookshot (boxes, convex polytopes, cylinders), read from its pack, as convex polygons of 3 to 8
+// corners in the actor's own frame. fn gets each one until it returns 0. The number of such shapes, -1 without a pack.
+int dbg_actor_stick_shapes(const char *name, int (*fn)(const float (*pts)[3], int n, void *ctx), void *ctx);
 // The kinds to collect (0 stops the helper thread's rescans). The list is rescanned every 1.5 s while any is wanted.
 void dbg_view_want(int kinds);
 // The volumes of the wanted kinds within range metres of the player, with their positions read now; at most max.
@@ -343,11 +354,19 @@ typedef struct {
 } DbgHealth;
 // The enemies within range metres of the player that have a life component, read now; at most max.
 int dbg_view_health(DbgHealth *out, int max, float range);
+// One-hit kills (debug_one_hit, kept from one start to the next): while on, every enemy, boss and breakable of the
+// health overlay's list whose life is above 1 has it lowered to 1 (its maximum left alone), so the next hit that does
+// any damage kills it through the game's own death handling, as a hit of 999 would. An attack the enemy takes no
+// damage from (a damage rate of 0) still does nothing. The enemy scan runs while it is on, overlay or not.
+void dbg_one_hit(int on);
+int dbg_one_hit_on(void);
+void dbg_one_hit_tick(void);   // dbg_tick, once per presented frame
 
 // Hookshot targets (debug_hook.c, debug_view_hookshot): the surfaces the hookshot sticks to, from the area's collision
 // files (material flag StickHookshot), and the target objects placed in its stage files, drawn from their collision
 // shapes. Invisible walls (debug_view_walls), from the same files: the polygons of material AirWall and the air wall
-// shapes of the placed models. Read on a helper thread once per area change while wanted.
+// shapes of the placed models whose collision filter stops the player. Read on a helper thread once per area change
+// while wanted.
 enum { DBG_VOL_HOOK = 64 };   // not a volume kind either: the set dbg_view_kinds returns has it for the overlay
 typedef struct {
     float p[8][3];     // a convex polygon's corners in world space
@@ -356,9 +375,9 @@ typedef struct {
     int wall;          // 1: an invisible wall polygon, 0: a hookshot one
 } DbgHookPoly;
 typedef struct {
-    float pos[3];
-    char name[48];     // the target object's actor name
-    int shaped;        // 0: no collision shape was found for it, so the overlay marks its position
+    float pos[3];      // the middle of the parts the hookshot sticks to
+    char name[48];     // the target object's actor name (only objects with such a part are listed)
+    int shaped;        // 0: no shape to draw, so the overlay marks its position with a cube; debug_hook.c always sets 1
 } DbgHookLabel;
 enum { DBG_HOOK_SURFACES = 1, DBG_HOOK_WALLS = 2 };
 void dbg_hook_want(int want);   // DBG_HOOK_ bits, 0 stops the helper thread
@@ -375,6 +394,10 @@ void dbg_hook_status(char *out, size_t n);   // what was read for the area, for 
 // hover over the boots.
 void dbg_fly(int on);
 int dbg_fly_on(void);
+// The buttons the game's input poll (input.c input_poll) keeps from the game: B while fly is on and the ocarina is out,
+// so B sinks the player as usual and the ocarina stays out (the game's B puts it away). Fly reads B itself
+// (input_poll_ui), before this. 0 otherwise.
+uint64_t dbg_fly_game_mask(void);
 float dbg_fly_speed(void);             // metres per second
 void dbg_set_fly_speed(float ms);      // 1..100
 void dbg_hover(int on);

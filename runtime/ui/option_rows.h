@@ -93,8 +93,9 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
 // Binding rows (remapping on the Controls tab): a label and three cells, each selectable on its own (left / right move between them).
 // opt_bind_header: the column titles above them. opt_bind_row: key is the setting's name without NX2NAVI_ (BIND_A; the
 // description names it when the environment sets it); a disabled cell shows its text greyed and takes no cursor; note
-// (NULL none) follows the description. Returns the cell A / Enter / a click activated (0..2), 10 + the cell Delete,
-// Backspace or X cleared, or -1. opt_focus_key("<key>#<cell>") puts the cursor on a cell.
+// (NULL none) follows the description. Returns the cell A / Enter / a click activated (0..2), 10 + the cell cleared
+// (Delete, Backspace or X on the selected cell or, without the cursor shown, on the cell under the mouse; or a
+// right-click on a cell), or -1. opt_focus_key("<key>#<cell>") puts the cursor on a cell.
 void opt_bind_header(UiTextId c0, UiTextId c1, UiTextId c2);
 int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *const cells[3], const bool enabled[3],
                  const char *note = nullptr);

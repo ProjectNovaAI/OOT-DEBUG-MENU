@@ -29,6 +29,8 @@ static const struct Warp {
     const char *banc, *start, *boot;
 } warps[] = {
     {"BottomOfTheWell", "Well_KakarikoSide", "Dm_SY_BancChangeArrive"},
+    // No loading zone leads here: the finale's flow (Defeat_Ganon) sends the player to the top of the tower so.
+    {"CrumblingGanonCastle", "CrumblingGanonCastle_StartPos", "CrumblingGanonCastle_Arrive"},
     {"DeathMountainCrater_Adult", "Crater_GoronCitySide", "DeathMountainCrater_Arrive"},
     {"DeathMountainCrater_Adult", "Crater_MountainTrailSide", "DeathMountainCrater_Arrive"},
     {"DeathMountainCrater_Adult", "OutsideOfFireTemple", "Dm_SY_BancChangeArrive_DeathMountainCrater_02"},

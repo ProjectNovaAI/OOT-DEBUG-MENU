@@ -51,14 +51,15 @@ static int sarc_member(const uint8_t *p, size_t n, const char *name, size_t *at,
 }
 
 // A dictionary of Pack/ZsDic.pack.zs by its member name ("bcett.byml.zsdic" for the stage files, "zs.zsdic" for the
-// collision files), made once each; NULL when it is not there.
+// collision files, "pack.zsdic" for the actor packs), made once each; NULL when it is not there.
 static ZSTD_DDict *zs_dict(const char *member) {
-    static const char *const names[] = {"bcett.byml.zsdic", "zs.zsdic"};
-    static ZSTD_DDict *dd[2];
-    static int tried[2];
+    static const char *const names[] = {"bcett.byml.zsdic", "zs.zsdic", "pack.zsdic"};
+    static ZSTD_DDict *dd[3];
+    static int tried[3];
     static PlatMutex lock = PLAT_MUTEX_INIT;
-    int k = !strcmp(member, names[1]);
-    if (!k && strcmp(member, names[0])) return NULL;
+    int k = 0;
+    while (k < 3 && strcmp(member, names[k])) k++;
+    if (k == 3) return NULL;
     plat_mutex_lock(&lock);
     if (!tried[k]) {
         tried[k] = 1;
@@ -236,4 +237,301 @@ int dbg_place_each(const char *banc, int (*fn)(const DbgPlacement *, void *), vo
         free(raw);
     }
     return found ? total : -1;
+}
+
+// ---- the parts of an actor the hookshot sticks to (dbg_actor_stick_shapes)
+// An actor's pack, Pack/Actor/<name>.pack.zs (zstd with pack.zsdic), is a SARC of BYML files. Its physics parameter
+// (Component/Physics/<name>.engine__component__PhysicsParam.bgyml) names a controller set (ControllerSetPath), whose
+// ShapeNamePathAry lists the shape parameters (Phive/ShapeParam/*.phive__ShapeParam.bgyml). A file that lacks a key
+// takes it from its "$parent". Paths are written "Work/<the member without .bgyml>.gyml". A shape parameter holds lists
+// of Box (Center, HalfExtents), Polytope (Vertices), Cylinder (CenterA, CenterB, Radius), Sphere, Capsule and PhshMesh
+// (a mesh file) entries, each with MaterialPresets and an offset (OffsetTranslation, OffsetRotation in degrees); a
+// vector is a dictionary {X, Y, Z}. The entries with the preset Wall_StickHookshot are what the hookshot sticks to: the
+// plate of Obj_HookShotTarget_A_01, not its rim (Physical_Edge, a mesh without the preset). No mesh entry of a target
+// object has the preset and no target uses a sphere or a capsule (game 1.1.1), so those are not read.
+static int byml_open(const uint8_t *p, size_t n, Byml *b, uint32_t *root) {
+    uint16_t ver;
+    b->p = p, b->n = n;
+    if (n < 16 || memcmp(p, "YB", 2)) return 0;
+    memcpy(&ver, p + 2, 2);
+    return ver >= 2 && u32_at(p, n, 4, &b->keys) && u32_at(p, n, 8, &b->strs) && u32_at(p, n, 12, root);
+}
+
+// The pack member a "Work/....gyml" path names.
+static int work_member(const char *work, char *out, size_t n) {
+    if (!strncmp(work, "Work/", 5)) work += 5;
+    size_t k = strlen(work);
+    if (k < 5 || strcmp(work + k - 5, ".gyml") || k + 2 > n) return 0;
+    snprintf(out, n, "%.*s.bgyml", (int)(k - 5), work);
+    return 1;
+}
+
+// key in pack member `member`, or in its parents when it is missing there: the BYML it is in (b), its type and value.
+static int pack_key(const uint8_t *pk, size_t pn, const char *member, const char *key, Byml *b, uint8_t *t, uint32_t *v) {
+    char m[192];
+    snprintf(m, sizeof m, "%s", member);
+    for (int depth = 0; depth < 8; depth++) {
+        size_t at, size;
+        uint32_t root, pv;
+        uint8_t pt;
+        if (!sarc_member(pk, pn, m, &at, &size) || !byml_open(pk + at, size, b, &root)) return 0;
+        if (dict_get(b, root, key, t, v)) return 1;
+        const char *parent;
+        if (!dict_get(b, root, "$parent", &pt, &pv) || pt != 0xa0 || !(parent = table_str(b, b->strs, pv)) ||
+            !work_member(parent, m, sizeof m))
+            return 0;
+    }
+    return 0;
+}
+
+static float f32_of(uint32_t v) {
+    float f;
+    memcpy(&f, &v, 4);
+    return f;
+}
+
+// The {X, Y, Z} dictionary node as a vector (a missing component is 0).
+static void xyz_node(const Byml *b, uint32_t node, float out[3]) {
+    static const char *const c[3] = {"X", "Y", "Z"};
+    for (int i = 0; i < 3; i++) {
+        uint8_t ct;
+        uint32_t cv;
+        out[i] = dict_get(b, node, c[i], &ct, &cv) && ct == 0xd2 ? f32_of(cv) : 0;
+    }
+}
+
+// The vector at key of node; 0 (and a zero vector) when it is not there.
+static int xyz(const Byml *b, uint32_t node, const char *key, float out[3]) {
+    uint8_t t;
+    uint32_t v;
+    out[0] = out[1] = out[2] = 0;
+    if (!dict_get(b, node, key, &t, &v) || t != 0xc1) return 0;
+    xyz_node(b, v, out);
+    return 1;
+}
+
+static int sticks(const Byml *b, uint32_t node) {
+    uint8_t t;
+    uint32_t arr;
+    if (!dict_get(b, node, "MaterialPresets", &t, &arr) || t != 0xc0) return 0;
+    for (uint32_t i = 0;; i++) {
+        uint8_t et;
+        uint32_t ev;
+        if (!array_get(b, arr, i, &et, &ev)) return 0;
+        const char *s = et == 0xa0 ? table_str(b, b->strs, ev) : NULL;
+        if (s && strstr(s, "StickHookshot")) return 1;
+    }
+}
+
+typedef struct {
+    float axes[9], t[3];   // the entry's offset: rotation columns, translation
+    int (*fn)(const float (*pts)[3], int n, void *ctx);
+    void *ctx;
+    int stop;
+} StickOut;
+
+static void stick_emit(StickOut *o, const float (*pts)[3], int n) {
+    if (o->stop || n < 3) return;
+    float w[8][3];
+    if (n > 8) n = 8;
+    for (int i = 0; i < n; i++)
+        for (int r = 0; r < 3; r++)
+            w[i][r] = o->t[r] + o->axes[r] * pts[i][0] + o->axes[3 + r] * pts[i][1] + o->axes[6 + r] * pts[i][2];
+    if (!o->fn((const float (*)[3])w, n, o->ctx)) o->stop = 1;
+}
+
+static void stick_box(StickOut *o, const float c[3], const float h[3]) {
+    static const int faces[6][4] = {{0, 1, 3, 2}, {4, 6, 7, 5}, {0, 4, 5, 1}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 5, 7, 3}};
+    float v[8][3];
+    for (int i = 0; i < 8; i++)
+        for (int a = 0; a < 3; a++) v[i][a] = c[a] + ((i >> a & 1) ? h[a] : -h[a]);
+    for (int f = 0; f < 6; f++) {
+        float q[4][3];
+        for (int k = 0; k < 4; k++) memcpy(q[k], v[faces[f][k]], sizeof q[k]);
+        stick_emit(o, (const float (*)[3])q, 4);
+    }
+}
+
+static void sub3(const float a[3], const float b[3], float o[3]) { o[0] = a[0] - b[0], o[1] = a[1] - b[1], o[2] = a[2] - b[2]; }
+static float dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+static void cross3(const float a[3], const float b[3], float o[3]) {
+    o[0] = a[1] * b[2] - a[2] * b[1], o[1] = a[2] * b[0] - a[0] * b[2], o[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+// The faces of the convex hull of v[0..n): each plane through three of the points with all the points on one side,
+// its points in order round their middle. A face of more than 8 corners goes out as a fan of pieces of at most 8.
+#define HULL_MAX 64
+static void stick_hull(StickOut *o, const float (*v)[3], int n) {
+    static float planes[HULL_MAX * 4][4];
+    int np = 0;
+    const float eps = 1e-4f;
+    for (int i = 0; i < n; i++)
+        for (int j = i + 1; j < n; j++)
+            for (int k = j + 1; k < n && np < HULL_MAX * 4 && !o->stop; k++) {
+                float e1[3], e2[3], nm[3];
+                sub3(v[j], v[i], e1), sub3(v[k], v[i], e2), cross3(e1, e2, nm);
+                float len = sqrtf(dot3(nm, nm));
+                if (len < 1e-8f) continue;
+                for (int a = 0; a < 3; a++) nm[a] /= len;
+                float d = dot3(nm, v[i]);
+                int above = 0, below = 0;
+                for (int p = 0; p < n; p++) {
+                    float s = dot3(nm, v[p]) - d;
+                    above |= s > eps, below |= s < -eps;
+                }
+                if (above && below) continue;
+                if (above) nm[0] = -nm[0], nm[1] = -nm[1], nm[2] = -nm[2], d = -d;   // the normal points out
+                int seen = 0;
+                for (int q = 0; q < np && !seen; q++) seen = dot3(planes[q], nm) > 0.9999f && fabsf(planes[q][3] - d) < eps;
+                if (seen) continue;
+                memcpy(planes[np], nm, sizeof nm), planes[np][3] = d;
+                np++;
+                int idx[HULL_MAX], m = 0;
+                float mid[3] = {0, 0, 0};
+                for (int p = 0; p < n; p++)
+                    if (fabsf(dot3(nm, v[p]) - d) <= eps) idx[m++] = p;
+                for (int p = 0; p < m; p++)
+                    for (int a = 0; a < 3; a++) mid[a] += v[idx[p]][a] / (float)m;
+                float u[3], w[3], ang[HULL_MAX];
+                sub3(v[idx[0]], mid, u);
+                float ul = sqrtf(dot3(u, u));
+                if (ul < 1e-8f) continue;
+                for (int a = 0; a < 3; a++) u[a] /= ul;
+                cross3(nm, u, w);
+                for (int p = 0; p < m; p++) {
+                    float r[3];
+                    sub3(v[idx[p]], mid, r);
+                    ang[p] = atan2f(dot3(r, w), dot3(r, u));
+                }
+                for (int p = 1; p < m; p++)   // by angle
+                    for (int q = p; q > 0 && ang[q] < ang[q - 1]; q--) {
+                        float ta = ang[q];
+                        ang[q] = ang[q - 1], ang[q - 1] = ta;
+                        int ti = idx[q];
+                        idx[q] = idx[q - 1], idx[q - 1] = ti;
+                    }
+                for (int s = 1; s + 1 < m; s += 6) {   // corner 0 and up to 7 more in each piece
+                    float poly[8][3];
+                    int c = 0;
+                    memcpy(poly[c++], v[idx[0]], sizeof poly[0]);
+                    for (int p = s; p < m && c < 8; p++) memcpy(poly[c++], v[idx[p]], sizeof poly[0]);
+                    stick_emit(o, (const float (*)[3])poly, c);
+                }
+            }
+}
+
+#define CYL_SEG 12
+static void stick_cylinder(StickOut *o, const float a[3], const float b[3], float r) {
+    float ax[3], u[3], w[3];
+    sub3(b, a, ax);
+    float len = sqrtf(dot3(ax, ax));
+    if (len < 1e-6f || r <= 0) return;
+    for (int i = 0; i < 3; i++) ax[i] /= len;
+    float ref[3] = {fabsf(ax[0]) < 0.9f ? 1.0f : 0.0f, fabsf(ax[0]) < 0.9f ? 0.0f : 1.0f, 0};
+    cross3(ax, ref, u);
+    float ul = sqrtf(dot3(u, u));
+    for (int i = 0; i < 3; i++) u[i] /= ul;
+    cross3(ax, u, w);
+    float ra[CYL_SEG][3], rb[CYL_SEG][3];
+    for (int k = 0; k < CYL_SEG; k++) {
+        float c = cosf(6.2831853f * (float)k / CYL_SEG) * r, s = sinf(6.2831853f * (float)k / CYL_SEG) * r;
+        for (int i = 0; i < 3; i++) ra[k][i] = a[i] + u[i] * c + w[i] * s, rb[k][i] = b[i] + u[i] * c + w[i] * s;
+    }
+    for (int k = 0; k < CYL_SEG; k++) {
+        float q[4][3];
+        int k2 = (k + 1) % CYL_SEG;
+        memcpy(q[0], ra[k], sizeof q[0]), memcpy(q[1], ra[k2], sizeof q[0]);
+        memcpy(q[2], rb[k2], sizeof q[0]), memcpy(q[3], rb[k], sizeof q[0]);
+        stick_emit(o, (const float (*)[3])q, 4);
+    }
+    for (int end = 0; end < 2; end++) {   // each cap in two halves of 7 corners
+        float (*ring)[3] = end ? rb : ra;
+        for (int h = 0; h < 2; h++) {
+            float q[7][3];
+            for (int k = 0; k < 7; k++) memcpy(q[k], ring[(h * 6 + k) % CYL_SEG], sizeof q[k]);
+            stick_emit(o, (const float (*)[3])q, 7);
+        }
+    }
+}
+
+// One entry of a shape parameter (kind 0 box, 1 polytope, 2 cylinder) that has the stick preset.
+static int stick_entry(StickOut *o, const Byml *sb, uint32_t sh, int kind) {
+    float rot[3];
+    xyz(sb, sh, "OffsetRotation", rot);
+    // degrees; the order of the three angles is not checked, as every stick shape turns about one axis at most
+    for (int a = 0; a < 3; a++) rot[a] *= 3.14159265f / 180.0f;
+    axes_of(rot, o->axes);
+    xyz(sb, sh, "OffsetTranslation", o->t);
+    if (kind == 0) {
+        float c[3], h[3];
+        xyz(sb, sh, "Center", c);
+        if (!xyz(sb, sh, "HalfExtents", h)) return 0;
+        stick_box(o, c, h);
+    } else if (kind == 1) {
+        uint8_t vt;
+        uint32_t verts;
+        float pts[HULL_MAX][3];
+        int nv = 0;
+        if (!dict_get(sb, sh, "Vertices", &vt, &verts) || vt != 0xc0) return 0;
+        for (uint32_t q = 0; nv < HULL_MAX; q++) {
+            uint8_t qt;
+            uint32_t qv;
+            if (!array_get(sb, verts, q, &qt, &qv)) break;
+            if (qt == 0xc1) xyz_node(sb, qv, pts[nv++]);
+        }
+        if (nv < 4) return 0;
+        stick_hull(o, (const float (*)[3])pts, nv);
+    } else {
+        float a[3], c[3];
+        uint8_t rt;
+        uint32_t rv;
+        if (!xyz(sb, sh, "CenterA", a) || !xyz(sb, sh, "CenterB", c) || !dict_get(sb, sh, "Radius", &rt, &rv) || rt != 0xd2)
+            return 0;
+        stick_cylinder(o, a, c, f32_of(rv));
+    }
+    return 1;
+}
+
+int dbg_actor_stick_shapes(const char *name, int (*fn)(const float (*pts)[3], int n, void *ctx), void *ctx) {
+    char path[160], member[192];
+    snprintf(path, sizeof path, "Pack/Actor/%s.pack.zs", name);
+    size_t pn = 0;
+    uint8_t *pk = dbg_romfs_unzs(path, "pack.zsdic", &pn);
+    if (!pk) return -1;
+    int found = 0;
+    Byml b;
+    uint8_t t;
+    uint32_t v, list;
+    const char *cs;
+    snprintf(member, sizeof member, "Component/Physics/%s.engine__component__PhysicsParam.bgyml", name);
+    if (pack_key(pk, pn, member, "ControllerSetPath", &b, &t, &v) && t == 0xa0 && (cs = table_str(&b, b.strs, v)) &&
+        work_member(cs, member, sizeof member) && pack_key(pk, pn, member, "ShapeNamePathAry", &b, &t, &list) && t == 0xc0) {
+        StickOut o = {.fn = fn, .ctx = ctx};
+        for (uint32_t i = 0; !o.stop; i++) {
+            uint8_t et, pt;
+            uint32_t entry, pv, root;
+            const char *sp;
+            char sm[192];
+            size_t at, size;
+            Byml sb;
+            if (!array_get(&b, list, i, &et, &entry)) break;
+            if (et != 0xc1 || !dict_get(&b, entry, "FilePath", &pt, &pv) || pt != 0xa0 || !(sp = table_str(&b, b.strs, pv)) ||
+                !work_member(sp, sm, sizeof sm) || !sarc_member(pk, pn, sm, &at, &size) || !byml_open(pk + at, size, &sb, &root))
+                continue;
+            static const char *const kinds[] = {"Box", "Polytope", "Cylinder"};
+            for (int kind = 0; kind < 3 && !o.stop; kind++) {
+                uint8_t kt;
+                uint32_t arr;
+                if (!dict_get(&sb, root, kinds[kind], &kt, &arr) || kt != 0xc0) continue;
+                for (uint32_t s = 0; !o.stop; s++) {
+                    uint8_t st;
+                    uint32_t sh;
+                    if (!array_get(&sb, arr, s, &st, &sh)) break;
+                    if (st == 0xc1 && sticks(&sb, sh)) found += stick_entry(&o, &sb, sh, kind);
+                }
+            }
+        }
+    }
+    free(pk);
+    return found;
 }

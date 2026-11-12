@@ -76,6 +76,11 @@ int input_flight_key(void);
 // Insert, the frame dump's key (vk_dump.c, NX2NAVI_DUMP=key), held. On Windows also while another window is in front:
 // a player on a gamepad often leaves the focus elsewhere. Unbound in the game's default layout.
 int input_dump_key(void);
+// Untimed NX2NAVI_INPUT_SCRIPT lines, separated by ';' or newlines, queued now: each <frame> counts from the next tick
+// (frame_step_ticks), and they are ORed into the input like the script's. Returns how many were queued. The remote
+// console's "input" command (debug_remote.c run_command). Any thread.
+int input_script_live(const char *text);
+int input_script_live_busy(void);   // queued live events not finished yet
 
 // Mouse camera and cursor (input_win.c, Win32 window thread). The window procedure calls input_window_msg first for raw
 // mouse input, cursor hiding and confinement; it returns 1 with *res set when the message is handled. input_cursor_suspend(1)

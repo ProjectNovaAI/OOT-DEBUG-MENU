@@ -127,7 +127,7 @@ int dbg_health_get(int *cur, int *max) {
     return 0;
 }
 
-static int health_write(uint64_t at, uint32_t v) {
+int dbg_write32(uint64_t at, uint32_t v) {
     uint64_t end;
     if (plat_mem_state(at & ~0xFFFull, (at & ~0xFFFull) + 0x2000, &end) != PLAT_PROT_RW) return 0;
     plat_mem_prepare_write(at, 4);
@@ -140,7 +140,7 @@ int dbg_health_set(int cur) {
     if (!dbg_health_get(&c, &m)) return 0;
     if (cur < 0) cur = 0;
     if (cur > m) cur = m;
-    return health_write(atomic_load(&health_addr), (uint32_t)cur);
+    return dbg_write32(atomic_load(&health_addr), (uint32_t)cur);
 }
 
 int dbg_health_set_max(int max) {
@@ -148,7 +148,7 @@ int dbg_health_set_max(int max) {
     if (!dbg_health_get(&c, &m)) return 0;
     if (max < 4) max = 4;
     if (max > 80) max = 80;
-    return health_write(atomic_load(&health_addr) + 0x10, (uint32_t)max);
+    return dbg_write32(atomic_load(&health_addr) + 0x10, (uint32_t)max);
 }
 
 // The Debug tab's settings stay as set from one start to the next: each is also a setting of nx2navi.ini [debug],
@@ -209,7 +209,7 @@ static void health_tick(void) {
     int c, m;
     if (!dbg_health_get(&c, &m)) return;
     int want = lock ? (lock < m ? lock : m) : m;
-    if (c != want) health_write(atomic_load(&health_addr), (uint32_t)want);
+    if (c != want) dbg_write32(atomic_load(&health_addr), (uint32_t)want);
 }
 
 // ---- flags, magic and counted items
@@ -422,7 +422,7 @@ static int guest_write(uint64_t at, const void *src, size_t n) {
 
 int dbg_flag_set(uint32_t key, int value) {
     uint64_t a = dbg_flag_addr(DBG_FLAG_INT, key);
-    return a && health_write(a, (uint32_t)value) && health_write(a + 4, (uint32_t)value);
+    return a && dbg_write32(a, (uint32_t)value) && dbg_write32(a + 4, (uint32_t)value);
 }
 
 int dbg_flag_get_bool(uint32_t key) {
@@ -485,7 +485,7 @@ int dbg_magic_set(int value) {
     if (!dbg_magic_get(&c, &m)) return 0;
     if (value < 0) value = 0;
     if (m > 0 && value > m) value = m;
-    return health_write(atomic_load(&magic_addr), (uint32_t)value);
+    return dbg_write32(atomic_load(&magic_addr), (uint32_t)value);
 }
 
 void dbg_magic_infinite(int on) { kept_set(&magic_hold, "NX2NAVI_DEBUG_INF_MAGIC", on); }
@@ -558,15 +558,27 @@ static void items_tick(void) {
 // Owned things. The game keeps an item in two flags: PouchData.<name>.StockNum (1 for an item that is not counted; the
 // count for ammunition) and IsGet.<name> (bool: ever got, which also skips the first-get scene). Songs have the bool
 // only. Giving sets both; removing sets the count to 0 and the bool off. Tested: the pouch item appears and disappears
-// in the menus; double magic (below) doubles the meter on screen at once.
+// in the menus; double magic (below) doubles the meter on screen at once. Ammunition the menu already counts (sticks,
+// nuts, bombs, bombchus) appears in the item menu only once its IsGet flag is on (tested 2026-11-11).
+//
+// Bottles are five slots, BottleA to BottleE (the item menu's five bottle buttons, UI/Pouch/PouchTable ItemArray, whose
+// AssignableItemEnum names the slot). A slot is four flags: PlayerStatus.AssignableItem.BottleInfo.<slot>.IsValid (the
+// slot holds a bottle), ...BottleInfo.<slot>.BottleItem (enum, what is in it: bottle_contents), PouchData.<slot>.StockNum
+// (1) and IsGet.Item_Bottle. Without IsValid the menu shows nothing whatever the other three say (tested 2026-11-11:
+// BottleA valid and Empty showed an empty bottle).
+#define OWN_BOTTLE -1
 static struct Owned {
     const char *group, *label, *name;
-    int pouch;   // has a PouchData count
-    uint32_t stock_key, get_key;
+    int give;   // the PouchData count giving sets (1 for an item that is not counted, the amount for ammunition); 0: no
+                // PouchData count (songs); OWN_BOTTLE: a bottle slot, name is the slot
+    uint32_t stock_key, get_key, valid_key, content_key;
 } owned[] = {
     {"Equipment", "Kokiri Sword", "Weapon_Sword_Kokiri", 1},
     {"Equipment", "Master Sword", "Weapon_Sword_Master", 1},
-    {"Equipment", "Biggoron's Sword", "Weapon_Sword_Giant", 1},
+    // The three share one equipment button, best first (PouchTable EquipmentArray Pa_Epuipment_00).
+    {"Equipment", "Biggoron's Sword", "Weapon_Sword_Biggoron", 1},
+    {"Equipment", "Giant's Knife", "Weapon_Sword_Giant", 1},
+    {"Equipment", "Broken Giant's Knife", "Weapon_Sword_BrokenGiant", 1},
     {"Equipment", "Deku Shield", "Weapon_Shield_Deku", 1},
     {"Equipment", "Hylian Shield", "Weapon_Shield_Hylian", 1},
     {"Equipment", "Mirror Shield", "Weapon_Shield_Mirror", 1},
@@ -574,6 +586,11 @@ static struct Owned {
     {"Equipment", "Zora Tunic", "Armor_Adult_Zora", 1},
     {"Equipment", "Iron Boots", "Armor_Adult_HeavyBoot", 1},
     {"Equipment", "Hover Boots", "Armor_Adult_HoverBoot", 1},
+    {"Items", "Deku Sticks", "Item_DekuStick", 10},
+    {"Items", "Deku Nuts", "Item_DekuNut", 20},
+    {"Items", "Bombs (needs a bomb bag)", "Item_Bomb", 20},
+    {"Items", "Bombchus", "Item_Bombchu", 20},
+    {"Items", "Magic Beans", "Item_MagicBean", 10},
     {"Items", "Fairy Slingshot", "Weapon_Range_SlingShot", 1},
     {"Items", "Fairy Bow", "Weapon_Range_Bow", 1},
     {"Items", "Fire Arrows", "Item_Arrow_Fire", 1},
@@ -597,6 +614,13 @@ static struct Owned {
     {"Upgrades", "Bomb Bag", "Item_BombBag_Small", 1},
     {"Upgrades", "Big Bomb Bag", "Item_BombBag_Medium", 1},
     {"Upgrades", "Biggest Bomb Bag", "Item_BombBag_Large", 1},
+    {"Upgrades", "Deku Stick capacity 10", "Item_StickBag_Small", 1},
+    {"Upgrades", "Deku Stick capacity 20", "Item_StickBag_Medium", 1},
+    {"Upgrades", "Deku Stick capacity 30", "Item_StickBag_Large", 1},
+    {"Upgrades", "Deku Nut capacity 20", "Item_NutBag_Small", 1},
+    {"Upgrades", "Deku Nut capacity 30", "Item_NutBag_Medium", 1},
+    {"Upgrades", "Deku Nut capacity 40", "Item_NutBag_Large", 1},
+    {"Upgrades", "Double Defense", "Item_FairyBless_DefenseDouble", 1},
     {"Upgrades", "Quiver", "Item_Quiver_Small", 1},
     {"Upgrades", "Big Quiver", "Item_Quiver_Medium", 1},
     {"Upgrades", "Biggest Quiver", "Item_Quiver_Large", 1},
@@ -637,14 +661,49 @@ static struct Owned {
     {"Masks", "Zora Mask", "Armor_Child_Mask_Zora", 1},
     {"Masks", "Gerudo Mask", "Armor_Child_Mask_Gerudo", 1},
     {"Masks", "Mask of Truth", "Armor_Child_Mask_Truth", 1},
+    {"Bottles", "Bottle 1", "BottleA", OWN_BOTTLE},
+    {"Bottles", "Bottle 2", "BottleB", OWN_BOTTLE},
+    {"Bottles", "Bottle 3", "BottleC", OWN_BOTTLE},
+    {"Bottles", "Bottle 4", "BottleD", OWN_BOTTLE},
+    {"Bottles", "Bottle 5", "BottleE", OWN_BOTTLE},
+    // Child trade sequence, then adult. Each sequence has one item menu button, so the latest one given shows.
+    {"Trade", "Weird Egg", "Item_WeirdEgg", 1},
+    {"Trade", "Cucco", "Item_AlarmCucco", 1},
+    {"Trade", "Zelda's Letter", "Item_ZeldaLetter", 1},
+    {"Trade", "Pocket Egg", "Item_PocketEgg", 1},
+    {"Trade", "Pocket Cucco", "Item_PocketCucco", 1},
+    {"Trade", "Cojiro", "Item_CojiroCucco", 1},
+    {"Trade", "Odd Mushroom", "Item_OddMushroom", 1},
+    {"Trade", "Odd Potion", "Item_OddPowder", 1},
+    {"Trade", "Poacher's Saw", "Item_PoacherSaw", 1},
+    {"Trade", "Broken Goron's Sword", "Item_BrokenSword", 1},
+    {"Trade", "Prescription", "Item_Prescription", 1},
+    {"Trade", "Eyeball Frog", "Item_EyeballFrog", 1},
+    {"Trade", "Eye Drops", "Item_EyeDrop", 1},
+    {"Trade", "Claim Check", "Item_ClaimCheck", 1},
 };
 #define NOWNED ((int)(sizeof owned / sizeof owned[0]))
+
+// What a bottle holds: the values of the BottleItem enum, in the game's order, and their names in the menu.
+static const char *const bottle_contents[] = {"Empty", "RedPotion", "GreenPotion", "BluePotion", "BlueFire", "Fish", "Letter",
+                                              "BigPoe", "Poe", "Bug", "Fairy", "MaxMilk", "HalfMilk"};
+static const char *const bottle_labels[] = {"Empty", "Red Potion", "Green Potion", "Blue Potion", "Blue Fire", "Fish",
+                                            "Ruto's Letter", "Big Poe", "Poe", "Bug", "Fairy", "Milk", "Half Milk"};
+#define NCONTENTS ((int)(sizeof bottle_contents / sizeof bottle_contents[0]))
 
 static void owned_keys(struct Owned *o) {
     if (o->get_key) return;
     char name[96];
     snprintf(name, sizeof name, "PouchData.%s.StockNum", o->name);
-    o->stock_key = o->pouch ? dbg_flag_key(name) : 0;
+    o->stock_key = o->give ? dbg_flag_key(name) : 0;
+    if (o->give == OWN_BOTTLE) {
+        snprintf(name, sizeof name, "PlayerStatus.AssignableItem.BottleInfo.%s.IsValid", o->name);
+        o->valid_key = dbg_flag_key(name);
+        snprintf(name, sizeof name, "PlayerStatus.AssignableItem.BottleInfo.%s.BottleItem", o->name);
+        o->content_key = dbg_flag_key(name);
+        o->get_key = dbg_flag_key("IsGet.Item_Bottle");
+        return;
+    }
     snprintf(name, sizeof name, "IsGet.%s", o->name);
     o->get_key = dbg_flag_key(name);
 }
@@ -661,17 +720,48 @@ int dbg_owned_get(int i) {
     if (i < 0 || i >= NOWNED) return -1;
     owned_keys(&owned[i]);
     int v = 0;
-    if (owned[i].pouch) return dbg_flag_get(owned[i].stock_key, &v) ? v > 0 : -1;
+    if (owned[i].give == OWN_BOTTLE) return dbg_flag_get_bool(owned[i].valid_key);
+    if (owned[i].give) return dbg_flag_get(owned[i].stock_key, &v) ? v > 0 : -1;
     return dbg_flag_get_bool(owned[i].get_key);
 }
 
 int dbg_owned_set(int i, int on) {
     if (i < 0 || i >= NOWNED) return 0;
-    owned_keys(&owned[i]);
+    struct Owned *o = &owned[i];
+    owned_keys(o);
     int v = 0, ok = 1;
-    if (owned[i].pouch && dbg_flag_get(owned[i].stock_key, &v) && (on ? v <= 0 : v != 0))
-        ok = dbg_flag_set(owned[i].stock_key, on ? 1 : 0);
-    return dbg_flag_set_bool(owned[i].get_key, on) && ok;
+    if (o->give == OWN_BOTTLE) {
+        // A new bottle starts empty; one already held keeps what is in it. IsGet.Item_Bottle stays on when a bottle
+        // is removed: other slots may still hold one, and it only skips the first-get scene.
+        if (on && dbg_flag_get_bool(o->valid_key) != 1) ok = dbg_flag_set_u32(DBG_FLAG_ENUM, o->content_key, dbg_flag_key("Empty"));
+        if (!on) ok = dbg_flag_set_u32(DBG_FLAG_ENUM, o->content_key, dbg_flag_key("Empty"));
+        ok = dbg_flag_set(o->stock_key, on ? 1 : 0) && ok;
+        if (on) ok = dbg_flag_set_bool(o->get_key, 1) && ok;
+        return dbg_flag_set_bool(o->valid_key, on) && ok;
+    }
+    if (o->give && dbg_flag_get(o->stock_key, &v) && (on ? v <= 0 : v != 0)) ok = dbg_flag_set(o->stock_key, on ? o->give : 0);
+    return dbg_flag_set_bool(o->get_key, on) && ok;
+}
+
+const char *const *dbg_bottle_content_labels(int *n) {
+    if (n) *n = NCONTENTS;
+    return bottle_labels;
+}
+
+int dbg_owned_bottle_content(int i) {
+    if (i < 0 || i >= NOWNED || owned[i].give != OWN_BOTTLE) return -1;
+    owned_keys(&owned[i]);
+    uint32_t v = 0;
+    if (!dbg_flag_get_u32(DBG_FLAG_ENUM, owned[i].content_key, &v)) return -1;
+    for (int c = 0; c < NCONTENTS; c++)
+        if (v == dbg_flag_key(bottle_contents[c])) return c;
+    return -1;
+}
+
+int dbg_owned_set_bottle_content(int i, int content) {
+    if (i < 0 || i >= NOWNED || owned[i].give != OWN_BOTTLE || content < 0 || content >= NCONTENTS) return 0;
+    owned_keys(&owned[i]);
+    return dbg_flag_set_u32(DBG_FLAG_ENUM, owned[i].content_key, dbg_flag_key(bottle_contents[content]));
 }
 
 // Magic level: the meter's maximum is PlayerStatus.MPMax (240 a level), and the two fairy blessings record the levels
@@ -715,6 +805,7 @@ void dbg_tick(uint64_t now_ns) {
         if (cfg_bool("NX2NAVI_DEBUG_REMOTE")) dbg_remote_set(1);
     }
     health_tick();
+    dbg_one_hit_tick();
     magic_tick();
     items_tick();
     dbg_any_age_items_tick();

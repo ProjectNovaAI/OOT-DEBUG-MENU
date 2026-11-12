@@ -317,8 +317,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_SENS] = "Stick camera speed",
     [UI_MENU_STICK_SENS_DESC] = "Right stick camera speed.",
 
-    [UI_BINDS_HELP] = "Select a cell and press A or Enter, then the key, mouse button or controller button. Delete or "
-                      "X clears a cell. A key in use moves here; a controller button swaps with the one it replaces.",
+    [UI_BINDS_HELP] = "Select a cell and press A or Enter, then the key, mouse button or controller button. Delete, X or "
+                      "a right-click clears a cell. A key in use moves here; a controller button swaps with the one it replaces.",
     [UI_BINDS_COL_KEY1] = "Key 1", [UI_BINDS_COL_KEY2] = "Key 2", [UI_BINDS_COL_PAD] = "Controller",
     [UI_BINDS_GROUP_BUTTONS] = "Buttons", [UI_BINDS_GROUP_MOVE] = "Movement", [UI_BINDS_GROUP_CAMERA] = "Camera",
     [UI_BINDS_PRESS_KEY] = "Press a key or mouse button for %s",
@@ -1029,7 +1029,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_SENS_DESC] = "Скорость камеры на правом стике.",
 
     [UI_BINDS_HELP] = "Выберите ячейку и нажмите A или Enter, затем клавишу, кнопку мыши или кнопку контроллера. "
-                      "Delete или X очищает ячейку. Занятая клавиша переходит сюда; кнопка контроллера меняется "
+                      "Delete, X или правый щелчок очищает ячейку. Занятая клавиша переходит сюда; кнопка контроллера меняется "
                       "местами с той, которую заменяет.",
     [UI_BINDS_COL_KEY1] = "Клавиша 1", [UI_BINDS_COL_KEY2] = "Клавиша 2", [UI_BINDS_COL_PAD] = "Контроллер",
     [UI_BINDS_GROUP_BUTTONS] = "Кнопки", [UI_BINDS_GROUP_MOVE] = "Движение", [UI_BINDS_GROUP_CAMERA] = "Камера",
@@ -1558,7 +1558,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MOUSE_SENS_DESC] = "Quão rápido o mouse gira a câmera.",
 
     [UI_BINDS_HELP] = "Selecione uma célula e aperte A ou Enter, depois a tecla, o botão do mouse ou o botão do "
-                      "controle. Delete ou X limpa a célula. Uma tecla já em uso vem para cá; um botão do controle "
+                      "controle. Delete, X ou um clique direito limpa a célula. Uma tecla já em uso vem para cá; um botão do controle "
                       "troca de lugar com o que ele substitui.",
     [UI_BINDS_COL_KEY1] = "Tecla 1", [UI_BINDS_COL_KEY2] = "Tecla 2", [UI_BINDS_COL_PAD] = "Controle",
     [UI_BINDS_GROUP_BUTTONS] = "Botões", [UI_BINDS_GROUP_MOVE] = "Movimento", [UI_BINDS_GROUP_CAMERA] = "Câmera",

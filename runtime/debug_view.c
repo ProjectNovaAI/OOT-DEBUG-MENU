@@ -77,6 +77,26 @@ static int death_of(const char *name, int *shape, Entry *e) {
     return 1;
 }
 
+// Placed air wall actors the player never meets, by a part of their names. Each pack says what its body collides with
+// (Phive/RigidBodyEntityParam EnableLayerHitMask and EnableSubLayerHitMask, followed through their parents): these
+// collide only with enemies (HitOnlyEnemy, HitOnlyEnemyWithDedicatedAirWall, HitOnlyDodongo, HitOnlyPoe,
+// HitOnlyDungeonBossGohma), NPCs, animals, cuccos, the horse, characters' sight, small objects, the hookshot, bombs or
+// rolling rocks; the camera wall has the camera's own material, the lure wall is for the fishing line and
+// AirWall_EnemyPerceptionSight for what enemies see. FldObj_AirWall_Player*, _ClimbPlayer, _All, _Common_Cube,
+// _ExcludeNpc*, _CrawlHole, the PushAirWall_* and the areas' boundary walls stop the player and stay.
+static const char *const kWallNotPlayer[] = {
+    "AirWallEnemy", "AirWall_EnemyPerceptionSight", "AirWall_DedicatedEnemy", "AirWall_EnemyDodongo", "AirWall_EnemyPoe",
+    "AirWall_OnlyDungeonBossGohma", "AirWall_Npc", "AirWall_BaseForNPC", "AirWall_Animal", "AirWall_Cucco",
+    "AirWall_Horse", "AirWall_HidingHoleCover", "AirWall_CharacterSight", "AirWall_CameraSight",
+    "AirWall_ObjectAndSmallObject", "MoveFloor_A_01_Airwall", "AirWall_Hookshot", "AirWall_HitOnlyBomb",
+    "AirWall_RollingRock", "AirWall_LureAndFishingLine", "FishingPond_AirWall"};
+
+static int wall_stops_player(const char *name) {
+    for (size_t i = 0; i < sizeof kWallNotPlayer / sizeof *kWallNotPlayer; i++)
+        if (has(name, kWallNotPlayer[i])) return 0;
+    return 1;
+}
+
 // The kind of a live actor by its name (0: not shown), its shape and, for the death barriers, the name to show and
 // the base shape's size.
 static int classify(uint64_t actor, const char *name, int *shape, Entry *e) {
@@ -84,7 +104,12 @@ static int classify(uint64_t actor, const char *name, int *shape, Entry *e) {
     *shape = DBG_SHAPE_BOX;
     e->base[0] = e->base[1] = e->base[2] = 1.0f, e->lift = 0;
     if (!strncmp(name, "Enemy_", 6) || !strncmp(name, "DungeonBoss", 11) || has(name, "MiddleBoss")) return DBG_VOL_ENEMY;
-    if (has(name, "AirWall") || has(name, "Airwall")) return DBG_VOL_WALL;
+    // Breakable rocks, walls, floors and rubble (the WallCrack family) have a life component too: shown with the
+    // enemies' health. The grotto covers built on the same base stay among the hidden things below.
+    if (has(name, "BrokenRock") || has(name, "CrackWall") || has(name, "CrackFloor") || has(name, "BrokenRubble") ||
+        !strcmp(name, "WallCrack"))
+        return DBG_VOL_ENEMY;
+    if (has(name, "AirWall") || has(name, "Airwall")) return wall_stops_player(name) ? DBG_VOL_WALL : 0;
     if (!strcmp(name, "Area")) return dbg_area_is_loading_zone(actor) ? DBG_VOL_LOAD : DBG_VOL_TRIGGER;
     // NavMeshCut* (path-finding holes round every character) and ForbidAutoPlacement* (where nothing spawns) fill a
     // town with boxes and say nothing about the level, so they are left out.
@@ -238,7 +263,8 @@ int dbg_view_volumes(DbgVolume *out, int max, float range) {
 #define LIFE_CUR 0x1c10
 #define LIFE_MAX 0x1c18
 
-static int life_of(uint64_t actor, int *life, int *max) {
+// at (NULL: not wanted): the address of the current value, for dbg_one_hit_tick.
+static int life_of(uint64_t actor, int *life, int *max, uint64_t *at) {
     uint64_t holder = 0, comp = 0, cls = 0, pc = 0, pm = 0;
     uint32_t c = 0, m = 0;
     if (!plat_mem_read(actor + LIFE_HOLDER, &holder, 8) || !holder || !plat_mem_read(holder + LIFE_COMPONENT, &comp, 8) || !comp ||
@@ -247,6 +273,7 @@ static int life_of(uint64_t actor, int *life, int *max) {
         return 0;
     if (m == 0 || m > 100000 || c > 100000) return 0;
     *life = (int)c, *max = (int)m;
+    if (at) *at = pc + 8;
     return 1;
 }
 
@@ -271,7 +298,7 @@ int dbg_view_health(DbgHealth *out, int max, float range) {
             float d[3] = {h->pos[0] - me[0], h->pos[1] - me[1], h->pos[2] - me[2]};
             if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > range * range) continue;
         }
-        if (!life_of(e->actor, &h->life, &h->max)) continue;
+        if (!life_of(e->actor, &h->life, &h->max, NULL)) continue;
         memcpy(h->name, e->name, sizeof h->name);
         n++;
     }
@@ -292,11 +319,37 @@ int dbg_view_kinds(void) {
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_HIDDEN") ? DBG_VOL_HIDDEN : 0) |
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_DEATH") ? DBG_VOL_DEATH : 0) |
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_HEALTH") ? DBG_VOL_ENEMY : 0);
-        dbg_view_want(kinds);
+        dbg_view_want(kinds | (cfg_bool("NX2NAVI_DEBUG_ONE_HIT") ? DBG_VOL_ENEMY : 0));   // the overlay's set stays as it is
         // debug_hook.c, its own thread: the hookshot surfaces and the walls of the collision files
         dbg_hook_want((cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT") ? DBG_HOOK_SURFACES : 0) |
                       (cfg_bool("NX2NAVI_DEBUG_VIEW_WALLS") ? DBG_HOOK_WALLS : 0));
         if (cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT")) kinds |= DBG_VOL_HOOK;
     }
     return kinds;
+}
+
+// One-hit kills (debug_tools.h dbg_one_hit). The list comes from the helper thread's rescans (every RESCAN_MS), and
+// the life of each listed enemy is read and lowered on every presented frame, so one that heals or is reset is caught
+// again before the player's next swing lands. Enemies already at 1 or at 0 (dying) are left alone.
+void dbg_one_hit(int on) { dbg_keep("NX2NAVI_DEBUG_ONE_HIT", on ? "1" : "0"); }
+int dbg_one_hit_on(void) { return cfg_bool("NX2NAVI_DEBUG_ONE_HIT") != 0; }
+
+void dbg_one_hit_tick(void) {
+    dbg_view_kinds();   // follows a change of the setting: starts or stops the enemy scan
+    if (!dbg_one_hit_on()) return;
+    static uint64_t actors[LIST_MAX], names[LIST_MAX];
+    int n = 0;
+    plat_mutex_lock(&V.lock);
+    for (int i = 0; i < V.n; i++)
+        if (V.list[i].kind == DBG_VOL_ENEMY && V.list[i].actor)
+            actors[n] = V.list[i].actor, names[n++] = V.list[i].name_ptr;
+    plat_mutex_unlock(&V.lock);
+    for (int i = 0; i < n; i++) {
+        uint64_t cls = 0, name = 0, at = 0;
+        int life, max;
+        // still the same actor (a freed one's memory may hold another by now)
+        if (!plat_mem_read(actors[i], &cls, 8) || cls != MOD_MAIN_BASE + ACTOR_CLASS) continue;
+        if (!plat_mem_read(actors[i] + ACT_NAME, &name, 8) || name != names[i]) continue;
+        if (life_of(actors[i], &life, &max, &at) && life > 1) dbg_write32(at, 1);
+    }
 }

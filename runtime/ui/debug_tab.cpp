@@ -338,10 +338,12 @@ static void hk_change(int a, int cell, int id) {
 
 static void hotkey_rows(void) {
     opt_group_text("Hotkeys");
-    opt_text_str("Pick a cell and press the key or controller button that switches the tool; Delete, Backspace or X "
-                 "clears it. Hotkeys work with the menu closed.");
+    opt_text_str("Pick a cell and press the key or controller button that switches the tool. To clear a cell, "
+                 "right-click it, or point at it (or select it) and press Delete, Backspace or X. Hotkeys work with "
+                 "the menu closed.");
     opt_bind_header(UI_BINDS_COL_KEY1, UI_BINDS_COL_KEY2, UI_BINDS_COL_PAD);
     static const char kCommon[] =
+        "\n\nTo clear a cell: right-click it, or point at it (or select it) and press Delete, Backspace or X."
         "\n\nA key or button bound here no longer reaches the game, so D-pad up or down can be given to a hotkey in "
         "place of what the game has there (the accessory, the boots); D-pad right opens this menu unless \"Open the "
         "menu\" has another button. With D-pad up or down bound, "
@@ -360,7 +362,8 @@ static void hotkey_rows(void) {
                              "only uses it to talk to Navi. With the menu open B closes it; L, R, the stick clicks and the "
                              "back paddles close it too when they are the button (the D-pad and the other buttons work the "
                              "menu). In the game's pause menu the button is the game's. \"Controller button opens the "
-                             "menu\" above switches it off. F1 or Esc on the keyboard. Saved in the settings.",
+                             "menu\" above switches it off. F1 or Esc on the keyboard. Right-click the cell, or point "
+                             "at it and press Delete, Backspace or X, to clear it. Saved in the settings.",
                              cells, enabled, note);
         if (g_hk.action < 0 && r == 2)
             g_hk.action = HK_MENU, g_hk.cell = 2, g_hk.reset = true, g_hk.start = plat_now_ns(), g_hk.done = 0;
@@ -450,7 +453,8 @@ extern "C" void tab_debug(float scale) {
         bool fly = dbg_fly_on() != 0;
         if (opt_toggle_text("##dbg_fly", "Fly (no clip)",
                             "The left stick moves where the camera looks, X (Space) rises, B (Left Ctrl) sinks, A (Left Shift) "
-                            "held is three times faster. Walls and the ground do not stop the player; gravity is off.",
+                            "held is three times faster. Walls and the ground do not stop the player; gravity is off. With the ocarina out, "
+                            "B only sinks: it does not put the ocarina away.",
                             fly))
             dbg_fly(!fly);
         snprintf(value, sizeof value, "%.0f m/s", dbg_fly_speed());
@@ -635,9 +639,11 @@ extern "C" void tab_debug(float scale) {
         // The volume overlay (debug_overlay_draw): settings, so they stay as set.
         static const struct { const char *key, *id, *label, *desc; } vs[] = {
             {"NX2NAVI_DEBUG_VIEW_WALLS", "##dbg_v_walls", "Show invisible walls",
-             "Draws the invisible walls, seen through everything: the ones placed as objects (air walls), the "
-             "air wall surfaces of the level's own collision, and the air wall shapes that come with placed models. "
-             "The collision ones are read once per area, which takes a moment after arriving."},
+             "Draws the invisible walls that stop the player, seen through everything: the ones placed as objects "
+             "(air walls), the air wall surfaces of the level's own collision, and the air wall shapes that come with "
+             "placed models. Air walls only for enemies, NPCs, animals, the horse, the camera or bombs, and the "
+             "indoor and camera volumes that use the air wall material, are left out. The collision ones are read "
+             "once per area, which takes a moment after arriving."},
             {"NX2NAVI_DEBUG_VIEW_LOADING", "##dbg_v_load", "Show loading zones",
              "Draws the trigger boxes that load another area when the player walks in."},
             {"NX2NAVI_DEBUG_VIEW_TRIGGERS", "##dbg_v_trig", "Show trigger zones",
@@ -649,11 +655,12 @@ extern "C" void tab_debug(float scale) {
              "it catches you), lava surfaces, and marks bottomless pits and quicksand."},
             {"NX2NAVI_DEBUG_VIEW_HOOKSHOT", "##dbg_v_hook", "Show hookshot targets",
              "Draws every surface in the area the hookshot sticks to (wood, vines, nets and the like, read from the "
-             "area's collision data) and outlines the hookshot target objects, seen through walls. Reading a large area "
+             "area's collision data) and the plates of the hookshot target objects (only the part the hookshot sticks to, not the rim, stand or frame round it), seen through walls. Reading a large area "
              "takes a moment after it loads. Saved in the settings."},
             {"NX2NAVI_DEBUG_VIEW_HEALTH", "##dbg_v_health", "Show enemy health",
              "Draws a health bar over every enemy and boss in range, with the game's own life values (current / "
-             "maximum, in the game's units: a Skulltula has 2, a Gerudo thief 18). Saved in the settings."},
+             "maximum, in the game's units: a Skulltula has 2, a Gerudo thief 18). Breakable rocks, cracked walls "
+             "and floors get one too (the boulders take 6). Saved in the settings."},
         };
         for (const auto &s : vs) {
             bool on = cfg_bool(s.key) != 0;
@@ -798,6 +805,15 @@ extern "C" void tab_debug(float scale) {
         if (opt_toggle_text("##dbg_god", "Invulnerable", "Raises health back to full on every frame. A hit that would kill in a single "
                             "frame can still get through.", god))
             dbg_invulnerable(!god);
+        bool one = dbg_one_hit_on() != 0;
+        if (opt_toggle_text("##dbg_onehit", "One-hit kills",
+                            "Every enemy, boss and breakable rock or wall in the area is kept at 1 point of life, so the "
+                            "first hit that does any damage kills it, as a hit of 999 would. The game's own death runs "
+                            "(drops and events as usual). What an enemy takes no damage from still does nothing, and a "
+                            "boss that must be stunned first still must be. Hits from anything else (a bomb, another "
+                            "enemy) kill too. Kept from one start to the next.",
+                            one))
+            dbg_one_hit(!one);
         {
             // The value to hold, in quarter hearts: whole hearts on one row, single quarters on the next (12, 12.25, 12.5, 12.75 ...).
             static int target = 0;
@@ -894,7 +910,7 @@ extern "C" void tab_debug(float scale) {
     opt_group_text("Owned items");
     {
         // One group of things at a time (equipment, items, upgrades, quest, songs, masks): the group row chooses.
-        static const char *groups[] = {"Equipment", "Items", "Upgrades", "Quest", "Songs", "Masks"};
+        static const char *groups[] = {"Equipment", "Items", "Upgrades", "Quest", "Songs", "Masks", "Bottles", "Trade"};
         const int ng = (int)(sizeof groups / sizeof groups[0]);
         static int gi = 0;
         int r = opt_text_choice("##dbg_owngroup", "Show", groups, ng, gi,
@@ -919,6 +935,17 @@ extern "C" void tab_debug(float scale) {
                                 "Removing something that is equipped leaves it in the hand until the next change.",
                                 have == 1))
                 dbg_owned_set(i, have != 1);
+            int content = have == 1 ? dbg_owned_bottle_content(i) : -1;
+            if (content >= 0) {
+                int nc = 0;
+                const char *const *names = dbg_bottle_content_labels(&nc);
+                char cid[32], clabel[48];
+                snprintf(cid, sizeof cid, "##dbg_ownc%d", i);
+                snprintf(clabel, sizeof clabel, "%s holds", label);
+                int c = opt_text_choice(cid, clabel, names, nc, content,
+                                        "What is in the bottle. Left and right choose; it changes at once.");
+                if (c >= 0 && c != content) dbg_owned_set_bottle_content(i, c);
+            }
         }
     }
 

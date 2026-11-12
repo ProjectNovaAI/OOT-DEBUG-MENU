@@ -2,7 +2,8 @@
 // "Show invisible walls"). Hookshot: the surfaces the hookshot sticks to, read from the current area's collision files,
 // and the target objects placed in its stage files, drawn from their own collision shapes. Walls: the collision
 // polygons of material AirWall (id 27) in the same files, and the <Model>__Airwall* shapes of the models placed in the
-// area (the placed AirWall actors themselves are boxes, debug_view.c). A helper thread reads them once per area change
+// area, each only where its collision filter stops the player (stops_player); the placed AirWall actors themselves are
+// boxes, debug_view.c. A helper thread reads them once per area change
 // or change of what is wanted; the menu asks for the ones near the player every frame (dbg_hook_polys).
 //
 // Surfaces. Phive/StaticCompoundBody/<folder>/<banc>[_X<i>_Z<j>].Nin_Ounce_NVN2.bphsc.zs (zstd with the zs.zsdic
@@ -21,9 +22,12 @@
 // two GlassTruthPassThrough flags), the climbable cliffs and nets (40, Climb) and the water walls (59, WallWater).
 //
 // Target objects. The hookshot's own targets (Obj_HookShotTarget_*, Obj_*_HookShotTarget_*, Land_*_HookTarget_*, the
-// HookShotFrame / HookShotBase / HookShotDecoration pieces) carry no such flag: being a target belongs to the object, so
-// they are found by name among the area's placements (debug_place.c) and drawn from Phive/Shape/**/<name>__*.bphsh.zs (a
-// shape file as the terrain above) at the placement's position, rotation and scale.
+// HookShotFrame / HookShotBase / HookShotDecoration pieces) are found by name among the area's placements
+// (debug_place.c). Of each, only the parts whose material preset is Wall_StickHookshot are drawn, from the shape
+// parameters of its actor pack (debug_place.c dbg_actor_stick_shapes), at the placement's position, rotation and scale:
+// the plate of a target, not its rim (Obj_HookShotTarget_A_01__Physical_Edge, a mesh file without the preset), nor the
+// stands, frames and decorations, which have no stick part at all and are left out. Most placed targets' plates are in
+// the tile's collision as well (the static compound copies them with their flags), so they show among the surfaces.
 //
 // Havok tag files (SDK 20250200): chunks of {u32 big-endian size | flags << 30, four-character tag}. TAG0 holds SDKV,
 // DATA, TYPE (TST1: the type names; TNA1: varint count, then per type {name index, template count, that many {name,
@@ -202,9 +206,30 @@ typedef struct {
     size_t rec, mat;      // absolute starts; 0 for none
     int nrec, nmat;
     int direct;           // shape tags index the material table directly (a terrain mesh)
-    int all;              // keep every polygon (a target object's or an air wall shape)
+    int all;              // keep every polygon (a target object's), or every one the player collides with (an air wall shape)
     int walls;            // keep material AirWall, else the hookshot flags
+    size_t fil;           // absolute start of the collision filter table, one entry per material; 0 for none
 } Keep;
+
+// Collision filter entries: 16 bytes for each material table entry, in a table of their own beside it (a tile's section
+// 6, a shape file's third table): u32 the main layers, u32 0, then u64 the sub layers the surface collides with, as bits
+// of the game's sub layer list (Unspecified, Animal, Enemy, NPC, RollingNPC, ClimbingPlayer, ...). Two kinds of air wall
+// never stop the player:
+//   - walls for something else: the areas' outer boundaries collide with bits 0 and 5 (and the player's ragdoll), the
+//     walls only a climbing player meets with bit 5 alone, while the walls for enemies, NPCs, animals, the horse, bombs
+//     and the like have neither;
+//   - sensor volumes: the boxes that mark indoor space for the camera and the lighting (material flags IndoorCamera,
+//     IndoorWithWall, IndoorWithRoof), and the camera and event volumes, carry the air wall material too, but all of them
+//     have the sub layer mask 0x77bbffff with nothing in its upper half. The player walks through them: one fills the
+//     hall of the Temple of Time (Market_Child, material 532 of its tile).
+#define SUB_PLAYER ((1ull << 0) | (1ull << 5))   // Unspecified, ClimbingPlayer
+#define SUB_SENSOR 0x77bbffffull
+
+static int stops_player(const Keep *k, int m) {
+    if (!k->fil) return 1;
+    uint64_t sub = u64(k->b, k->fil + 16 * (size_t)m + 8);
+    return sub != SUB_SENSOR && (sub & SUB_PLAYER) != 0;
+}
 
 // The material table entry of a shape tag, -1 for none.
 static int material_of(const Keep *k, uint32_t base, uint32_t sub) {
@@ -222,9 +247,11 @@ static int material_of(const Keep *k, uint32_t base, uint32_t sub) {
 }
 
 static int kept(const Keep *k, uint32_t base, uint32_t sub) {
-    if (k->all) return 1;
+    if (k->all && !k->walls) return 1;
     int m = material_of(k, base, sub);
     if (m < 0) return 0;
+    if (k->walls && !stops_player(k, m)) return 0;
+    if (k->all) return 1;
     size_t e = k->mat + 16 * (size_t)m;
     return k->walls ? u32(k->b, e) == MAT_AIRWALL : (u64(k->b, e + 8) & HOOK_FLAGS) != 0;
 }
@@ -419,14 +446,16 @@ static void tag_root(const Buf *b, size_t o, const Xf *x, const Keep *k, Out *ou
 // An embedded "Phive\0" 01 00 shape file at ph: its root shape with its own material table.
 static void shape_file(const Buf *b, size_t ph, const Xf *x, int all, int walls, Out *out) {
     if (!has(b, ph, 0x2c) || memcmp(b->p + ph, "Phive\0\x01\0", 8)) return;
-    uint32_t tag = u32(b, ph + 0x0c), mat = u32(b, ph + 0x10), mat_n = u32(b, ph + 0x20);
-    Keep k = {b, 0, ph + mat, 0, (int)(mat_n / 16), 1, all, walls};
+    uint32_t tag = u32(b, ph + 0x0c), mat = u32(b, ph + 0x10), fil = u32(b, ph + 0x14), mat_n = u32(b, ph + 0x20),
+             fil_n = u32(b, ph + 0x24);
+    Keep k = {b, 0, ph + mat, 0, (int)(mat_n / 16), 1, all, walls, fil_n == mat_n && has(b, ph + fil, fil_n) ? ph + fil : 0};
     if (!has(b, ph + mat, mat_n)) k.nmat = 0;
     tag_root(b, ph + tag, x, &k, out);
 }
 
-// One collision tile: its compounds and its terrain, the polygons of the hookshot or the air walls.
-static void tile(const Buf *b, int walls, Out *out) {
+// One collision tile: its compounds and its terrain, the polygons of the hookshot or the air walls. shift is the tile's
+// place in the area for terrain blocks that carry none (see tile_shift).
+static void tile(const Buf *b, const float shift[2], int walls, Out *out) {
     if (!has(b, 0, 0x10) || memcmp(b->p, "Phive\0\x02\x02", 8)) return;
     uint32_t off[64];
     int n = 0;
@@ -435,15 +464,31 @@ static void tile(const Buf *b, int walls, Out *out) {
         if (!has(b, 0x0c + 4 * (size_t)n, 4) || off[n++] >= b->n) break;
     }
     if (n < 12 || off[n - 1] != b->n) return;
-    Keep k = {b, off[4], off[5], (int)((off[5] - off[4]) / 20), (int)((off[6] - off[5]) / 16), 0, 0, walls};
-    if (off[4] > off[5] || off[5] > off[6]) return;
+    if (off[4] > off[5] || off[5] > off[6] || off[6] > off[7]) return;
+    Keep k = {b, off[4], off[5], (int)((off[5] - off[4]) / 20), (int)((off[6] - off[5]) / 16), 0, 0, walls,
+              off[7] - off[6] == off[6] - off[5] ? off[6] : 0};
     out->wall = walls;   // the compounds' air walls as well as the terrain's
     for (int i = 8; i < n - 3; i++)
         if (off[i] < off[i + 1]) tag_root(b, off[i], &kIdentity, &k, out);
     Xf terrain = kIdentity;
-    for (int a = 0; a < 3; a++) terrain.t[a] = f32(b, off[n - 3] + 0x18 + 4 * a);
+    int placed = 0;
+    for (int a = 0; a < 3; a++) {
+        terrain.t[a] = f32(b, off[n - 3] + 0x18 + 4 * a);
+        placed |= fabsf(terrain.t[a]) >= 1e-6f;
+    }
+    if (!placed) terrain.t[0] = shift[0], terrain.t[2] = shift[1];
     shape_file(b, off[n - 2], &terrain, 0, walls, out);
     out->wall = 0;
+}
+
+// Where a tile's terrain goes when its placement block holds none. Hyrule Field's tiles (HyruleField_Adult_X<i>_Z<j>)
+// have only tiny denormals there, and their terrain meshes run from 0 to 250 m in the tile's own frame; tile index 8 is
+// the world origin (checked against the placed objects of each tile, which are in world coordinates, and against the
+// ground under the field's placed air walls). Tiles of other areas carry a real offset and keep it.
+static void tile_shift(const char *rest, float shift[2]) {
+    int i, j;
+    shift[0] = shift[1] = 0;
+    if (sscanf(rest, "_X%d_Z%d", &i, &j) == 2) shift[0] = (float)(i - 8) * 250.f, shift[1] = (float)(j - 8) * 250.f;
 }
 
 // ---- the area's data, swapped in whole by the helper thread
@@ -480,8 +525,28 @@ typedef struct {
     Out *out;
     DbgHookLabel *labels;
     int nlabels, shapes;
+    int surfaces;   // out->v[0..surfaces): the tiles' polygons, read before the targets
 } Targets;
 
+// The polygons of one target object's stick parts, in world space, before they are kept.
+#define STICK_POLYS 64
+typedef struct {
+    const Xf *x;
+    float p[STICK_POLYS][8][3];
+    int nc[STICK_POLYS], n;
+} Sticks;
+
+static int stick_poly(const float (*pts)[3], int n, void *ctx) {
+    Sticks *s = ctx;
+    if (s->n == STICK_POLYS) return 0;
+    for (int i = 0; i < n; i++) xf_apply(s->x, pts[i], s->p[s->n][i]);
+    s->nc[s->n++] = n;
+    return 1;
+}
+
+// Only the parts the hookshot sticks to (debug_place.c dbg_actor_stick_shapes): a target's rim, stand, frame or
+// decoration is not drawn, and an object with no such part is not listed. A static target's plate is usually in the
+// tile's collision already, with the stick flags, and is drawn among the surfaces; such a plate is not drawn twice.
 static int target_one(const DbgPlacement *pl, void *ctx) {
     Targets *tg = ctx;
     if (!is_target(pl->name)) return 1;
@@ -489,29 +554,32 @@ static int target_one(const DbgPlacement *pl, void *ctx) {
     for (int c = 0; c < 3; c++)
         for (int i = 0; i < 3; i++) x.m[c * 3 + i] = pl->axes[c * 3 + i] * pl->scale[c];
     memcpy(x.t, pl->pos, sizeof x.t);
-    size_t ln = strlen(pl->name);
-    int before = tg->out->n;
-    tg->out->target = 1;
-    for (uint64_t i = 0, n = romfs_file_count(); i < n; i++) {
-        uint64_t off, sz;
-        const char *p = romfs_entry(i, &off, &sz);
-        if (!p || strncmp(p, "Phive/Shape/", 12)) continue;
-        const char *f = base_name(p);
-        if (strncmp(f, pl->name, ln) || strncmp(f + ln, "__", 2) || ci_has(f, "airwall") || ci_has(f, "stair")) continue;
-        size_t bn = 0;
-        uint8_t *raw = dbg_romfs_unzs(p, "zs.zsdic", &bn);
-        if (!raw) continue;
-        Buf b = {raw, bn};
-        shape_file(&b, 0, &x, 1, 0, tg->out);
-        free(raw);
+    static Sticks s;
+    s.x = &x, s.n = 0;
+    if (dbg_actor_stick_shapes(pl->name, stick_poly, &s) <= 0 || !s.n) return 1;
+    float lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+    for (int i = 0; i < s.n; i++)
+        for (int k = 0; k < s.nc[i]; k++)
+            for (int a = 0; a < 3; a++) lo[a] = fminf(lo[a], s.p[i][k][a]), hi[a] = fmaxf(hi[a], s.p[i][k][a]);
+    int in_tile = 0;
+    for (int i = 0; i < tg->surfaces && !in_tile; i++) {
+        const Poly *q = &tg->out->v[i];
+        if (q->p.wall) continue;
+        in_tile = 1;
+        for (int a = 0; a < 3; a++) in_tile &= q->c[a] >= lo[a] - 0.05f && q->c[a] <= hi[a] + 0.05f;
     }
-    tg->out->target = 0;
-    if (tg->out->n > before) tg->shapes++;
+    if (!in_tile) {
+        Xf id = {{1, 0, 0, 0, 1, 0, 0, 0, 1}, {0, 0, 0}};
+        tg->out->target = 1;
+        for (int i = 0; i < s.n; i++) emit(tg->out, &id, (const float (*)[3])s.p[i], s.nc[i]);
+        tg->out->target = 0;
+        tg->shapes++;
+    }
     if (tg->nlabels < LABEL_MAX) {
         DbgHookLabel *l = &tg->labels[tg->nlabels++];
-        memcpy(l->pos, pl->pos, sizeof l->pos);
+        for (int a = 0; a < 3; a++) l->pos[a] = (lo[a] + hi[a]) * 0.5f;
         snprintf(l->name, sizeof l->name, "%s", pl->name);
-        l->shaped = tg->out->n > before;
+        l->shaped = 1;
     }
     return 1;
 }
@@ -596,17 +664,19 @@ static void load_area(const char *area, int want) {
         uint8_t *raw = dbg_romfs_unzs(p, "zs.zsdic", &bn);
         if (!raw) continue;
         Buf b = {raw, bn};
+        float shift[2];
+        tile_shift(f + la, shift);
         int before = out.n;
-        if (want & DBG_HOOK_SURFACES) tile(&b, 0, &out);
+        if (want & DBG_HOOK_SURFACES) tile(&b, shift, 0, &out);
         hook_polys += out.n - before, before = out.n;
-        if (want & DBG_HOOK_WALLS) tile(&b, 1, &out);
+        if (want & DBG_HOOK_WALLS) tile(&b, shift, 1, &out);
         wall_polys += out.n - before;
         free(raw);
         tiles++;
     }
     int surfaces = hook_polys;
     static DbgHookLabel labels[LABEL_MAX];
-    Targets tg = {&out, labels, 0, 0};
+    Targets tg = {&out, labels, 0, 0, out.n};
     if (want & DBG_HOOK_SURFACES) dbg_place_each(area, target_one, &tg);
     if (want & DBG_HOOK_WALLS) {
         wall_shapes_list();

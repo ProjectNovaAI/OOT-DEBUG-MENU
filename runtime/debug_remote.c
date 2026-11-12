@@ -12,6 +12,7 @@
 #include "debug_tools.h"
 #include "debug_watch.h"
 #include "host.h"
+#include "input.h"
 #include "layout.h"
 #include "platform/platform.h"
 #include "save_slots.h"
@@ -57,6 +58,14 @@ static void out_put(const char *fmt, ...) {
     memcpy(out_buf + out_len, tmp, n);
     out_len += n;
     out_buf[out_len] = 0;
+}
+
+// The key of a flag named on the console: "#" and eight hex digits is the key itself, for the flags whose names are not
+// known (a struct member found only by its hash in the flag list); anything else is a name, hashed as the game does.
+static uint32_t remote_flag_key(const char *name) {
+    if (name[0] == '#' && strlen(name) == 9 && strspn(name + 1, "0123456789abcdefABCDEF") == 8)
+        return (uint32_t)strtoul(name + 1, NULL, 16);
+    return dbg_flag_key(name);
 }
 
 static int readable(uint64_t a, uint64_t n) { return plat_mem_readable(a, n); }
@@ -256,7 +265,12 @@ static void run_command(char *line) {
     char *a1 = strtok(NULL, " \t\r\n"), *a2 = strtok(NULL, " \t\r\n");
     char *a3 = strtok(NULL, " \t\r\n");
     out_put("> %s%s%s%s%s\n", cmd, a1 ? " " : "", a1 ? a1 : "", a2 ? " " : "", a2 ? a2 : "");
-    if (!strcmp(cmd, "main")) {
+    if (!strcmp(cmd, "input")) {   // input <script lines, ';' between>: queue presses as if from the pad (input.h)
+        const char *rest = strstr(whole, "input");
+        rest = rest ? rest + 5 : "";
+        if (a1) out_put("queued %d input events\n", input_script_live(rest));
+        else out_put("%d input events pending\n", input_script_live_busy());
+    } else if (!strcmp(cmd, "main")) {
         out_put("main base 0x%llx, v111 %d\n", (unsigned long long)MOD_MAIN_BASE, dbg_available());
     } else if (!strcmp(cmd, "anchor")) {   // the host address of this program's code: map symbol dbg_remote_set minus this = slide
         out_put("anchor dbg_remote_set %p\n", (void *)dbg_remote_set);
@@ -470,7 +484,7 @@ static void run_command(char *line) {
         out_put("replaced by: flag NAME [VALUE], items, item INDEX VALUE, magic [VALUE], infmagic 0|1, infitems 0|1\n");
     } else if (!strcmp(cmd, "flag") && a1) {   // flag NAME [VALUE]: an int flag by its name in the game's flag list
         int v = 0;
-        uint32_t key = dbg_flag_key(a1);
+        uint32_t key = remote_flag_key(a1);
         if (a2) out_put("flag %s (key %08x) set %s\n", a1, key, dbg_flag_set(key, atoi(a2)) ? "done" : "failed");
         if (dbg_flag_get(key, &v)) out_put("flag %s (key %08x) = %d\n", a1, key, v);
         else out_put("flag %s (key %08x): %s\n", a1, key, dbg_flags_locating() ? "searching" : "not found");
@@ -508,11 +522,14 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "god") && a1) {
         dbg_invulnerable(atoi(a1));
         out_put("god %d\n", dbg_invulnerable_on());
+    } else if (!strcmp(cmd, "onehit")) {   // onehit [0|1]: one-hit kills
+        if (a1) dbg_one_hit(atoi(a1));
+        out_put("onehit %d\n", dbg_one_hit_on());
     } else if (!strcmp(cmd, "speed") && a1) {
         dbg_set_time_scale(strtof(a1, NULL));
         out_put("speed %.3f\n", dbg_time_scale());
     } else if (!strcmp(cmd, "fget") && a1) {   // fget NAME: any flag by name, from whichever store has it
-        uint32_t key = dbg_flag_key(a1), u = 0;
+        uint32_t key = remote_flag_key(a1), u = 0;
         int t = dbg_flag_type(key);
         char s[64];
         float v[3];
@@ -526,7 +543,7 @@ static void run_command(char *line) {
             out_put("%s %s = %d (0x%08x, float %g)\n", a1, t == DBG_FLAG_INT ? "int" : t == DBG_FLAG_ENUM ? "enum" : "float", (int)u, u, f);
         }
     } else if (!strcmp(cmd, "fset") && a1 && a2) {   // fset NAME VALUE: bool 0/1, int, float, enum hash or value name, string (- for empty), vec3 x,y,z
-        uint32_t key = dbg_flag_key(a1);
+        uint32_t key = remote_flag_key(a1);
         int t = dbg_flag_type(key), ok = 0;
         if (t == DBG_FLAG_BOOL) ok = dbg_flag_set_bool(key, atoi(a2));
         else if (t == DBG_FLAG_INT) ok = dbg_flag_set(key, atoi(a2));
@@ -718,7 +735,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots igt fog view cfg area perf gcall gres\n");
     }
 }
 

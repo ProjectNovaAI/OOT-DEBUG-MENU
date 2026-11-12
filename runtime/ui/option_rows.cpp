@@ -726,9 +726,15 @@ int opt_bind_row(const char *key, const char *label, const char *desc, const cha
         row_foc |= foc;
         row_hov |= hov;
         if (clicked) result = c;
-        if (foc && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false) ||
-                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)))
-            result = 10 + c;
+        // Clearing: Delete, Backspace or X on the cell the cursor is on, or, used with the mouse (no cursor shown), on
+        // the cell under the pointer; a right-click clears the cell under the pointer at any time. A click puts the
+        // cursor away, so without the pointer cases a mouse user could not clear a cell at all: Delete pressed after
+        // the click went to the capture window and became the new binding.
+        bool clear_key = ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false) ||
+                         ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false);
+        bool mouse_mode = !ImGui::GetCurrentContext()->NavCursorVisible;
+        if ((foc || (hov && mouse_mode)) && clear_key) result = 10 + c;
+        if (hov && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) result = 10 + c;
         skin_button(dl, a, b, g_scale, foc ? 1.0f : hov ? 0.6f : 0.0f, false);   // a small brown button per cell
         if (foc || (hov && !g_cursor.on)) g_cursor.on = true, g_cursor.a = a, g_cursor.b = b, g_cursor.alpha = foc ? 1.0f : 0.55f;
         fit_text(dl, a.x + pad, b.x - pad, a.y, h, SKIN_TEXT, t, true);

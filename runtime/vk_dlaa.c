@@ -210,9 +210,20 @@ static int core_load(void) {
 #ifdef _WIN32
     char dir[MAX_PATH] = {0}, path[MAX_PATH + 32];
     DWORD n = sizeof dir;
-    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath", RRF_RT_REG_SZ,
-                     NULL, dir, &n) != ERROR_SUCCESS && !ngx_dir_from_adapter(dir, sizeof dir)) {
-        rt_log("dlaa: the driver has no NGX core (registry NGXCore missing, none beside its Vulkan driver): DLAA off");
+    // NGXCore\FullPath can also outlive its driver: after a driver change it can still name the old DriverStore folder,
+    // which is gone. Then, as when the value is missing, the core beside the Vulkan driver in use is taken.
+    int have = RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", "FullPath",
+                            RRF_RT_REG_SZ, NULL, dir, &n) == ERROR_SUCCESS;
+    if (have) {
+        snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+            rt_log("dlaa: registry NGXCore names %s, which has no _nvngx.dll: looking beside the Vulkan driver", dir);
+            have = 0;
+        }
+    }
+    if (!have && !ngx_dir_from_adapter(dir, sizeof dir)) {
+        rt_log("dlaa: the driver has no NGX core (registry NGXCore missing or stale, none beside its Vulkan driver): "
+               "DLAA off");
         return 0;
     }
     snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);

@@ -30,6 +30,19 @@ static _Atomic float fly_speed = 8.0f;
 
 void dbg_fly(int on) { atomic_store(&fly_on, on != 0); }
 int dbg_fly_on(void) { return atomic_load(&fly_on); }
+
+// The screen the game's UI is on: an enum flag without a known name (key 0x578d41e1) whose values are None, ItemMenu,
+// EquipmentMenu, CollectMenu, SystemMenu, Save, Load, Option, ..., Ocarina, Title, Loading, GameOver, stored as the
+// hash of the name (dbg_flag_key). It reads Ocarina from the moment the ocarina is taken out until it is put away, and
+// None again then (watched in the game, 1.1.1).
+#define UI_SCREEN_KEY 0x578d41e1u
+#define UI_SCREEN_OCARINA 0x6a586f83u   // dbg_flag_key("Ocarina")
+
+uint64_t dbg_fly_game_mask(void) {
+    uint32_t screen;
+    if (!atomic_load(&fly_on) || !dbg_flag_get_u32(DBG_FLAG_ENUM, UI_SCREEN_KEY, &screen)) return 0;
+    return screen == UI_SCREEN_OCARINA ? BTN_B : 0;
+}
 void dbg_hover(int on) { atomic_store(&hover_on, on != 0); }
 int dbg_hover_on(void) { return atomic_load(&hover_on); }
 // Infinite Hover Boots and the fly speed stay as set from one start to the next (debug_hover_boots, debug_fly_speed;

@@ -72,7 +72,8 @@ static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
 // when it starts, as the load ends at another tick in each run. "<frame> MARK <name>" presses nothing: with
 // NX2NAVI_TRACE=perf it ends the running segment of frame times and starts one called <name> (perf.c perf_segment).
 // at, hold: ticks, or microseconds of the world clock when timed.
-typedef struct { uint64_t at, hold; int bit, stick, timed, mark; int32_t x, y; int logged; char text[48]; } ScriptEv;
+// live: queued by input_script_live, at counted from the tick it was queued; it never stops at the world clock.
+typedef struct { uint64_t at, hold; int bit, stick, timed, mark, live; int32_t x, y; int logged; char text[48]; } ScriptEv;
 static const struct { const char *name; int bit; } script_buttons[] = {
     {"A", B_A}, {"B", B_B}, {"X", B_X}, {"Y", B_Y}, {"LCLICK", B_STICK_L}, {"RCLICK", B_STICK_R}, {"L", B_L}, {"R", B_R},
     {"ZL", B_ZL}, {"ZR", B_ZR}, {"PLUS", B_PLUS}, {"MINUS", B_MINUS}, {"LEFT", B_LEFT}, {"UP", B_UP}, {"RIGHT", B_RIGHT}, {"DOWN", B_DOWN},
@@ -82,6 +83,55 @@ static int script_n, script_state;   // 0 not loaded, 1 loaded
 static int script_mixed;             // the script has timed lines: its untimed ones end where the world clock starts
 static int32_t script_mouse[2];      // one-shot raw counts, consumed by the camera hook; under lock
 
+// One script line into *e (ln for the log); 0 for a comment, a blank line or a line that does not parse.
+static int script_parse(char *line, int ln, ScriptEv *e) {
+    char *h = strchr(line, '#');
+    if (h) *h = 0;
+    char name[32];
+    double at;
+    int off = 0, timed = line[0] == '@';
+    if (sscanf(line + timed, "%lf %31s%n", &at, name, &off) < 2 || at < 0) return 0;
+    off += timed;
+    double unit = timed ? 1000.0 : 1.0;   // ms to us, or presents
+    *e = (ScriptEv){.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed};
+    long a, b;
+    double c;
+    if (!strcmp(name, "MARK")) {
+        const char *s = line + off;
+        while (*s == ' ' || *s == '\t') s++;
+        size_t len = strcspn(s, "\r\n");
+        while (len && (s[len - 1] == ' ' || s[len - 1] == '\t')) len--;
+        e->mark = 1, e->hold = 1;
+        snprintf(e->text, sizeof e->text, "%.*s", (int)len, s);
+    } else if (!strcmp(name, "MOUSE") || !strcmp(name, "LSTICK") || !strcmp(name, "RSTICK")) {
+        int n = sscanf(line + off, "%ld %ld %lf", &a, &b, &c);
+        if (n < 2) { rt_log("input: script line %d: %s needs x y [hold]", ln, name); return 0; }
+        e->stick = name[0] == 'M' ? 3 : name[0] == 'L' ? 1 : 2; e->x = (int32_t)a; e->y = (int32_t)b;
+        if (e->stick == 3) e->hold = 1;   // a displacement, never a held speed
+        if (n >= 3 && c > 0) e->hold = (uint64_t)(c * unit + 0.5);
+        snprintf(e->text, sizeof e->text, "%s %d %d", name, e->x, e->y);
+    } else {
+        for (size_t i = 0; i < sizeof script_buttons / sizeof *script_buttons; i++)
+            if (!strcmp(name, script_buttons[i].name)) e->bit = script_buttons[i].bit;
+        if (e->bit < 0) { rt_log("input: script line %d: unknown button %s", ln, name); return 0; }
+        if (sscanf(line + off, "%lf", &c) == 1 && c > 0) e->hold = (uint64_t)(c * unit + 0.5);
+        snprintf(e->text, sizeof e->text, "%s", name);
+    }
+    return 1;
+}
+
+static int script_add(const ScriptEv *e) {
+    static int cap;
+    if (script_n == cap) {
+        int ncap = cap ? cap * 2 : 32;
+        ScriptEv *n = realloc(script_ev, (size_t)ncap * sizeof *script_ev);
+        if (!n) return 0;
+        script_ev = n, cap = ncap;
+    }
+    script_ev[script_n++] = *e;
+    return 1;
+}
+
 static void script_load(void) {
     script_state = 1;
     const char *path = cfg_get("NX2NAVI_INPUT_SCRIPT");
@@ -89,51 +139,43 @@ static void script_load(void) {
     FILE *f = fopen(path, "r");
     if (!f) { rt_log("input: cannot open NX2NAVI_INPUT_SCRIPT %s", path); return; }
     char line[256];
-    int cap = 0, ln = 0;
+    int ln = 0;
+    ScriptEv e;
     while (fgets(line, sizeof line, f)) {
-        ln++;
-        char *h = strchr(line, '#');
-        if (h) *h = 0;
-        char name[32];
-        double at;
-        int off = 0, timed = line[0] == '@';
-        if (sscanf(line + timed, "%lf %31s%n", &at, name, &off) < 2 || at < 0) continue;
-        off += timed;
-        double unit = timed ? 1000.0 : 1.0;   // ms to us, or presents
-        ScriptEv e = {.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed};
-        long a, b;
-        double c;
-        if (!strcmp(name, "MARK")) {
-            const char *s = line + off;
-            while (*s == ' ' || *s == '\t') s++;
-            size_t len = strcspn(s, "\r\n");
-            while (len && (s[len - 1] == ' ' || s[len - 1] == '\t')) len--;
-            e.mark = 1, e.hold = 1;
-            snprintf(e.text, sizeof e.text, "%.*s", (int)len, s);
-        } else if (!strcmp(name, "MOUSE") || !strcmp(name, "LSTICK") || !strcmp(name, "RSTICK")) {
-            int n = sscanf(line + off, "%ld %ld %lf", &a, &b, &c);
-            if (n < 2) { rt_log("input: script line %d: %s needs x y [hold]", ln, name); continue; }
-            e.stick = name[0] == 'M' ? 3 : name[0] == 'L' ? 1 : 2; e.x = (int32_t)a; e.y = (int32_t)b;
-            if (e.stick == 3) e.hold = 1;   // a displacement, never a held speed
-            if (n >= 3 && c > 0) e.hold = (uint64_t)(c * unit + 0.5);
-            snprintf(e.text, sizeof e.text, "%s %d %d", name, e.x, e.y);
-        } else {
-            for (size_t i = 0; i < sizeof script_buttons / sizeof *script_buttons; i++)
-                if (!strcmp(name, script_buttons[i].name)) e.bit = script_buttons[i].bit;
-            if (e.bit < 0) { rt_log("input: script line %d: unknown button %s", ln, name); continue; }
-            if (sscanf(line + off, "%lf", &c) == 1 && c > 0) e.hold = (uint64_t)(c * unit + 0.5);
-            snprintf(e.text, sizeof e.text, "%s", name);
-        }
-        if (script_n == cap) {
-            cap = cap ? cap * 2 : 32;
-            script_ev = realloc(script_ev, (size_t)cap * sizeof *script_ev);
-            if (!script_ev) { script_n = 0; fclose(f); return; }
-        }
-        script_ev[script_n++] = e;
-        script_mixed |= timed;
+        if (!script_parse(line, ++ln, &e)) continue;
+        if (!script_add(&e)) break;
+        script_mixed |= e.timed;
     }
     fclose(f);
     rt_log("input: script %s, %d events", path, script_n);
+}
+
+int input_script_live(const char *text) {
+    char buf[4096], *save = NULL;
+    snprintf(buf, sizeof buf, "%s", text);
+    plat_mutex_lock(&lock);
+    if (!script_state) script_load();
+    uint64_t now = frame_step_ticks() + 1;
+    int added = 0, ln = 0;
+    ScriptEv e;
+    for (char *line = strtok_r(buf, ";\n", &save); line; line = strtok_r(NULL, ";\n", &save)) {
+        if (!script_parse(line, ++ln, &e) || e.timed || e.mark) continue;
+        e.at += now, e.live = 1;
+        if (!script_add(&e)) break;
+        added++;
+    }
+    plat_mutex_unlock(&lock);
+    return added;
+}
+
+int input_script_live_busy(void) {
+    plat_mutex_lock(&lock);
+    uint64_t tick = frame_step_ticks();
+    int busy = 0;
+    for (int i = 0; i < script_n; i++)
+        if (script_ev[i].live && tick < script_ev[i].at + script_ev[i].hold) busy++;
+    plat_mutex_unlock(&lock);
+    return busy;
 }
 
 static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
@@ -143,7 +185,7 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     int64_t w = frame_step_world_us();
     for (int i = 0; i < script_n; i++) {
         ScriptEv *e = &script_ev[i];
-        if (e->timed ? w < 0 : script_mixed && w >= 0) continue;
+        if (e->timed ? w < 0 : script_mixed && !e->live && w >= 0) continue;
         uint64_t now = e->timed ? (uint64_t)w : tick;
         if (now < e->at || (now >= e->at + e->hold && (e->logged || !e->timed))) continue;
         if ((e->stick == 3 || e->mark) && e->logged) continue;
@@ -1058,6 +1100,7 @@ static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
+    *buttons &= ~dbg_fly_game_mask();   // fly's B with the ocarina out (debug_move.c)
     if (!g_block && !g_menu) menu_cursor_poll(buttons);
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};
     int text = blocked(&g_block, &g_block_closed, "text entry", *buttons, axes),
