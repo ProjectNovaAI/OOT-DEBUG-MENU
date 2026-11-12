@@ -468,8 +468,8 @@ extern "C" void tab_debug(float scale) {
             dbg_hover(!hov);
         bool hb = dbg_hover_boots_on() != 0;
         if (opt_toggle_text("##dbg_hoverboots", "Infinite Hover Boots",
-                            "With the Hover Boots on, a fall stops where it starts and the player keeps that height for as "
-                            "long as the boots are on. B (Left Ctrl) drops.",
+                            "The Hover Boots' own hover never runs out: walk or jump off a ledge with them on and they "
+                            "carry you until you land or take them off. Switching this off ends a long hover.",
                             hb))
             dbg_hover_boots(!hb);
     }

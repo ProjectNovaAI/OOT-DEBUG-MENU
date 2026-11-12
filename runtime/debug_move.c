@@ -1,9 +1,10 @@
 // Fly, hover and infinite Hover Boots for the debug menu (debug_tools.h). Game build 1.1.1 only.
 //
-// All three put the player where they want with the game's own actor warp (debug_warp.c dbg_frame_teleport) on every
-// frame, from the debug frame hook (debug_game.c, game thread), so the physics body goes along and gravity never gets to
-// act. Each keeps its own position and moves it with the left stick: fly at its own speed and also up and down, hover
-// and the boots at a fixed height and about running speed (the game gives a player in the air no walking speed).
+// Fly and hover put the player where they want with the game's own actor warp (debug_warp.c dbg_frame_teleport) on
+// every frame, from the debug frame hook (debug_game.c, game thread), so the physics body goes along and gravity never
+// gets to act. Each keeps its own position and moves it with the left stick: fly at its own speed and also up and down,
+// hover at a fixed height and about running speed (the game gives a player in the air no walking speed). Infinite Hover
+// Boots leaves the player to the game and only makes the boots' own hover time endless (boots_frame).
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -22,7 +23,6 @@
 #define BTN_X (1ull << 2)
 #define STICK_DEAD 0.15f
 #define FRAME_DT_MAX 0.1f           // seconds: a longer gap (a loading screen) moves nothing
-#define BOOTS_FALL_MS 1.5f          // falling faster than this (m/s) with the Hover Boots on starts the hold
 #define CAMERA_NAME "PlayerCamera"  // its position is the eye: the player minus it is the view direction
 
 static _Atomic int fly_on, hover_on, boots_on;
@@ -93,27 +93,91 @@ static int camera_pos(float out[3]) {
     return 0;
 }
 
+// ---- infinite Hover Boots
+//
+// How long the boots carry the player is in the player's game parameters (Player.game__player__PlayerGameParam):
+// HoverBootsFloatingTime 84 and HoverBootsFloatingTimeAfterJump 42, frames, which the game keeps in memory as two floats
+// in a row between 1.0 and 3.6 (seen in the game, 1.1.1; setting both higher there made the boots hover on). While the
+// option is on both hold BOOTS_FOREVER, so the boots' own hover lasts until the player lands or takes them off; when it
+// is switched off they are 84 and 42 again, which also ends a hover that has run longer. A helper thread finds the
+// block in the heap; every frame checks it is still there and finds it again when it is not (a new player, a reload).
+#define BOOTS_TIME 84.0f
+#define BOOTS_TIME_JUMP 42.0f
+#define BOOTS_FOREVER 1e6f        // frames: hours
+#define BOOTS_BEFORE 1.0f         // the parameter in memory before the two times
+#define BOOTS_AFTER 3.6f          // and after them
+#define BOOTS_RETRY_NS 5000000000ull   // a search that found nothing waits this long before the next
+#define HEAP_FROM 0x100000000ull       // the game's heap, as in debug_warp.c dbg_each_actor
+#define HEAP_TO 0x700000000ull
+
+static _Atomic uint64_t boots_at;   // the address of HoverBootsFloatingTime, 0 while not known
+static _Atomic int boots_looking;
+static _Atomic uint64_t boots_tried_ns;
+
+static int boots_block(const float v[4], int forever) {
+    return v[0] == BOOTS_BEFORE && v[3] == BOOTS_AFTER &&
+           (forever ? v[1] == BOOTS_FOREVER && v[2] == BOOTS_FOREVER : v[1] == BOOTS_TIME && v[2] == BOOTS_TIME_JUMP);
+}
+
+static void boots_thread(void *arg) {
+    (void)arg;
+    enum { CHUNK = 1 << 20 };
+    static float buf[CHUNK / 4 + 4];
+    uint64_t found = 0;
+    for (uint64_t addr = HEAP_FROM; addr < HEAP_TO && !found;) {
+        uint64_t end = 0;
+        int st = plat_mem_state(addr, HEAP_TO, &end);
+        if (end <= addr) break;
+        for (uint64_t at = addr; st == PLAT_PROT_RW && at < end && !found; at += CHUNK) {
+            uint64_t len = end - at < CHUNK + 12 ? end - at : CHUNK + 12;   // 12 more bytes: a block on the seam
+            if (len < 16 || !plat_mem_read(at, buf, len)) continue;
+            for (uint64_t i = 0; i + 4 <= len / 4 && i < CHUNK / 4; i++)
+                if ((buf[i + 1] == BOOTS_TIME || buf[i + 1] == BOOTS_FOREVER) && (boots_block(buf + i, 0) || boots_block(buf + i, 1))) {
+                    found = at + i * 4 + 4;
+                    break;
+                }
+        }
+        addr = end;
+    }
+    if (found) atomic_store(&boots_at, found);
+    atomic_store(&boots_tried_ns, plat_now_ns());
+    atomic_store(&boots_looking, 0);
+}
+
+static void boots_frame(void) {
+    int on = dbg_hover_boots_on();
+    uint64_t at = atomic_load(&boots_at);
+    float v[4];
+    if (at && !(plat_mem_read(at - 4, v, sizeof v) && (boots_block(v, 0) || boots_block(v, 1)))) atomic_store(&boots_at, 0), at = 0;
+    if (!at) {
+        // Nothing to put back while off: a block found again holds the game's own times.
+        int zero = 0;
+        if (on && plat_now_ns() - atomic_load(&boots_tried_ns) > BOOTS_RETRY_NS &&
+            atomic_compare_exchange_strong(&boots_looking, &zero, 1) && !plat_thread_spawn(boots_thread, NULL, "debug-boots", 0))
+            atomic_store(&boots_looking, 0);
+        return;
+    }
+    if (boots_block(v, on)) return;
+    float t = on ? BOOTS_FOREVER : BOOTS_TIME, tj = on ? BOOTS_FOREVER : BOOTS_TIME_JUMP;
+    uint32_t bt, btj;
+    memcpy(&bt, &t, 4), memcpy(&btj, &tj, 4);
+    dbg_write32(at, bt), dbg_write32(at + 4, btj);
+}
+
 // ---- per frame
 
 static uint64_t last_ns;
-static float air_pos[3], fwd[3] = {0, 0, 1}, last_y;
-static int air_mode, last_have;   // air_mode: which of FLY, HOVER, BOOTS owns air_pos (0: none)
-static uint32_t k_boot;
-enum { AIR_FLY = 1, AIR_HOVER, AIR_BOOTS };
-#define WALK_MS 6.0f   // hover and the boots move at about the player's running speed
-
-static int hover_boots_worn(void) {
-    char boot[64];
-    if (!k_boot) k_boot = dbg_flag_key("PlayerStatus.EquipBoot");
-    return dbg_flag_get_string(k_boot, boot) && !strcmp(boot, "Armor_Adult_HoverBoot");
-}
+static float air_pos[3], fwd[3] = {0, 0, 1};
+static int air_mode;   // which of FLY, HOVER owns air_pos (0: none)
+enum { AIR_FLY = 1, AIR_HOVER };
+#define WALK_MS 6.0f   // hover moves at about the player's running speed
 
 static float axis(int32_t v) {
     float f = (float)v / 32767.0f;
     return fabsf(f) < STICK_DEAD ? 0.0f : f;
 }
 
-// In the air the game gives the player no speed of its own, so every mode moves air_pos with the left stick: up goes
+// In the air the game gives the player no speed of its own, so both modes move air_pos with the left stick: up goes
 // where the camera looks, right to its right, A held three times faster. Fly also rises on X and sinks on B.
 static void air_step(struct Cpu *c, const float p[3], uint64_t b, int32_t lx, int32_t ly, float speed, int vertical, float dt) {
     float cam[3];
@@ -135,34 +199,22 @@ void dbg_move_frame(struct Cpu *c) {
     float dt = last_ns ? (float)(now - last_ns) * 1e-9f : 0.0f;
     last_ns = now;
     if (dt > FRAME_DT_MAX) dt = 0.0f;
+    boots_frame();
     float p[3];
     if (!dbg_player_pos(p)) {
-        air_mode = last_have = 0;
+        air_mode = 0;
         return;
     }
-    float vy = last_have && dt > 0 ? (p[1] - last_y) / dt : 0.0f;
-    last_y = p[1], last_have = 1;
 
-    // Which mode holds the player this frame. Infinite Hover Boots: with the boots on, a fall (faster than
-    // BOOTS_FALL_MS) starts a hold at the height it started from, until the boots come off or B is pressed.
+    // Which mode holds the player this frame: fly wins over hover.
     uint64_t b = 0;
     int32_t lx = 0, ly = 0, rx = 0, ry = 0;
-    int mode = 0;
-    if (atomic_load(&fly_on)) mode = AIR_FLY;
-    else if (atomic_load(&hover_on)) mode = AIR_HOVER;
-    else if (dbg_hover_boots_on() && hover_boots_worn()) {
-        input_poll_ui(&b, &lx, &ly, &rx, &ry);
-        if (air_mode == AIR_BOOTS && !(b & BTN_B)) mode = AIR_BOOTS;
-        else if (!(b & BTN_B) && vy < -BOOTS_FALL_MS) {
-            mode = AIR_BOOTS;
-            p[1] -= vy * dt;   // back to where the fall started
-        }
-    }
+    int mode = atomic_load(&fly_on) ? AIR_FLY : atomic_load(&hover_on) ? AIR_HOVER : 0;
     if (!mode) {
         air_mode = 0;
         return;
     }
     if (mode != air_mode) memcpy(air_pos, p, sizeof air_pos), air_mode = mode;
-    if (mode != AIR_BOOTS) input_poll_ui(&b, &lx, &ly, &rx, &ry);
+    input_poll_ui(&b, &lx, &ly, &rx, &ry);
     air_step(c, p, b, lx, ly, mode == AIR_FLY ? dbg_fly_speed() : WALK_MS, mode == AIR_FLY, dt);
 }

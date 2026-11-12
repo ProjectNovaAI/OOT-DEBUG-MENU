@@ -389,9 +389,8 @@ void dbg_hook_status(char *out, size_t n);   // what was read for the area, for 
 
 // Fly, hover and infinite Hover Boots (debug_move.c, run by the frame hook). Fly: the left stick moves where the camera
 // looks, X rises, B sinks, A held is three times faster; walls do not stop it. Hover: the height is held where it was
-// switched on and the stick walks on air. Infinite Hover Boots: with the Hover Boots on, a fall is stopped where it
-// starts and the player walks on air at that height until the boots come off or B is pressed. Fly wins over hover,
-// hover over the boots.
+// switched on and the stick walks on air. Infinite Hover Boots: the boots' own hover (the game's, after walking or
+// jumping off a ledge) never runs out; it ends on landing or with the boots taken off. Fly wins over hover.
 void dbg_fly(int on);
 int dbg_fly_on(void);
 // The buttons the game's input poll (input.c input_poll) keeps from the game: B while fly is on and the ocarina is out,
