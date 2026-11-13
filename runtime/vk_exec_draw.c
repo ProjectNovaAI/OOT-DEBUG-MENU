@@ -34,6 +34,7 @@
 #include "vk_mesh_fb.h"
 #include "platform/platform.h"
 #include "vk_debug_cam.h"
+#include "motion_owner.h"
 #include "vk_dlaa.h"
 #include "mesh_emu_spirv.h"
 
@@ -4254,7 +4255,7 @@ const char *const vk_draw_skip_names[SK_COUNT] = {
     "no vertex (or mesh) stage in the program", "shader still translating",
     "shader failed to translate (see gfx_shader: translation failed)", "replaced by the upscaler",
     "pipeline still building", "pipeline could not be created", "uses the texture pools (NX2NAVI_POOL=0)",
-    "excluded by NX2NAVI_SKIP_PROG", "excluded by NX2NAVI_SKIP_SHADERS"};
+    "excluded by NX2NAVI_SKIP_PROG", "excluded by NX2NAVI_SKIP_SHADERS", "hidden by the debug menu's Hide meshes"};
 #define DRAW_STATS_FRAMES 600
 static struct { uint64_t issued[2], skipped[2][SK_COUNT], frame; uint32_t first[2]; } DRS;
 
@@ -4304,6 +4305,33 @@ uint32_t vk_exec_pending_draws_take(void) {
     uint32_t n = pending_draws;
     pending_draws = 0;
     return n;
+}
+
+// Hide meshes (the debug menu's View group, NX2NAVI_DEBUG_HIDE_MESHES): the draws into the scene's depth target, with
+// the depth test or write on, are skipped, so the level, the actors and the sky leave the picture and the collision
+// overlay shows on its own. The passes after them (lighting, post-processing) run on what is left, and the HUD, drawn
+// without that target, stays. With Hide player off (NX2NAVI_DEBUG_HIDE_PLAYER=0) the player's own draws stay: those
+// whose vertex blocks are the player's or its equipment's models (vk_fg_pose.inc pose_owner; motion_owner.c tracks
+// them while this is so). 0 off, 1 everything, 2 all but the player. Parsed again when cfg_version changes.
+static int pose_owner(VkExec *ex, MotionOwner *out);
+static int hide_meshes_now(void) {
+    static volatile unsigned seen = ~0u;
+    static volatile int on;
+    unsigned v = cfg_version();
+    if (v != seen)
+        on = cfg_bool("NX2NAVI_DEBUG_HIDE_MESHES") ? (cfg_bool("NX2NAVI_DEBUG_HIDE_PLAYER") || !RT_V111 ? 1 : 2) : 0,
+        seen = v;
+    return on;
+}
+
+static int player_draw(VkExec *ex) {
+    MotionOwner o;
+    return pose_owner(ex, &o);
+}
+
+static int scene_geometry(const VkExec *ex, const VkPipeState *s) {
+    const VkExecTarget *z = &ex->depth;
+    return z->image && z->format == VK_FORMAT_D32_SFLOAT && z->width >= DLAA_SCENE_MIN_W && (s->ds.dt || s->ds.dw);
 }
 
 static int draw_skipped(const VkExec *ex, int mesh, int why) {
@@ -4597,6 +4625,9 @@ static int prepare_draw_ex(VkExec *ex, int prim, int32_t count, int restart, int
         vk_mvprev_draw(ex);
         vk_dbgcam_draw(ex);   // the debug menu's volume overlay: the scene camera
     }
+    // after the camera is taken, which the collision overlay needs; before anything is bound for the draw
+    int hide = hide_meshes_now();
+    if (hide && scene_geometry(ex, &s) && !(hide == 2 && player_draw(ex))) return draw_skipped(ex, mesh, SK_HIDE_MESHES);
     vk_dlaa_jitter_check(ex);   // a draw with another jitter than the viewport recorded last records it again
     record_fixed(ex);
     repeat_stats(ex, info);

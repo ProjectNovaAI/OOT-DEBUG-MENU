@@ -34,6 +34,20 @@ void clip_set_seconds(int s);
 void clip_status(char *out, int n);
 int clip_open_folder(void);   // shows the clips folder (made when missing) in the file manager; 1 on success
 
+// Overlays in clips (setting debug_clip_overlays, kept from one start to the next): 1 takes each clip frame after the
+// overlays are drawn over the game (the debug views and readouts, the performance overlay, messages); gfx_present.c
+// still takes it before them while the menu is open, so the menu stays out of the video. 0: the game's picture alone.
+int clip_overlays(void);
+void clip_set_overlays(int on);
+
+// A second point of view in clips (setting debug_clip_view2: off, above, side, front; kept from one start to the
+// next): each clip frame gets a picture of the same moment from a camera of its own in its lower right corner, drawn
+// from the area's collision (vk_dbg3d.c vk_dbg3d_view2). 0 off, 1 above the player, 2 beside, 3 in front.
+enum { CLIP_VIEW2_MODES = 4 };
+int clip_view2(void);
+void clip_set_view2(int mode);
+const char *clip_view2_name(int mode);   // "Off", "Above", "Beside", "In front"
+
 #ifdef __cplusplus
 }
 #endif

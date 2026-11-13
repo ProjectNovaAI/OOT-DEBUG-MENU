@@ -58,6 +58,8 @@ static void a_triggers(void) { say("Trigger zones", flip_setting("NX2NAVI_DEBUG_
 static void a_hidden(void) { say("Hidden things", flip_setting("NX2NAVI_DEBUG_VIEW_HIDDEN")); }
 static void a_death(void) { say("Death barriers", flip_setting("NX2NAVI_DEBUG_VIEW_DEATH")); }
 static void a_hook(void) { say("Hookshot targets", flip_setting("NX2NAVI_DEBUG_VIEW_HOOKSHOT")); }
+static void a_coll(void) { say("Collision", flip_setting("NX2NAVI_DEBUG_VIEW_COLLISION")); }
+static void a_hide(void) { say("Hide meshes", flip_setting("NX2NAVI_DEBUG_HIDE_MESHES")); }
 static void a_health(void) { say("Enemy health", flip_setting("NX2NAVI_DEBUG_VIEW_HEALTH")); }
 static void a_pos(void) { readout(DBG_SHOW_POS, "Position readout"); }
 static void a_speed(void) { readout(DBG_SHOW_SPEED, "Speed readout"); }
@@ -69,6 +71,8 @@ static void a_age(void) {
 }
 static void a_save(void) { dbg_toast_show(dbg_slot_save(0) ? "Position saved to slot 1" : "No player to save"); }
 static void a_load(void) { dbg_toast_show(dbg_slot_load(0) ? "Moved to slot 1" : "Slot 1 is empty or no player"); }
+static void a_ssave(void) { dbg_state_save(0), dbg_toast_show(dbg_state_note()); }
+static void a_sload(void) { dbg_state_load(0), dbg_toast_show(dbg_state_note()); }
 static void a_slower(void) {
     char t[48];
     snprintf(t, sizeof t, "Game speed %.3gx", dbg_speed_step(-1));
@@ -108,6 +112,8 @@ static const Action actions[] = {
     {{"ageswitch", "Switch age here", "Warps into this area's version for the other age, where it has one."}, a_age},
     {{"savepos", "Save position", "Keeps the player's position in slot 1."}, a_save},
     {{"loadpos", "Go to saved position", "Moves the player to the position kept in slot 1."}, a_load},
+    {{"savestate", "Save state 1", "Keeps the game's state in save state 1 (Save states, above)."}, a_ssave},
+    {{"loadstate", "Load state 1", "Puts save state 1 back, warping to its area first when needed."}, a_sload},
     {{"slower", "Game speed down", "One step slower, down to an eighth."}, a_slower},
     {{"faster", "Game speed up", "One step faster, up to four times."}, a_faster},
     {{"fog", "Fog off", "Switches the fog off and back on. Saved in the settings."}, a_fog},
@@ -115,8 +121,10 @@ static const Action actions[] = {
     {{"loading", "Show loading zones", "Switches the loading zones overlay. Saved in the settings."}, a_loading},
     {{"triggers", "Show trigger zones", "Switches the trigger zones overlay. Saved in the settings."}, a_triggers},
     {{"hidden", "Show hidden things", "Switches the hidden things overlay. Saved in the settings."}, a_hidden},
-    {{"death", "Show death barriers", "Switches the death barriers overlay. Saved in the settings."}, a_death},
+    {{"death", "Show death barriers", "Switches the death barriers and void-out zones overlay. Saved in the settings."}, a_death},
     {{"hookshot", "Show hookshot targets", "Switches the hookshot targets overlay. Saved in the settings."}, a_hook},
+    {{"collision", "Show collision", "Switches the collision overlay. Saved in the settings."}, a_coll},
+    {{"hidemeshes", "Hide meshes", "Hides the level, characters and sky, or shows them again. Saved in the settings."}, a_hide},
     {{"health", "Show enemy health", "Switches the enemy health overlay. Saved in the settings."}, a_health},
     {{"position", "Show position", "Switches the position readout."}, a_pos},
     {{"speed", "Show speed", "Switches the speed readout."}, a_speed},

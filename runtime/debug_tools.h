@@ -40,6 +40,10 @@ int dbg_player_set_pos(const float pos[3]);
 // The game's own warp of the player to pos at the next frame (debug_warp.c): the physics body moves too. 0 when the
 // debug frame hook is not running (patch set dbgframe) or there is no player.
 int dbg_player_teleport(const float pos[3]);
+// The same, turning the player to face (a horizontal direction; y is not used).
+int dbg_player_teleport_face(const float pos[3], const float face[3]);
+// Where the player looks along the ground (the actor's z axis, y 0). 0 when there is no player.
+int dbg_player_facing(float face[3]);
 
 // Once per presented frame (the overlay path): follows the position to estimate the speed.
 void dbg_tick(uint64_t now_ns);
@@ -58,6 +62,18 @@ float dbg_vertical_speed(void);
 int dbg_slot_save(int slot);       // 1 when the player was found and the position kept
 int dbg_slot_load(int slot);       // 1 when written
 int dbg_slot_used(int slot, float pos[3]);
+
+// Save states (debug_state.c): the area, the entrance last come in by, the player's position and facing, health, magic
+// and every flag the game's save file keeps, taken now and put back later (warping to the area first when the player is
+// elsewhere; dbg_state_tick finishes such a load once the area is there). Kept in debug_state_<n>.bin in the game's
+// folder, so they last from one start to the next. dbg_state_note says how the last save or load went.
+enum { DBG_STATES = 4 };
+int dbg_state_save(int slot);
+int dbg_state_load(int slot);                                   // 1 when done or started
+int dbg_state_info(int slot, char banc[64], int64_t *saved_at);  // 1 when the slot holds a state
+int dbg_state_loading(void);
+const char *dbg_state_note(void);
+void dbg_state_tick(uint64_t now_ns);
 
 // Game speed: a factor applied to the step the game is given each frame (frame_rate.c ocarina_step_write). 1 is normal.
 // The step is kept within what the game's physics survives, so the lowest effective factor depends on the frame rate
@@ -111,7 +127,8 @@ void dbg_overlay_set(int mask);
 // slot 1, F6 goes to it, F7 and F8 lower and raise the game speed, F9 starts and stops the timer, F12 reloads the area
 // (dbg_reload_area). dbg_hotkey is called with the function key's number by the window code; it returns 1 when it used
 // the key. dbg_toast is the last message to show.
-// Shift+F2 pauses and resumes, Shift+F3 steps one frame: the window code passes DBG_SHIFT + the key's number.
+// Shift+F2 pauses and resumes, Shift+F3 steps one frame, Shift+F5 saves state 1 and Shift+F6 loads it: the window code
+// passes DBG_SHIFT + the key's number.
 enum { DBG_SHIFT = 100 };
 int dbg_hotkeys(void);
 void dbg_hotkeys_set(int on);
@@ -236,6 +253,9 @@ const char *dbg_warp_start(int i);
 int dbg_warp_age(int i);
 int dbg_warp_other_age(int i);         // the same entrance in the other age's file, -1 if none
 int dbg_warp_arm(int i);               // 1 when armed (0 while the flags are still being looked for)
+// Arms a warp to any area file and entrance (start NULL or "": the area's first entrance in the list), the arrival
+// event taken from the list's same entrance. dbg_warp_armed then returns an index past the list's end.
+int dbg_warp_arm_to(const char *banc, const char *start);
 void dbg_warp_cancel(void);
 // With a warp armed: puts the player into the nearest loading zone of the area that starts a change (a helper thread
 // tries them in turn, the note says how it went). 1 when started.
@@ -304,7 +324,8 @@ enum {
     DBG_VOL_LOAD = 2,      // loading zones: Area triggers that lead to an entrance
     DBG_VOL_TRIGGER = 4,   // every other Area trigger and *Area* volume (events, camera, music, spawning, horse jumps)
     DBG_VOL_HIDDEN = 8,    // hidden things: grotto covers, Gold Skulltulas, heart pieces, chests, hidden-hole markers
-    DBG_VOL_DEATH = 16,    // death barriers and hazards: the kill volume under the world, lava surfaces, pits, quicksand
+    DBG_VOL_DEATH = 16,    // death barriers and hazards: the kill volume under the world, void-out zones, lava surfaces,
+                           // pits, quicksand
     DBG_VOL_KINDS = 5,
     // not a volume, so not among the DBG_VOL_KINDS colours: enemies (Enemy_*, *Boss*) and breakable rocks and walls
     // (*BrokenRock*, *CrackWall*, *CrackFloor*, *BrokenRubble*), drawn as their health (dbg_view_health)
@@ -322,10 +343,12 @@ typedef struct {
     char target[48];   // an Area trigger: the name of the actor it acts on (its link), else empty
 } DbgVolume;
 // One placed actor of a stage file (debug_place.c): its name (valid during the callback only), position, rotation as three
-// unit columns, and placement scale.
+// unit columns, and placement scale. void_out: 1 when the file's logic makes touching it a void-out (an Area the
+// fall-down logic watches: the player is put back at the last safe spot with a heart less).
 typedef struct {
     const char *name;
     float pos[3], axes[9], scale[3];
+    int void_out;
 } DbgPlacement;
 // Calls fn for each actor placed in the stage files of banc (e.g. "DeathMountainCrater_Child"), Static then Dynamic, until
 // fn returns 0. The count seen, -1 when the area has no stage files.
@@ -333,6 +356,9 @@ int dbg_place_each(const char *banc, int (*fn)(const DbgPlacement *, void *), vo
 // A zstd-compressed romfs file decompressed with the dictionary `dict` of Pack/ZsDic.pack.zs ("bcett.byml.zsdic",
 // "zs.zsdic"), malloc'd; NULL when path is NULL, missing or does not decompress (debug_place.c).
 uint8_t *dbg_romfs_unzs(const char *path, const char *dict, size_t *n_out);
+// The keys of the game's flags with one value and a 32-bit key that a save file keeps (debug_place.c, from the game's
+// flag list): malloc'd, *n their count; NULL when the list cannot be read.
+uint32_t *dbg_saved_flag_keys(int *n);
 // The parts of actor `name` the hookshot sticks to (debug_place.c): the shapes of its physics whose material presets
 // include Wall_StickHookshot (boxes, convex polytopes, cylinders), read from its pack, as convex polygons of 3 to 8
 // corners in the actor's own frame. fn gets each one until it returns 0. The number of such shapes, -1 without a pack.
@@ -366,25 +392,29 @@ void dbg_one_hit_tick(void);   // dbg_tick, once per presented frame
 // Hookshot targets (debug_hook.c, debug_view_hookshot): the surfaces the hookshot sticks to, from the area's collision
 // files (material flag StickHookshot), and the target objects placed in its stage files, drawn from their collision
 // shapes. Invisible walls (debug_view_walls), from the same files: the polygons of material AirWall and the air wall
-// shapes of the placed models whose collision filter stops the player. Read on a helper thread once per area change
-// while wanted.
-enum { DBG_VOL_HOOK = 64 };   // not a volume kind either: the set dbg_view_kinds returns has it for the overlay
+// shapes of the placed models whose collision filter stops the player. Collision (debug_view_collision), from the same
+// files: every polygon whose collision filter stops the player, ground, walls and ceilings, invisible walls included.
+// Read on a helper thread once per area change while wanted.
+enum { DBG_VOL_HOOK = 64, DBG_VOL_COLLISION = 128 };   // not volume kinds either: dbg_view_kinds has them for the overlay
+enum { DBG_POLY_HOOK, DBG_POLY_WALL, DBG_POLY_COLLISION };
 typedef struct {
-    float p[8][3];     // a convex polygon's corners in world space
+    float p[8][3];     // a convex polygon's corners in world space, in the order of the collision data
     int n;             // 3 to 8
     int target;        // 1: part of a target object, 0: a surface of the level
-    int wall;          // 1: an invisible wall polygon, 0: a hookshot one
+    int wall;          // DBG_POLY_: a hookshot polygon, an invisible wall one or a collision one
 } DbgHookPoly;
 typedef struct {
     float pos[3];      // the middle of the parts the hookshot sticks to
     char name[48];     // the target object's actor name (only objects with such a part are listed)
     int shaped;        // 0: no shape to draw, so the overlay marks its position with a cube; debug_hook.c always sets 1
 } DbgHookLabel;
-enum { DBG_HOOK_SURFACES = 1, DBG_HOOK_WALLS = 2 };
+enum { DBG_HOOK_SURFACES = 1, DBG_HOOK_WALLS = 2, DBG_HOOK_COLLISION = 4 };
 void dbg_hook_want(int want);   // DBG_HOOK_ bits, 0 stops the helper thread
-// The hookshot polygons (walls 0) or the invisible wall ones (walls 1) within range metres of the player (by their
-// middle), nearest kept when more than max are in range.
-int dbg_hook_polys(DbgHookPoly *out, int max, float range, int walls);
+// The polygons of one DBG_POLY_ kind within range metres of the player (by their middle), nearest kept when more than
+// max are in range.
+int dbg_hook_polys(DbgHookPoly *out, int max, float range, int kind);
+// How far the last dbg_hook_polys of the kind reached (-1: none yet), and in *cut whether max ran out before its range.
+float dbg_hook_reach(int kind, int *cut);
 int dbg_hook_labels(DbgHookLabel *out, int max, float range);   // the target objects within range
 void dbg_hook_status(char *out, size_t n);   // what was read for the area, for the menu and the console
 

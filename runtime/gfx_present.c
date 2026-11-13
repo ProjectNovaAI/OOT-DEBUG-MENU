@@ -27,6 +27,7 @@
 #include "platform/platform.h"
 #include "ui/menu.h"
 #include "vk.h"
+#include "dbg3d.h"
 #include "vk_fg.h"
 #include "vk_dlaa.h"
 #include "vk_dlssg.h"
@@ -657,7 +658,7 @@ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
 }
 
 // ---- clips (clip.h): when clip_frame_due says so, the game's picture (before the menu overlay, so the menu and its
-// messages stay out of the video) is blitted, scaled to fit 1920 x 1080 with even sides, into g_cl_img and copied
+// messages stay out of the video; after it with clip_overlays while the menu is closed) is blitted, scaled to fit 1920 x 1080 with even sides, into g_cl_img and copied
 // into a free one of CLIP_BUFS host-visible buffers. The present that next waits for the same fence slot hands that
 // buffer to the recorder (clip_frame), which gives it back with vk_clip_release from its own thread.
 #define CLIP_BUFS 3
@@ -757,6 +758,9 @@ static void record_clip(VkCommandBuffer cb, VkImage dst, unsigned fence_slot, in
         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {g_cl_w, g_cl_h, 1}}};
     vkCmdBlitImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_cl_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region,
                    VK_FILTER_LINEAR);
+    // the second point of view (clip_view2) into its corner, in the clip frame only
+    int view2 = clip_view2();
+    if (view2) vk_dbg3d_view2(cb, fence_slot, view2, g_cl_img, g_cl_fmt, g_cl_w, g_cl_h);
     sync_barrier(cb, g_cl_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                  VK_ACCESS_2_TRANSFER_READ_BIT);
@@ -1690,6 +1694,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     int cap = (g_capture || menu_shot || grab) && ensure_capture_buffer();
     int thumb = src && g_th_n && ensure_thumbs();
     int clip_buf = src && clip_frame_due(plat_now_ns()) ? ensure_clip(slot) : -1;
+    // with clip_overlays the clip frame is taken after the overlays are drawn, unless the menu is open
+    const int clip_late = clip_buf >= 0 && overlay && clip_overlays() && !menu_is_open();
 
     VkCommandBuffer cb = g_cb[slot];
     vkResetCommandBuffer(cb, 0);
@@ -1738,7 +1744,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     VkAccessFlags2 last_write = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    if (clip_buf >= 0) {   // the clip frame: the game's picture, before the menu goes over it
+    if (clip_buf >= 0 && !clip_late) {   // the clip frame: the game's picture, before the menu goes over it
         sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         last = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -1768,9 +1774,18 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         last_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
         last_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     }
-    if (cap) {
+    if (clip_late) {   // the clip frame with the overlays over the game (clip_overlays)
         sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        last = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        last_write = 0;
+        record_clip(cb, dst, slot, clip_buf);
+    }
+    if (cap) {
+        if (last != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+            sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
         VkBufferImageCopy bc = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .imageExtent = {g_sc_ext.width, g_sc_ext.height, 1}};
         vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_cap_buf, 1, &bc);

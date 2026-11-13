@@ -3,6 +3,7 @@
 #include "layout.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
+#include "cfg.h"
 #include <string.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -38,7 +39,21 @@ static void owner_init(void *unused) {
     // into the motion vectors DLSS, FSR 3.1 and frame generation read.
     owner_on = RT_V111 && rt_knob("SELECTIVE_MOTION", "0");
 }
+// Hide meshes with Hide player off (the debug menu, vk_exec_draw.c hide_meshes_now) keeps the player's draws, which
+// takes the same tracking: it runs while that is so, without the motion pass (motion_owner_selective).
+static int keep_player(void) {
+    static volatile unsigned seen = ~0u;
+    static volatile int on;
+    unsigned v = cfg_version();
+    if (v != seen)
+        on = RT_V111 && cfg_bool("NX2NAVI_DEBUG_HIDE_MESHES") && !cfg_bool("NX2NAVI_DEBUG_HIDE_PLAYER"), seen = v;
+    return on;
+}
 int motion_owner_enabled(void) {
+    plat_once(&owner_once, owner_init, NULL);
+    return owner_on || keep_player();
+}
+int motion_owner_selective(void) {
     plat_once(&owner_once, owner_init, NULL);
     return owner_on;
 }

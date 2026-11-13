@@ -106,9 +106,11 @@ static int mf_load(void) {
 }
 
 // ---- settings
-static _Atomic int enabled = -1, seconds = 0;
+static _Atomic int enabled = -1, seconds = 0, overlays = 0;
+static const char *const view2_keys[CLIP_VIEW2_MODES] = {"off", "above", "side", "front"};
 static void settings_load(void) {
     if (atomic_load(&enabled) >= 0) return;
+    atomic_store(&overlays, cfg_bool("NX2NAVI_DEBUG_CLIP_OVERLAYS") != 0);
     int s = cfg_int("NX2NAVI_DEBUG_CLIP_SECONDS");
     atomic_store(&seconds, s < SECONDS_MIN ? SECONDS_MIN : s > SECONDS_MAX ? SECONDS_MAX : s);
     atomic_store(&enabled, cfg_bool("NX2NAVI_DEBUG_CLIP") != 0);
@@ -119,6 +121,27 @@ void clip_set_enabled(int on) {
     settings_load();
     atomic_store(&enabled, on != 0);
     dbg_keep("NX2NAVI_DEBUG_CLIP", on ? "1" : "0");
+}
+int clip_overlays(void) { settings_load(); return atomic_load(&overlays) == 1; }
+void clip_set_overlays(int on) {
+    settings_load();
+    atomic_store(&overlays, on != 0);
+    dbg_keep("NX2NAVI_DEBUG_CLIP_OVERLAYS", on ? "1" : "0");
+}
+// read from the setting each time (a few calls a frame): the console's cfg command changes it too
+int clip_view2(void) {
+    const char *v = cfg_value("NX2NAVI_DEBUG_CLIP_VIEW2");
+    for (int i = 1; v && i < CLIP_VIEW2_MODES; i++)
+        if (!strcmp(v, view2_keys[i])) return i;
+    return 0;
+}
+void clip_set_view2(int mode) {
+    mode = mode < 0 ? 0 : mode >= CLIP_VIEW2_MODES ? CLIP_VIEW2_MODES - 1 : mode;
+    dbg_keep("NX2NAVI_DEBUG_CLIP_VIEW2", view2_keys[mode]);
+}
+const char *clip_view2_name(int mode) {
+    static const char *const names[CLIP_VIEW2_MODES] = {"Off", "Above", "Beside", "In front"};
+    return mode >= 0 && mode < CLIP_VIEW2_MODES ? names[mode] : "Off";
 }
 void clip_set_seconds(int s) {
     settings_load();

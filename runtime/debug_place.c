@@ -192,6 +192,62 @@ static void axes_of(const float r[3], float a[9]) {
         for (int r2 = 0; r2 < 3; r2++) a[c * 3 + r2] = m[r2][c];
 }
 
+// A 64-bit integer value (0xd4, 0xd5: an offset to its 8 bytes) of `key` in the dictionary at node.
+static int u64_get(const Byml *b, uint32_t node, const char *key, uint64_t *out) {
+    uint8_t t;
+    uint32_t v;
+    if (!dict_get(b, node, key, &t, &v) || (t != 0xd4 && t != 0xd5) || v > b->n || b->n - v < 8) return 0;
+    memcpy(out, b->p + v, 8);
+    return 1;
+}
+
+// The logic modules whose Area makes touching it a void-out: the fall-down gimmicks (Gimmick_AreaContact_FallDown,
+// _FallDownMountian, _FallDown_GanonCastle) and the two level modules that do the same with one Area of their own. The
+// _FallDown_Item modules only put dropped items back, so they are left out. Each module was checked to hold the
+// HoldSensorHitInfoGiveAbyssActor node (game 1.1.1).
+static int void_logic(const char *logic) {
+    const char *base = strrchr(logic, '/');
+    base = base ? base + 1 : logic;
+    if (strstr(base, "FallDown")) return !strstr(base, "FallDown_Item");
+    return !strncmp(base, "Market_Child_Prefab_d415.", 25) || !strncmp(base, "CrumblingGanonCastle_Prefab_633f.", 33);
+}
+
+// The hashes of the Area placements a void-out logic module refers to: the root's AiGroups list dictionaries {Logic (the
+// module's path), References [{Id, Path, Reference: the placement's Hash}]}. malloc'd, *n their count.
+static uint64_t *void_hashes(const Byml *b, uint32_t root, int *n_out) {
+    uint8_t t;
+    uint32_t groups;
+    uint64_t *out = NULL;
+    int n = 0, cap = 0;
+    *n_out = 0;
+    if (!dict_get(b, root, "AiGroups", &t, &groups) || t != 0xc0) return NULL;
+    for (uint32_t i = 0;; i++) {
+        uint8_t gt, lt, rt;
+        uint32_t g, lv, refs;
+        if (!array_get(b, groups, i, &gt, &g)) break;
+        if (gt != 0xc1 || !dict_get(b, g, "Logic", &lt, &lv) || lt != 0xa0) continue;
+        const char *logic = table_str(b, b->strs, lv);
+        if (!logic || !void_logic(logic) || !dict_get(b, g, "References", &rt, &refs) || rt != 0xc0) continue;
+        for (uint32_t j = 0;; j++) {
+            uint8_t et, it;
+            uint32_t r, iv;
+            uint64_t h;
+            if (!array_get(b, refs, j, &et, &r)) break;
+            if (et != 0xc1 || !dict_get(b, r, "Id", &it, &iv) || it != 0xa0) continue;
+            const char *id = table_str(b, b->strs, iv);
+            if (!id || strncmp(id, "Area_", 5) || !u64_get(b, r, "Reference", &h)) continue;
+            if (n == cap) {
+                uint64_t *v = realloc(out, (size_t)(cap = cap ? cap * 2 : 64) * sizeof *v);
+                if (!v) break;
+                out = v;
+            }
+            out[n++] = h;
+        }
+    }
+    *n_out = n;
+    return out;
+}
+
 static int each_actor(const uint8_t *p, size_t n, int (*fn)(const DbgPlacement *, void *), void *ctx) {
     Byml b = {p, n, 0, 0};
     uint32_t root;
@@ -202,7 +258,8 @@ static int each_actor(const uint8_t *p, size_t n, int (*fn)(const DbgPlacement *
     uint8_t t;
     uint32_t actors;
     if (!dict_get(&b, root, "Actors", &t, &actors) || t != 0xc0) return 0;
-    int count = 0;
+    int count = 0, nvoid = 0;
+    uint64_t *voids = void_hashes(&b, root, &nvoid);
     for (uint32_t i = 0;; i++) {
         uint8_t et, gt;
         uint32_t node, gv;
@@ -217,9 +274,14 @@ static int each_actor(const uint8_t *p, size_t n, int (*fn)(const DbgPlacement *
         if (!vec3(&b, node, "Scale", pl.scale)) pl.scale[0] = pl.scale[1] = pl.scale[2] = 1.0f;
         axes_of(rot, pl.axes);
         pl.name = name;
+        pl.void_out = 0;
+        uint64_t h;
+        if (nvoid && !strcmp(name, "Area") && u64_get(&b, node, "Hash", &h))
+            for (int k = 0; k < nvoid && !pl.void_out; k++) pl.void_out = voids[k] == h;
         count++;
         if (!fn(&pl, ctx)) break;
     }
+    free(voids);
     return count;
 }
 
@@ -534,4 +596,104 @@ int dbg_actor_stick_shapes(const char *name, int (*fn)(const float (*pts)[3], in
     }
     free(pk);
     return found;
+}
+
+// ---- the flags a save file keeps (dbg_saved_flag_keys)
+// GameData/GameDataList.Product.<n>.byml.zs (zstd with zs.zsdic): a big-endian BYML ("BY", version 7) whose root's Data
+// has a list per value type (Bool, Int, Float, Enum, String64, Vector3, ... and arrays, structs and the 64-bit keyed
+// bools) of dictionaries {Hash, DefaultValue, ResetTypeValue, SaveFileIndex}. Hash is the flag's key (dbg_flag_key of its
+// name); a SaveFileIndex of -1 marks a flag kept only while the game runs (the sequence and event state among them), any
+// other the save file part it goes to. The stage files' reader above is little-endian only, so this one reads either.
+typedef struct {
+    const uint8_t *p;
+    size_t n;
+    int big;
+    uint32_t keys;
+} Gdl;
+
+static int gdl_u32(const Gdl *g, size_t o, uint32_t *v) {
+    if (o > g->n || g->n - o < 4) return 0;
+    const uint8_t *q = g->p + o;
+    *v = g->big ? (uint32_t)q[0] << 24 | (uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3]
+                : (uint32_t)q[3] << 24 | (uint32_t)q[2] << 16 | (uint32_t)q[1] << 8 | q[0];
+    return 1;
+}
+
+// A node's head: its type (the first byte) and count (the other three).
+static int gdl_head(const Gdl *g, uint32_t node, uint8_t *type, uint32_t *count) {
+    if (node >= g->n || g->n - node < 4) return 0;
+    const uint8_t *q = g->p + node;
+    *type = q[0];
+    *count = g->big ? (uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3] : (uint32_t)q[3] << 16 | (uint32_t)q[2] << 8 | q[1];
+    return 1;
+}
+
+static const char *gdl_key(const Gdl *g, uint32_t i) {
+    uint8_t t;
+    uint32_t cnt, off;
+    if (!gdl_head(g, g->keys, &t, &cnt) || t != 0xc2 || i >= cnt || !gdl_u32(g, (size_t)g->keys + 4 + 4 * (size_t)i, &off))
+        return NULL;
+    size_t at = (size_t)g->keys + off;
+    return at < g->n && memchr(g->p + at, 0, g->n - at) ? (const char *)g->p + at : NULL;
+}
+
+static int gdl_get(const Gdl *g, uint32_t node, const char *key, uint8_t *type, uint32_t *value) {
+    uint8_t t;
+    uint32_t cnt;
+    if (!gdl_head(g, node, &t, &cnt) || t != 0xc1) return 0;
+    for (uint32_t i = 0; i < cnt; i++) {
+        size_t at = (size_t)node + 4 + 8 * (size_t)i;
+        if (at + 8 > g->n) return 0;
+        const uint8_t *q = g->p + at;
+        uint32_t k = g->big ? (uint32_t)q[0] << 16 | (uint32_t)q[1] << 8 | q[2] : (uint32_t)q[2] << 16 | (uint32_t)q[1] << 8 | q[0];
+        const char *name = gdl_key(g, k);
+        if (name && !strcmp(name, key)) {
+            *type = q[3];
+            return gdl_u32(g, at + 4, value);
+        }
+    }
+    return 0;
+}
+
+uint32_t *dbg_saved_flag_keys(int *n_out) {
+    static const char *const lists[] = {"Bool", "Int", "UInt", "Float", "Enum", "String16", "String32", "String64", "Vector3"};
+    *n_out = 0;
+    const char *path = NULL;
+    for (uint64_t i = 0, c = romfs_file_count(); i < c && !path; i++) {
+        uint64_t off, sz;
+        const char *p = romfs_entry(i, &off, &sz);
+        size_t lp = p ? strlen(p) : 0;
+        if (p && !strncmp(p, "GameData/GameDataList.", 22) && lp > 8 && !strcmp(p + lp - 8, ".byml.zs")) path = p;
+    }
+    size_t n = 0;
+    uint8_t *raw = dbg_romfs_unzs(path, "zs.zsdic", &n);
+    Gdl g = {raw, n, raw && n >= 16 && !memcmp(raw, "BY", 2), 0};
+    uint32_t root, data, *keys = NULL;
+    uint8_t t;
+    int count = 0, cap = 0;
+    if (raw && n >= 16 && (!memcmp(raw, "BY", 2) || !memcmp(raw, "YB", 2)) && gdl_u32(&g, 4, &g.keys) && gdl_u32(&g, 12, &root) &&
+        gdl_get(&g, root, "Data", &t, &data) && t == 0xc1) {
+        for (size_t l = 0; l < sizeof lists / sizeof *lists; l++) {
+            uint32_t arr, cnt;
+            uint8_t at;
+            if (!gdl_get(&g, data, lists[l], &t, &arr) || t != 0xc0 || !gdl_head(&g, arr, &at, &cnt)) continue;
+            size_t values = (size_t)arr + 4 + ((cnt + 3u) & ~3u);
+            for (uint32_t i = 0; i < cnt; i++) {
+                uint8_t ht, st;
+                uint32_t e, hash, save;
+                if (g.p[arr + 4 + i] != 0xc1 || !gdl_u32(&g, values + 4 * (size_t)i, &e)) continue;
+                if (!gdl_get(&g, e, "Hash", &ht, &hash) || !gdl_get(&g, e, "SaveFileIndex", &st, &save) || (int32_t)save < 0)
+                    continue;
+                if (count == cap) {
+                    uint32_t *v = realloc(keys, (size_t)(cap = cap ? cap * 2 : 4096) * sizeof *v);
+                    if (!v) break;
+                    keys = v;
+                }
+                keys[count++] = hash;
+            }
+        }
+    }
+    free(raw);
+    *n_out = count;
+    return keys;
 }

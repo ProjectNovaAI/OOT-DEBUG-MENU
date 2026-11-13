@@ -1,5 +1,7 @@
+# The remote console (debug_remote.c) from Python: run(['player', 'area']) drops the commands in debug_cmd.txt next to
+# the game and returns debug_out.txt's answer. NX2NAVI_GAME is the folder the game runs from.
 import sys,time,os,re
-G=r'C:\Users\Justin\NX2navi-dev\game'
+G=os.environ.get('NX2NAVI_GAME') or sys.exit('set NX2NAVI_GAME to the folder the game runs from')
 def run(cmds,timeout=180):
     o=os.path.join(G,'debug_out.txt')
     if os.path.exists(o): os.remove(o)

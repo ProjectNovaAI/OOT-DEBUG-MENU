@@ -29,6 +29,7 @@
 #include "platform/platform.h"
 #include "vk.h"
 #include "vk_debug_cam.h"
+#include "dbg3d.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
 #include "vk_ffx.h"
@@ -2129,6 +2130,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     // mv_pass's distances, behind its barrier, for the debug overlay; queued before rec_drain below, after which NGX and
     // FSR record into this command buffer themselves
     if (mv == 1) odepth_probe(cb, e, w, h);
+    // the debug menu's overlays drawn into the scene against mv_pass's distances, before the upscaler reads it
+    if (mv == 1) vk_dbg3d_draw(cb, cv, t->format, w, h, ow, e->dist_view[e->dist_cur ^ 1], e->dist_ok, jx, jy);
     int timed = T.on > 0 && T.used[T.slot];   // mv_pass began this frame's slot
     if (timed) times_mark(cb, T_DL0);
     uint64_t c0 = timed ? kern_now_ns() : 0;

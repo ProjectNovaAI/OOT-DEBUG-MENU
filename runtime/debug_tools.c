@@ -929,6 +929,7 @@ void dbg_tick(uint64_t now_ns) {
     magic_tick();
     items_tick();
     dbg_any_age_items_tick();
+    dbg_state_tick(now_ns);
     if (dbg_igt_enabled() || dbg_igt_running()) dbg_igt_tick(now_ns);
     float pos[3];
     if (!dbg_player_pos(pos)) {
@@ -1134,7 +1135,9 @@ float dbg_speed_step(int dir) {
 
 int dbg_hotkey(int fkey) {
     if (!dbg_hotkeys() || !dbg_available()) return 0;
-    if (fkey != DBG_SHIFT + 2 && fkey != DBG_SHIFT + 3 && (fkey < 2 || (fkey > 9 && fkey != 12))) return 0;
+    if (fkey != DBG_SHIFT + 2 && fkey != DBG_SHIFT + 3 && fkey != DBG_SHIFT + 5 && fkey != DBG_SHIFT + 6 &&
+        (fkey < 2 || (fkey > 9 && fkey != 12)))
+        return 0;
     // a key bound to an action (debug_binds.c, "Save clip" on F5 by default) belongs to that action
     static const int fk[13] = {0, 0, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, 0, KEY_F9, 0, 0, KEY_F12};
     if (fkey < DBG_SHIFT && fkey < 13 && dbg_bind_uses_key(fk[fkey])) return 0;
@@ -1156,6 +1159,12 @@ int dbg_hotkey(int fkey) {
     case DBG_SHIFT + 2:
         dbg_pause_set(!dbg_paused());
         toast(dbg_paused() ? "Paused: Shift+F3 steps one frame, Shift+F2 resumes" : "Resumed");
+        break;
+    case DBG_SHIFT + 5:
+    case DBG_SHIFT + 6:
+        if (fkey == DBG_SHIFT + 5) dbg_state_save(0);
+        else dbg_state_load(0);
+        toast(dbg_state_note());
         break;
     case DBG_SHIFT + 3:
         dbg_step(1);

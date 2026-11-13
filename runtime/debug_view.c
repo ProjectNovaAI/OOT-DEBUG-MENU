@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "clip.h"
 #include "debug_tools.h"
 #include "host.h"
 #include "layout.h"
@@ -163,7 +164,12 @@ static int place_one(const DbgPlacement *pl, void *ctx) {
     (void)ctx;
     Entry *e = &placed[placed_n];
     int shape;
-    if (!strcmp(pl->name, "Exterminator") || !death_of(pl->name, &shape, e)) return 1;
+    if (pl->void_out) {   // a box like the live Area actor's (its placement scale, the base shape 1 m)
+        shape = DBG_SHAPE_BOX;
+        e->base[0] = e->base[1] = e->base[2] = 1.0f, e->lift = 0;
+        snprintf(e->name, sizeof e->name, "Void-out zone");
+    } else if (!strcmp(pl->name, "Exterminator") || !death_of(pl->name, &shape, e))
+        return 1;
     e->actor = 0, e->name_ptr = 0, e->kind = DBG_VOL_DEATH, e->shape = shape, e->target[0] = 0;
     memcpy(e->pos, pl->pos, sizeof e->pos);
     memcpy(e->axes, pl->axes, sizeof e->axes);
@@ -306,7 +312,7 @@ int dbg_view_health(DbgHealth *out, int max, float range) {
 }
 
 // The kinds the settings switch on (nx2navi.ini [debug] debug_view_walls, _loading, _triggers, _hidden, _death,
-// _health, _hookshot), parsed again when cfg_version changes; also starts or stops the helper thread's rescans.
+// _health, _hookshot, _collision), parsed again when cfg_version changes; also starts or stops the helper thread's rescans.
 int dbg_view_kinds(void) {
     static unsigned seen = ~0u;
     static int kinds;
@@ -321,9 +327,13 @@ int dbg_view_kinds(void) {
                 (cfg_bool("NX2NAVI_DEBUG_VIEW_HEALTH") ? DBG_VOL_ENEMY : 0);
         dbg_view_want(kinds | (cfg_bool("NX2NAVI_DEBUG_ONE_HIT") ? DBG_VOL_ENEMY : 0));   // the overlay's set stays as it is
         // debug_hook.c, its own thread: the hookshot surfaces and the walls of the collision files
+        // and the collision for the clips' second view (vk_dbg3d.c vk_dbg3d_view2) while clips are recorded with it
+        int view2 = clip_enabled() && clip_view2();
         dbg_hook_want((cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT") ? DBG_HOOK_SURFACES : 0) |
-                      (cfg_bool("NX2NAVI_DEBUG_VIEW_WALLS") ? DBG_HOOK_WALLS : 0));
+                      (cfg_bool("NX2NAVI_DEBUG_VIEW_WALLS") ? DBG_HOOK_WALLS : 0) |
+                      (cfg_bool("NX2NAVI_DEBUG_VIEW_COLLISION") || view2 ? DBG_HOOK_COLLISION : 0));
         if (cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT")) kinds |= DBG_VOL_HOOK;
+        if (cfg_bool("NX2NAVI_DEBUG_VIEW_COLLISION")) kinds |= DBG_VOL_COLLISION;
     }
     return kinds;
 }

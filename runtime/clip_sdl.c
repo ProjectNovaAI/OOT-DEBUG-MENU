@@ -21,3 +21,8 @@ int clip_seconds(void) { return 30; }
 void clip_set_seconds(int s) { (void)s; }
 void clip_status(char *out, int n) { snprintf(out, (size_t)n, "not available: Windows only"); }
 int clip_open_folder(void) { return 0; }
+int clip_overlays(void) { return 0; }
+void clip_set_overlays(int on) { (void)on; }
+int clip_view2(void) { return 0; }
+void clip_set_view2(int mode) { (void)mode; }
+const char *clip_view2_name(int mode) { (void)mode; return "Off"; }

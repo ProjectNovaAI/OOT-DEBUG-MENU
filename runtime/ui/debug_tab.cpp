@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
 #include <vector>
 #include <atomic>
 
@@ -26,9 +27,12 @@ extern "C" {
 #include "layout.h"
 #include "platform/platform.h"
 #include "save_slots.h"
+
+#include <time.h>
 #include "ui/menu.h"
 #include "ui_text.h"
 #include "vk_debug_cam.h"
+#include "dbg3d.h"
 }
 
 // ---- formatting
@@ -465,6 +469,15 @@ extern "C" void tab_debug(float scale) {
                             "void-out back at once. Kept from one start to the next.",
                             novoid))
             dbg_no_void_out(!novoid);
+        bool clip_ov = clip_overlays() != 0;
+        if (opt_toggle_text("##clip_overlays", "Overlays in clips",
+                            "Recorded clips show what is drawn over the game too: the debug views (walls, loading zones, "
+                            "triggers and the rest), the readouts, the speedrun timer, the performance overlay and the "
+                            "messages. While this menu is open the clip shows the game alone, so the menu never ends up in "
+                            "the video. Off: the game's picture only. Needs \"Record clips\" (Clips, below). Kept from one "
+                            "start to the next.",
+                            clip_ov))
+            clip_set_overlays(!clip_ov);
         bool bombbug = dbg_bomb_bug_on() != 0;
         if (opt_toggle_text("##dbg_bombbug", "PastyPixel's Bomb T-Pose",
                             "The game's own bug after the ocarina, on all the time and with no ocarina needed: every "
@@ -667,11 +680,21 @@ extern "C" void tab_debug(float scale) {
              "Marks hidden holes (grottos), Gold Skulltulas, pieces of heart, chests and magic bean spots."},
             {"NX2NAVI_DEBUG_VIEW_DEATH", "##dbg_v_death", "Show death barriers",
              "Draws what kills or sends the player back: the kill volume under the world (fall out of the level and "
-             "it catches you), lava surfaces, and marks bottomless pits and quicksand."},
+             "it catches you), the void-out zones over pits and drops (touch one and you are put back at the last "
+             "safe spot with a heart less), lava surfaces, and marks bottomless pits and quicksand."},
             {"NX2NAVI_DEBUG_VIEW_HOOKSHOT", "##dbg_v_hook", "Show hookshot targets",
              "Draws every surface in the area the hookshot sticks to (wood, vines, nets and the like, read from the "
              "area's collision data) and the plates of the hookshot target objects (only the part the hookshot sticks to, not the rim, stand or frame round it), seen through walls. Reading a large area "
              "takes a moment after it loads. Saved in the settings."},
+            {"NX2NAVI_DEBUG_VIEW_COLLISION", "##dbg_v_coll", "Show collision",
+             "Draws the area's collision: every surface that stops the player (ground, walls, ceilings and the invisible "
+             "walls), read from the area's collision data, shaded and coloured by which way it faces: green ground, yellow "
+             "slopes, blue walls, red ceilings. A face seen from its back is dark, so a hole or a surface facing the wrong "
+             "way stands out. Moving objects (doors, platforms, characters) have collision of their own and are not shown. "
+             "Reading a large area takes a moment after it loads. Saved in the settings."},
+            {"NX2NAVI_DEBUG_HIDE_MESHES", "##dbg_v_hide", "Hide meshes",
+             "Leaves the level, the other characters and the sky out of the picture (the player too with Hide the player too), so the overlays (Show collision above all) "
+             "are seen on their own against a plain background. The HUD stays. Saved in the settings."},
             {"NX2NAVI_DEBUG_VIEW_HEALTH", "##dbg_v_health", "Show enemy health",
              "Draws a health bar over every enemy and boss in range, with the game's own life values (current / "
              "maximum, in the game's units: a Skulltula has 2, a Gerudo thief 18). Breakable rocks, cracked walls "
@@ -682,6 +705,18 @@ extern "C" void tab_debug(float scale) {
             if (opt_toggle_text(s.id, s.label, s.desc, on)) {
                 cfg_set(s.key, on ? "0" : "1");
                 opt_save_soon();
+            }
+            if (!strcmp(s.key, "NX2NAVI_DEBUG_HIDE_MESHES")) {   // under it: whether the player goes too
+                bool hp = cfg_bool("NX2NAVI_DEBUG_HIDE_PLAYER") != 0;
+                if (!on) opt_disable_next_text("Hide meshes is off.");
+                if (opt_toggle_text("##dbg_v_hideplayer", "Hide the player too",
+                                    "Off: the player (and the sword, shield and what is held) stays in the picture while "
+                                    "the rest is hidden, so you see where you stand against the collision. On: the player "
+                                    "goes as well, and a white marker shows where they stand. Saved in the settings.",
+                                    hp)) {
+                    cfg_set("NX2NAVI_DEBUG_HIDE_PLAYER", hp ? "0" : "1");
+                    opt_save_soon();
+                }
             }
             if (!strcmp(s.key, "NX2NAVI_DEBUG_VIEW_DEATH")) {   // under it: the one death barrier that is always there
                 bool kp = cfg_bool("NX2NAVI_DEBUG_VIEW_KILL_PLANE") != 0;
@@ -754,8 +789,75 @@ extern "C" void tab_debug(float scale) {
                 opt_save_soon();
             }
         }
-        if (cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT")) {
-            char hs[160];
+        {
+            static const int dists[] = {50, 100, 150, 250, 500, 750, 1000, 1500, 2000, 3000, 5000};
+            enum { ND = sizeof dists / sizeof *dists };
+            static char dist_text[ND][16];
+            static const char *dist_names[ND];
+            for (int i = 0; i < ND; i++) {
+                snprintf(dist_text[i], sizeof dist_text[i], "%d m", dists[i]);
+                dist_names[i] = dist_text[i];
+            }
+            int dv = cfg_int("NX2NAVI_DEBUG_COLLISION_RANGE"), di = 0;
+            while (di < ND - 1 && dists[di] < dv) di++;
+            snprintf(value, sizeof value, "%d m", dv);
+            r = opt_text_choice("##dbg_v_crange", "Collision distance", dist_names, ND, di,
+                                "How far from the player Show collision draws. The whole area's collision is read, so "
+                                "any distance has all of it; when there are more polygons within it than Collision "
+                                "detail allows, the nearest are drawn. Left and right change it; A opens the list.",
+                                false, value);
+            if (r >= 0) {
+                snprintf(value, sizeof value, "%d", dists[r]);
+                cfg_set("NX2NAVI_DEBUG_COLLISION_RANGE", value);
+                opt_save_soon();
+            }
+            static const int counts[] = {10000, 30000, 60000, 100000, 200000, 400000, 1000000};
+            enum { NC = sizeof counts / sizeof *counts };
+            static char count_text[NC][16];
+            static const char *count_names[NC];
+            for (int i = 0; i < NC; i++) {
+                snprintf(count_text[i], sizeof count_text[i], "%d", counts[i]);
+                count_names[i] = count_text[i];
+            }
+            int cv = cfg_int("NX2NAVI_DEBUG_COLLISION_POLYS"), ci = 0;
+            while (ci < NC - 1 && counts[ci] < cv) ci++;
+            snprintf(value, sizeof value, "%d", cv);
+            r = opt_text_choice("##dbg_v_cpolys", "Collision detail (polygons)", count_names, NC, ci,
+                                "The most collision polygons drawn a frame, nearest first. More shows further in dense "
+                                "places (a town or a cliff has thousands within 30 m) and costs frame rate. Left and "
+                                "right change it; A opens the list.",
+                                false, value);
+            if (r >= 0) {
+                snprintf(value, sizeof value, "%d", counts[r]);
+                cfg_set("NX2NAVI_DEBUG_COLLISION_POLYS", value);
+                opt_save_soon();
+            }
+            int cut = 0;
+            float reach = dbg_hook_reach(DBG_POLY_COLLISION, &cut);
+            uint32_t gpu_tris = vk_dbg3d_ready() ? vk_dbg3d_mesh_triangles() : 0;
+            uint32_t no_room = vk_dbg3d_ready() ? vk_dbg3d_mesh_no_room_mb() : 0;
+            if (cfg_bool("NX2NAVI_DEBUG_VIEW_COLLISION") && gpu_tris) {
+                char line[200];
+                snprintf(line, sizeof line, "Collision drawn in 3D: all %u triangles of the area within %d m.", gpu_tris, dv);
+                opt_text_str(line);
+            } else if (cfg_bool("NX2NAVI_DEBUG_VIEW_COLLISION") && no_room) {
+                char line[260];
+                snprintf(line, sizeof line,
+                         "The video memory has no room for this area's whole collision (%u MB), so the nearest polygons are "
+                         "drawn: out to %.0f m of the %d m distance.", no_room, reach < 0 ? 0.0f : reach, dv);
+                opt_text_str(line);
+            } else if (cfg_bool("NX2NAVI_DEBUG_VIEW_COLLISION") && reach >= 0) {
+                char line[200];
+                if (cut)
+                    snprintf(line, sizeof line,
+                             "Collision drawn out to %.0f m of the %d m distance: Collision detail runs out first here. "
+                             "More detail reaches further.", reach, dv);
+                else snprintf(line, sizeof line, "Collision drawn: all of it within %d m.", dv);
+                opt_text_str(line);
+            }
+        }
+        if (cfg_bool("NX2NAVI_DEBUG_VIEW_HOOKSHOT") || cfg_bool("NX2NAVI_DEBUG_VIEW_COLLISION")) {
+            char hs[240];
             dbg_hook_status(hs, sizeof hs);
             opt_text_str(hs);
         }
@@ -964,6 +1066,47 @@ extern "C" void tab_debug(float scale) {
         }
     }
 
+    opt_group_text("Save states");
+    opt_text_str("A save state keeps the area, where the player stands and faces, health, magic and everything the "
+                 "game's save file keeps (items, rupees, quest progress, opened chests and doors, the time of day), and "
+                 "puts it all back at any time, warping to the area first when the player is elsewhere. Enemies and "
+                 "other objects start over as the area loads. States are kept in the game's folder and last from one "
+                 "start to the next. Shift+F5 saves state 1 and Shift+F6 loads it while the keyboard hotkeys are on.");
+    for (int i = 0; i < DBG_STATES; i++) {
+        char id[32], label[48], banc[64];
+        int64_t at = 0;
+        bool used = dbg_state_info(i, banc, &at) != 0;
+        snprintf(id, sizeof id, "##dbg_ssave%d", i);
+        snprintf(label, sizeof label, "Save state %d", i + 1);
+        if (used) {
+            time_t t = (time_t)at;
+            struct tm tmv;
+#ifdef _WIN32
+            localtime_s(&tmv, &t);
+#else
+            localtime_r(&t, &tmv);
+#endif
+            char when[32];
+            strftime(when, sizeof when, "%d %b %H:%M", &tmv);
+            snprintf(value, sizeof value, "%s, %s", banc[0] ? banc : "?", when);
+        } else
+            snprintf(value, sizeof value, "empty");
+        if (opt_text_row(id, label, value, nullptr, "Keeps the game's state now in this slot, over what it held.", false) == 2) {
+            dbg_state_save(i);
+            dbg_toast_show(dbg_state_note());
+        }
+        snprintf(id, sizeof id, "##dbg_sload%d", i);
+        snprintf(label, sizeof label, "Load state %d", i + 1);
+        if (opt_text_row(id, label, used ? "A: load" : "empty", nullptr,
+                         "Puts the state saved in this slot back: warps to its area when the player is elsewhere, then "
+                         "writes its flags, health and magic and moves the player to where it was saved.",
+                         false) == 2 && used) {
+            dbg_state_load(i);
+            dbg_toast_show(dbg_state_note());
+        }
+    }
+    if (dbg_state_note()[0]) opt_text_str(dbg_state_note());
+
     opt_group_text("Saved positions");
     opt_text_str("Saves only where the player stands, not the game's state. The game may pull the actor back if its "
                  "physics body disagrees: loading is experimental.");
@@ -1110,6 +1253,7 @@ extern "C" void tab_debug(float scale) {
         }
         bool hk = dbg_hotkeys() != 0;
         if (opt_toggle_text("##dbg_hotkeys", "Keyboard hotkeys", "With the menu closed: F5 saves the position in slot 1, F6 goes to it, "
+                            "Shift+F5 saves state 1, Shift+F6 loads it, "
                             "F7 and F8 lower and raise the game speed, F9 starts and stops the timer, F12 reloads the area. "
                             "The speedrun timer uses F2 (start, pause), F3 (split) and F4 (reset). A key given to a hotkey "
                             "below does that hotkey's job instead: F5 saves a clip unless \"Save clip\" is bound elsewhere.", hk))
@@ -1134,6 +1278,20 @@ extern "C" void tab_debug(float scale) {
                              "How much a saved clip holds, ending when the hotkey is pressed. Left and right change it "
                              "by 5 seconds (5 to 120). Saved in the settings.", false);
         if (r == -1 || r == 1) clip_set_seconds(clip_seconds() + 5 * r);
+        {
+            const char *v2names[CLIP_VIEW2_MODES];
+            for (int i = 0; i < CLIP_VIEW2_MODES; i++) v2names[i] = clip_view2_name(i);
+            int v2 = opt_text_choice("##clip_view2", "Second view in clips", v2names, CLIP_VIEW2_MODES, clip_view2(),
+                                     "Each clip frame gets a second point of view of the same moment in its lower right "
+                                     "corner, from a camera of its own: above the player looking down (the top of the "
+                                     "picture is where the game's camera looks), beside them, or in front of them facing "
+                                     "the game's camera. It shows the area's collision round the player (ground green, "
+                                     "slopes yellow, walls blue, ceilings red), the player as an orange block with a line "
+                                     "where they face, the game's camera as a white frame, and the View overlays that are "
+                                     "drawn in 3D. Not on an HDR display. Left and right change it; A opens the list. "
+                                     "Saved in the settings.");
+            if (v2 >= 0) clip_set_view2(v2);
+        }
         if (opt_text_row("##clip_folder", "Open the clips folder", "A: open", nullptr,
                          "Shows the folder the clips are saved in.", false) == 2 && !clip_open_folder())
             dbg_toast_show("Could not open the clips folder");
@@ -1380,6 +1538,47 @@ static void draw_face(ImDrawList *dl, const ViewProj &P, const float (*c)[4], in
     dl->AddConvexPolyFilled(pts, m, col);
 }
 
+// The overlay in 3D (dbg3d.h): while vk_dbg3d_ready says the scene path runs, the shapes below go to it as world-space
+// triangles and lines (face_w, edge_w), gathered over the frame and handed over at its end (debug_overlay_draw), and
+// it draws them into the scene; otherwise face_w and edge_w project them and draw them flat here.
+static bool g3d;
+static std::vector<Dbg3dVert> g3_tri;
+static std::vector<Dbg3dLine> g3_line;
+
+// A convex face given by its corners in world space.
+static void face_w(ImDrawList *dl, const ViewProj &P, const float (*w)[3], int n, ImU32 col) {
+    if (n > 38) n = 38;
+    if (g3d) {
+        for (int i = 1; i + 1 < n; i++) {
+            const float *c[3] = {w[0], w[i], w[i + 1]};
+            for (const float *q : c) {
+                Dbg3dVert v;
+                memcpy(v.p, q, sizeof v.p);
+                v.rgba = col;
+                g3_tri.push_back(v);
+            }
+        }
+        return;
+    }
+    float c[38][4];
+    for (int i = 0; i < n; i++) clip_of(P, w[i], c[i]);
+    draw_face(dl, P, c, n, col);
+}
+
+// A line between two world points, th pixels wide.
+static void edge_w(ImDrawList *dl, const ViewProj &P, const float a[3], const float b[3], ImU32 col, float th) {
+    if (g3d) {
+        Dbg3dLine l;
+        memcpy(l.a, a, sizeof l.a), memcpy(l.b, b, sizeof l.b);
+        l.rgba = col, l.width = th;
+        g3_line.push_back(l);
+        return;
+    }
+    float ca[4], cb[4];
+    clip_of(P, a, ca), clip_of(P, b, cb);
+    draw_edge(dl, P, ca, cb, col, th);
+}
+
 // World point of a volume's local point: x and z across the middle, y up from the actor's position (its floor), all
 // in units of the scale.
 static void world_of(const DbgVolume &v, float lx, float ly, float lz, float o[3]) {
@@ -1398,53 +1597,44 @@ static void draw_volume(ImDrawList *dl, const ViewProj &P, const DbgVolume &v, i
     const DbgVolume &u = mk;
     if (v.shape == DBG_SHAPE_CYLINDER) {
         enum { SEG = 20 };
-        float ring[2][SEG][4];
+        float ring[2][SEG][3];
         for (int k = 0; k < SEG; k++) {
-            float a = 6.2831853f * k / SEG, w[3];
-            for (int y = 0; y < 2; y++) world_of(u, 0.5f * cosf(a), (float)y, 0.5f * sinf(a), w), clip_of(P, w, ring[y][k]);
+            float a = 6.2831853f * k / SEG;
+            for (int y = 0; y < 2; y++) world_of(u, 0.5f * cosf(a), (float)y, 0.5f * sinf(a), ring[y][k]);
         }
         if (style & 2) {
-            float cap[SEG][4];
-            for (int y = 0; y < 2; y++) {
-                for (int k = 0; k < SEG; k++) memcpy(cap[k], ring[y][k], sizeof cap[0]);
-                draw_face(dl, P, cap, SEG, fill);
-            }
+            for (int y = 0; y < 2; y++) face_w(dl, P, ring[y], SEG, fill);
             for (int k = 0; k < SEG; k++) {
-                float q[4][4];
-                memcpy(q[0], ring[0][k], 16), memcpy(q[1], ring[0][(k + 1) % SEG], 16);
-                memcpy(q[2], ring[1][(k + 1) % SEG], 16), memcpy(q[3], ring[1][k], 16);
-                draw_face(dl, P, q, 4, fill);
+                float q[4][3];
+                memcpy(q[0], ring[0][k], 12), memcpy(q[1], ring[0][(k + 1) % SEG], 12);
+                memcpy(q[2], ring[1][(k + 1) % SEG], 12), memcpy(q[3], ring[1][k], 12);
+                face_w(dl, P, q, 4, fill);
             }
         }
         if (style & 1)
             for (int k = 0; k < SEG; k++) {
-                for (int y = 0; y < 2; y++) draw_edge(dl, P, ring[y][k], ring[y][(k + 1) % SEG], line, th);
-                if (k % 5 == 0) draw_edge(dl, P, ring[0][k], ring[1][k], line, th);
+                for (int y = 0; y < 2; y++) edge_w(dl, P, ring[y][k], ring[y][(k + 1) % SEG], line, th);
+                if (k % 5 == 0) edge_w(dl, P, ring[0][k], ring[1][k], line, th);
             }
         return;
     }
-    float c[8][4];
-    for (int i = 0; i < 8; i++) {
-        float w[3];
-        world_of(u, (i & 1) ? 0.5f : -0.5f, (i & 2) ? 1.0f : 0.0f, (i & 4) ? 0.5f : -0.5f, w);
-        clip_of(P, w, c[i]);
-    }
+    float c[8][3];
+    for (int i = 0; i < 8; i++) world_of(u, (i & 1) ? 0.5f : -0.5f, (i & 2) ? 1.0f : 0.0f, (i & 4) ? 0.5f : -0.5f, c[i]);
+    static const int e[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
     if (v.kind == DBG_VOL_DEATH) {
         // A lava surface or the kill volume is a plate tens to thousands of metres wide: filled, it would cover the
         // whole picture from above, so it is drawn as its outline and a grid over its top, the surface that kills, in
         // any style.
-        static const int e[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-        for (const auto &q : e) draw_edge(dl, P, c[q[0]], c[q[1]], line, th);
+        for (const auto &q : e) edge_w(dl, P, c[q[0]], c[q[1]], line, th);
         for (int axis = 0; axis < 2; axis++) {
             float size = v.scale[axis == 0 ? 0 : 2];
             int n = (int)(size / 5.0f);
             n = n < 4 ? 4 : n > 24 ? 24 : n;
             for (int k = 1; k < n; k++) {
-                float t = -0.5f + (float)k / n, a[3], b[3], ca[4], cb[4];
+                float t = -0.5f + (float)k / n, a[3], b[3];
                 if (axis == 0) world_of(u, t, 1, -0.5f, a), world_of(u, t, 1, 0.5f, b);
                 else world_of(u, -0.5f, 1, t, a), world_of(u, 0.5f, 1, t, b);
-                clip_of(P, a, ca), clip_of(P, b, cb);
-                draw_edge(dl, P, ca, cb, line, th * 0.6f);
+                edge_w(dl, P, a, b, line, th * 0.6f);
             }
         }
         return;
@@ -1452,15 +1642,13 @@ static void draw_volume(ImDrawList *dl, const ViewProj &P, const DbgVolume &v, i
     if (style & 2) {
         static const int f[6][4] = {{0, 1, 3, 2}, {4, 5, 7, 6}, {0, 1, 5, 4}, {2, 3, 7, 6}, {0, 2, 6, 4}, {1, 3, 7, 5}};
         for (const auto &q : f) {
-            float fc[4][4];
+            float fc[4][3];
             for (int k = 0; k < 4; k++) memcpy(fc[k], c[q[k]], sizeof fc[0]);
-            draw_face(dl, P, fc, 4, fill);
+            face_w(dl, P, fc, 4, fill);
         }
     }
-    if (style & 1) {
-        static const int e[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-        for (const auto &q : e) draw_edge(dl, P, c[q[0]], c[q[1]], line, th);
-    }
+    if (style & 1)
+        for (const auto &q : e) edge_w(dl, P, c[q[0]], c[q[1]], line, th);
 }
 
 // The eye: the point where clip x, y and w are all 0 (rows 0, 1 and 3 of the view-projection), by Cramer's rule.
@@ -1639,12 +1827,10 @@ static void draw_hook(float scale, bool walls) {
     int n = dbg_hook_polys(poly, MAXP, range, walls);
     for (int i = 0; i < n; i++) {
         const DbgHookPoly &q = poly[i];
-        float c[8][4];
-        for (int k = 0; k < q.n; k++) clip_of(P, q.p[k], c[k]);
         // a target object always shows filled, so it stands out from the surfaces round it
-        if ((style & 2) || q.target) draw_face(dl, P, c, q.n, q.target ? tfill : fill);
+        if ((style & 2) || q.target) face_w(dl, P, q.p, q.n, q.target ? tfill : fill);
         if (style & 1)
-            for (int k = 0; k < q.n; k++) draw_edge(dl, P, c[k], c[(k + 1) % q.n], q.target ? tline : line, 1.0f * scale);
+            for (int k = 0; k < q.n; k++) edge_w(dl, P, q.p[k], q.p[(k + 1) % q.n], q.target ? tline : line, 1.0f * scale);
     }
     int m = walls ? 0 : dbg_hook_labels(lab, MAXL, range);
     bool labels = cfg_bool("NX2NAVI_DEBUG_VIEW_LABELS") != 0;
@@ -1669,6 +1855,225 @@ static void draw_hook(float scale, bool walls) {
         at.x -= sz.x * 0.5f, at.y -= sz.y;
         dl->AddText(ImVec2(at.x + 1, at.y + 1), IM_COL32(0, 0, 0, 200), l.name);
         dl->AddText(at, tline, l.name);
+    }
+}
+
+// Collision (Show collision): the area's collision polygons near the player, filled and drawn far to near so the nearer
+// cover the farther, each in the colour of the way it faces (debug_hook.c keeps the corners in the data's order, the
+// front being the side they turn anticlockwise round): ground green, slopes yellow, walls blue, ceilings red. A face is
+// brighter the more squarely it faces the eye and dark grey from behind, so a gap, a missing face or one that faces
+// the wrong way shows. Far to near by the middle of each piece goes wrong where a large face and a small one overlap,
+// so faces are cut into pieces no longer than a tenth of their distance from the eye (3 m at least) before they are
+// sorted. With Hide meshes on there is nothing behind them, so they are drawn opaque; otherwise at the overlay's
+// opacity. The style setting adds the polygons' edges (Wireframe draws only the edges, in the same colours). Drawn
+// without anti-aliasing: tens of thousands of pieces a frame. Collision distance and Collision detail set how far and
+// how many polygons, nearest first; the pieces may be three times as many.
+static void draw_collision(float scale) {
+    struct Tri {
+        float p[3][3];
+        float depth;
+        uint8_t col, back, edges, shade;   // col: 0 ground, 1 slope, 2 wall, 3 ceiling; edges: bit k for edge k to k+1
+    };
+    static std::vector<DbgHookPoly> poly_v;
+    static std::vector<Tri> tri_v;
+    static std::vector<int> order_v;
+    int MAXP = cfg_int("NX2NAVI_DEBUG_COLLISION_POLYS");
+    MAXP = MAXP < 1000 ? 1000 : MAXP > 1000000 ? 1000000 : MAXP;
+    const int MAXT = 3 * MAXP;
+    if ((int)poly_v.size() != MAXP) poly_v.resize(MAXP), tri_v.resize(MAXT), order_v.resize(MAXT);
+    DbgHookPoly *poly = poly_v.data();
+    static Tri *tri;   // static: the sort's comparison reads it
+    tri = tri_v.data();
+    int *order = order_v.data();
+    ViewProj P;
+    float aspect = 16.0f / 9.0f;
+    if (!vk_dbgcam_vp(P.vp, &aspect)) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    if (ds.x <= 0 || ds.y <= 0) return;
+    if (aspect <= 0.1f || aspect > 10) aspect = 16.0f / 9.0f;
+    if (ds.x / ds.y > aspect) P.h = ds.y, P.w = ds.y * aspect;
+    else P.w = ds.x, P.h = ds.x / aspect;
+    P.x0 = (ds.x - P.w) * 0.5f, P.y0 = (ds.y - P.h) * 0.5f;
+    float eye[3];
+    if (!eye_of(P, eye)) return;
+    const char *st = cfg_value("NX2NAVI_DEBUG_VIEW_STYLE");
+    int style = !strcmp(st, "solid") ? 2 : !strcmp(st, "both") ? 3 : 1;
+    bool hidden = cfg_bool("NX2NAVI_DEBUG_HIDE_MESHES") != 0;
+    if (hidden) style |= 2;   // nothing else on screen: the faces always show
+    // nor anything for "Only what you can see" to hide them behind, and its test cuts every face into small pieces
+    const bool occ_on = g_occ.on;
+    if (hidden) g_occ.on = false;
+    int opacity = hidden ? 100 : cfg_int("NX2NAVI_DEBUG_VIEW_OPACITY");
+    opacity = opacity < 10 ? 10 : opacity > 100 ? 100 : opacity;
+    float range = (float)cfg_int("NX2NAVI_DEBUG_COLLISION_RANGE");
+    // in 3D the area's whole collision is a mesh on the GPU (vk_dbg3d.c), cut per pixel by the scene: none of it here,
+    // unless the video memory had no room for it, when the nearest polygons go to the 3D path as triangles instead
+    bool on_gpu = g3d && vk_dbg3d_mesh_triangles() != 0;
+    int n = on_gpu ? 0 : dbg_hook_polys(poly, MAXP, range, DBG_POLY_COLLISION), m = 0;
+    auto outside = [&](const float (*c)[4]) {   // all three corners beyond one side of the view
+        for (int side = 0; side < 5; side++) {
+            int out = 0;
+            for (int k = 0; k < 3; k++) {
+                const float *v = c[k];
+                out += side == 0 ? v[3] < kNear : side == 1 ? v[0] < -v[3] : side == 2 ? v[0] > v[3] : side == 3 ? v[1] < -v[3] : v[1] > v[3];
+            }
+            if (out == 3) return true;
+        }
+        return false;
+    };
+    for (int i = 0; i < n && m < MAXT; i++) {
+        const DbgHookPoly &q = poly[i];
+        float e1[3], e2[3], nm[3], mid[3] = {0, 0, 0};
+        for (int k = 0; k < 3; k++) e1[k] = q.p[1][k] - q.p[0][k], e2[k] = q.p[2][k] - q.p[0][k];
+        nm[0] = e1[1] * e2[2] - e1[2] * e2[1], nm[1] = e1[2] * e2[0] - e1[0] * e2[2], nm[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        float len = sqrtf(nm[0] * nm[0] + nm[1] * nm[1] + nm[2] * nm[2]);
+        if (!(len > 1e-12f)) continue;   // no area
+        for (int k = 0; k < 3; k++) nm[k] /= len;
+        for (int j = 0; j < q.n; j++)
+            for (int k = 0; k < 3; k++) mid[k] += q.p[j][k] / (float)q.n;
+        float to_eye[3] = {eye[0] - mid[0], eye[1] - mid[1], eye[2] - mid[2]};
+        float d = sqrtf(to_eye[0] * to_eye[0] + to_eye[1] * to_eye[1] + to_eye[2] * to_eye[2]);
+        if (!(d > 1e-6f)) continue;
+        float facing = (nm[0] * to_eye[0] + nm[1] * to_eye[1] + nm[2] * to_eye[2]) / d;
+        uint8_t col = nm[1] > 0.7f ? 0 : nm[1] > 0.25f ? 1 : nm[1] > -0.25f ? 2 : 3;
+        uint8_t back = facing < 0, shade = (uint8_t)(255 * (0.45f + 0.55f * fabsf(facing)));
+        // a fan of triangles over the polygon, each cut in four while longer than the limit at its distance
+        for (int f = 1; f + 1 < q.n && m < MAXT; f++) {
+            struct Piece { float p[3][3]; uint8_t edges; int level; } stack[24];
+            int sp = 0;
+            Piece &root = stack[sp++];
+            memcpy(root.p[0], q.p[0], 12), memcpy(root.p[1], q.p[f], 12), memcpy(root.p[2], q.p[f + 1], 12);
+            root.edges = (uint8_t)((f == 1 ? 1 : 0) | 2 | (f + 2 == q.n ? 4 : 0)), root.level = 0;
+            while (sp && m < MAXT) {
+                Piece pc = stack[--sp];
+                float pm[3] = {0, 0, 0}, longest = 0;
+                for (int k = 0; k < 3; k++) {
+                    float e = 0;
+                    for (int a = 0; a < 3; a++) {
+                        pm[a] += pc.p[k][a] / 3.0f;
+                        float t = pc.p[(k + 1) % 3][a] - pc.p[k][a];
+                        e += t * t;
+                    }
+                    longest = fmaxf(longest, e);
+                }
+                float c[3][4];
+                for (int k = 0; k < 3; k++) clip_of(P, pc.p[k], c[k]);
+                if (outside(c)) continue;
+                float dist = sqrtf((pm[0] - eye[0]) * (pm[0] - eye[0]) + (pm[1] - eye[1]) * (pm[1] - eye[1]) + (pm[2] - eye[2]) * (pm[2] - eye[2]));
+                float lim = fmaxf(3.0f, 0.1f * dist);
+                if (longest > lim * lim && pc.level < 5 && sp + 4 <= 24) {
+                    float h[3][3];   // the middles of edges 0-1, 1-2 and 2-0
+                    for (int k = 0; k < 3; k++)
+                        for (int a = 0; a < 3; a++) h[k][a] = 0.5f * (pc.p[k][a] + pc.p[(k + 1) % 3][a]);
+                    Piece kids[4];
+                    // corner pieces keep the parts of the outer edges they lie on; the middle one has none
+                    memcpy(kids[0].p[0], pc.p[0], 12), memcpy(kids[0].p[1], h[0], 12), memcpy(kids[0].p[2], h[2], 12);
+                    kids[0].edges = (uint8_t)((pc.edges & 1) | (pc.edges & 4));
+                    memcpy(kids[1].p[0], h[0], 12), memcpy(kids[1].p[1], pc.p[1], 12), memcpy(kids[1].p[2], h[1], 12);
+                    kids[1].edges = (uint8_t)((pc.edges & 1) | (pc.edges & 2));
+                    memcpy(kids[2].p[0], h[2], 12), memcpy(kids[2].p[1], h[1], 12), memcpy(kids[2].p[2], pc.p[2], 12);
+                    kids[2].edges = (uint8_t)((pc.edges & 2) | (pc.edges & 4));
+                    memcpy(kids[3].p[0], h[0], 12), memcpy(kids[3].p[1], h[1], 12), memcpy(kids[3].p[2], h[2], 12);
+                    kids[3].edges = 0;
+                    for (int k = 0; k < 4; k++) kids[k].level = pc.level + 1, stack[sp++] = kids[k];
+                    continue;
+                }
+                Tri &t = tri[m];
+                memcpy(t.p, pc.p, sizeof t.p);
+                float cm[4];
+                clip_of(P, pm, cm);
+                t.depth = cm[3], t.col = col, t.back = back, t.edges = pc.edges, t.shade = shade;
+                order[m] = m;
+                m++;
+            }
+        }
+    }
+    std::sort(order, order + m, [](int a, int b) { return tri[a].depth > tri[b].depth; });
+    // Hide meshes keeping the player (Hide the player too off): the faces are opaque and drawn over the picture, so
+    // where the player is (a box round them, 1.6 m across and 2.2 m high, wide enough for what they hold or swing) they
+    // are cut by the scene's depth, which then holds the player alone (occ_visible), and drawn whole elsewhere: the cut
+    // makes many small pieces of a face. Without an upscaler's depth (vk_dbgcam_depth) the box itself, at the player's
+    // distance, stands in for it.
+    const bool keep = hidden && !cfg_bool("NX2NAVI_DEBUG_HIDE_PLAYER") && !g3d;
+    float keep_lo[2] = {1, 1}, keep_hi[2] = {0, 0};   // the box on the picture, 0..1 across and down
+    float me[3];
+    if (keep && dbg_player_pos(me)) {
+        float nearest = INFINITY;
+        bool cut = false;   // a corner behind the eye: the whole picture
+        for (int k = 0; k < 8; k++) {
+            float w[3] = {me[0] + (k & 1 ? 0.8f : -0.8f), me[1] + (k & 2 ? 2.2f : -0.1f), me[2] + (k & 4 ? 0.8f : -0.8f)};
+            float cc[4];
+            clip_of(P, w, cc);
+            if (cc[3] < kNear) {
+                cut = true;
+                continue;
+            }
+            ImVec2 sp = screen_of(P, cc);
+            float u = (sp.x - P.x0) / P.w, v = (sp.y - P.y0) / P.h;
+            keep_lo[0] = fminf(keep_lo[0], u), keep_hi[0] = fmaxf(keep_hi[0], u);
+            keep_lo[1] = fminf(keep_lo[1], v), keep_hi[1] = fmaxf(keep_hi[1], v);
+            nearest = fminf(nearest, cc[3]);
+        }
+        if (cut) keep_lo[0] = keep_lo[1] = 0, keep_hi[0] = keep_hi[1] = 1;
+        keep_lo[0] = fmaxf(keep_lo[0], 0), keep_lo[1] = fmaxf(keep_lo[1], 0);
+        keep_hi[0] = fminf(keep_hi[0], 1), keep_hi[1] = fminf(keep_hi[1], 1);
+        if (!(occ_on || vk_dbgcam_depth(g_occ.grid, &g_occ.gw, &g_occ.gh, 250000000ull))) {
+            if (nearest < INFINITY) {
+                g_occ.gw = 480, g_occ.gh = 270;
+                for (int y = 0; y < g_occ.gh; y++)
+                    for (int x = 0; x < g_occ.gw; x++) {
+                        float u = (x + 0.5f) / g_occ.gw, v = (y + 0.5f) / g_occ.gh;
+                        bool in = u >= keep_lo[0] && u <= keep_hi[0] && v >= keep_lo[1] && v <= keep_hi[1];
+                        g_occ.grid[y * g_occ.gw + x] = in ? nearest : 0.0f;
+                    }
+            } else keep_lo[0] = keep_lo[1] = 1, keep_hi[0] = keep_hi[1] = 0;
+        }
+    }
+    static const uint8_t kCol[4][3] = {{70, 220, 110}, {235, 205, 70}, {80, 150, 255}, {240, 80, 80}};
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    ImDrawListFlags fl = dl->Flags;
+    dl->Flags &= ~(ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLines | ImDrawListFlags_AntiAliasedLinesUseTex);
+    float th = 1.0f * scale;
+    for (int j = 0; j < m; j++) {
+        const Tri &t = tri[order[j]];
+        const uint8_t *k = kCol[t.col];
+        float sh = t.back ? 0.30f : t.shade / 255.0f;
+        int r = t.back ? 70 : (int)(k[0] * sh), g = t.back ? 70 : (int)(k[1] * sh), b = t.back ? 78 : (int)(k[2] * sh);
+        float c[3][4];
+        for (int v = 0; v < 3; v++) clip_of(P, t.p[v], c[v]);
+        if (keep) {   // tested against the depth only where the player is: the test cuts a face into small pieces
+            float lo[2] = {INFINITY, INFINITY}, hi[2] = {-INFINITY, -INFINITY};
+            bool behind = false;   // a corner behind the eye: the face may cover anything
+            for (int v = 0; v < 3; v++) {
+                if (c[v][3] < kNear) {
+                    behind = true;
+                    continue;
+                }
+                ImVec2 sp = screen_of(P, c[v]);
+                float u = (sp.x - P.x0) / P.w, w = (sp.y - P.y0) / P.h;
+                lo[0] = fminf(lo[0], u), hi[0] = fmaxf(hi[0], u), lo[1] = fminf(lo[1], w), hi[1] = fmaxf(hi[1], w);
+            }
+            g_occ.on = keep_lo[0] < keep_hi[0] &&
+                       (behind || (lo[0] <= keep_hi[0] && hi[0] >= keep_lo[0] && lo[1] <= keep_hi[1] && hi[1] >= keep_lo[1]));
+        }
+        if (style & 2) draw_face(dl, P, c, 3, IM_COL32(r, g, b, opacity * 255 / 100));
+        if ((style & 1) && t.edges) {
+            ImU32 line = (style & 2) ? IM_COL32(r / 2, g / 2, b / 2, 230) : IM_COL32(k[0], k[1], k[2], t.back ? 110 : 220);
+            for (int v = 0; v < 3; v++)
+                if (t.edges >> v & 1) draw_edge(dl, P, c[v], c[(v + 1) % 3], line, th);
+        }
+    }
+    dl->Flags = fl;
+    g_occ.on = occ_on;
+    if (!hidden || !cfg_bool("NX2NAVI_DEBUG_HIDE_PLAYER")) return;
+    // with the player hidden too: a marker where the player stands
+    float a[3], b[3];
+    if (!dbg_player_pos(me)) return;
+    for (int axis = 0; axis < 3; axis++) {
+        memcpy(a, me, sizeof a), memcpy(b, me, sizeof b);
+        if (axis == 1) b[1] += 1.7f;
+        else a[axis] -= 0.4f, b[axis] += 0.4f, a[1] = b[1] = me[1] + 0.05f;
+        edge_w(dl, P, a, b, IM_COL32(255, 255, 255, 255), 2.5f * scale);
     }
 }
 
@@ -1724,11 +2129,18 @@ static void draw_title_profiles(float scale) {
 
 extern "C" void debug_overlay_draw(float scale) {
     draw_title_profiles(scale);
+    g3d = vk_dbg3d_ready() != 0;
+    g3_tri.clear(), g3_line.clear();
     if (dbg_view_kinds() && dbg_available()) occ_begin();
+    // collision first: the volumes, walls and targets drawn after it stay on top
+    if ((dbg_view_kinds() & DBG_VOL_COLLISION) && dbg_available()) draw_collision(scale);
     if (dbg_view_kinds() && dbg_available()) draw_volumes(scale);
     if ((dbg_view_kinds() & DBG_VOL_WALL) && dbg_available()) draw_hook(scale, true);
     if ((dbg_view_kinds() & DBG_VOL_HOOK) && dbg_available()) draw_hook(scale, false);
     if ((dbg_view_kinds() & DBG_VOL_ENEMY) && dbg_available()) draw_health(scale);
+    if (g3d)   // this frame's shapes to the scene (an empty list clears the last one)
+        vk_dbg3d_submit(g3_tri.data(), (int)g3_tri.size(), g3_line.data(), (int)g3_line.size(),
+                        cfg_bool("NX2NAVI_DEBUG_VIEW_OCCLUDE") != 0);
     int mask = dbg_overlay_mask();
     const char *toast_msg = dbg_toast(plat_now_ns());
     bool igt = dbg_igt_enabled() != 0;

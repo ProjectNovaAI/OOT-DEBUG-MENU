@@ -168,10 +168,21 @@ static const struct Warp {
 };
 #define NWARPS ((int)(sizeof warps / sizeof warps[0]))
 
+// One destination more, after the list: any area file and entrance (dbg_warp_arm_to), for the save states, whose
+// areas include the files of an area's other versions (KakarikoVillage_Adult_Alternative) that no list entry names.
+#define CUSTOM NWARPS
+static struct Warp custom;
+static char custom_text[3][64];
+
+static const struct Warp *warp_of(int i) {
+    if (i >= 0 && i < NWARPS) return &warps[i];
+    return i == CUSTOM && custom.banc ? &custom : NULL;
+}
+
 int dbg_warp_count(void) { return NWARPS; }
 
-const char *dbg_warp_banc(int i) { return i >= 0 && i < NWARPS ? warps[i].banc : NULL; }
-const char *dbg_warp_start(int i) { return i >= 0 && i < NWARPS ? warps[i].start : NULL; }
+const char *dbg_warp_banc(int i) { return warp_of(i) ? warp_of(i)->banc : NULL; }
+const char *dbg_warp_start(int i) { return warp_of(i) ? warp_of(i)->start : NULL; }
 
 static int ends_with(const char *s, const char *tail) {
     size_t n = strlen(s), k = strlen(tail);
@@ -342,8 +353,8 @@ static int redirect_apply(const struct Warp *w) {
 // One step of the redirect; from the polling thread and from the frame hook.
 static void redirect_step(void) {
     int st = atomic_load(&warp_state), i = atomic_load(&warp_target);
-    if (st == W_IDLE || i < 0 || i >= NWARPS) return;
-    const struct Warp *w = &warps[i];
+    const struct Warp *w = warp_of(i);
+    if (st == W_IDLE || !w) return;
     if (redirect_apply(w) && st == W_ARMED) {
         atomic_store(&warp_since, plat_now_ns());
         atomic_store(&warp_saw_loading, 0);
@@ -376,7 +387,7 @@ static void warp_thread(void *arg) {
 }
 
 int dbg_warp_arm(int i) {
-    if (!dbg_available() || i < 0 || i >= NWARPS) return 0;
+    if (!dbg_available() || !warp_of(i)) return 0;
     keys_init();
     if (!dbg_flag_addr(DBG_FLAG_STRING, K_NEXT_BANC)) {
         snprintf(warp_note, sizeof warp_note, "%s", dbg_flags_locating() ? "Still looking for the game's flags" : "Flags not found yet");
@@ -385,11 +396,39 @@ int dbg_warp_arm(int i) {
     atomic_store(&age_hold_until, 0);
     atomic_store(&warp_target, i);
     atomic_store(&warp_state, W_ARMED);
-    snprintf(warp_note, sizeof warp_note, "Next area change goes to %s, %s", warps[i].banc, warps[i].start);
+    snprintf(warp_note, sizeof warp_note, "Next area change goes to %s, %s", warp_of(i)->banc, warp_of(i)->start);
     int zero = 0;
     if (atomic_compare_exchange_strong(&warp_thread_on, &zero, 1) && !plat_thread_spawn(warp_thread, NULL, "debug-warp", 0))
         atomic_store(&warp_thread_on, 0);
     return 1;
+}
+
+int dbg_warp_arm_to(const char *banc, const char *start) {
+    if (!banc || !banc[0]) return 0;
+    // the arrival event of this entrance in the list, in this file or another version of the area; without a start,
+    // the first entrance of the list's file the name begins with (KakarikoVillage_Adult for its _Alternative)
+    const struct Warp *like = NULL;
+    for (int k = 0; k < NWARPS; k++) {
+        const struct Warp *w = &warps[k];
+        size_t lb = strlen(w->banc);
+        int same = !strcmp(w->banc, banc), version = !strncmp(banc, w->banc, lb) && banc[lb] == '_';
+        if (start && start[0]) {
+            if (!strcmp(w->start, start) && (same || version || !like)) like = w;
+            if (like && !strcmp(like->banc, banc)) break;
+        } else if (same || version) {
+            like = w;
+            break;
+        }
+    }
+    if (!like && (!start || !start[0])) {
+        snprintf(warp_note, sizeof warp_note, "No entrance of %s is known", banc);
+        return 0;
+    }
+    snprintf(custom_text[0], 64, "%s", banc);
+    snprintf(custom_text[1], 64, "%s", start && start[0] ? start : like->start);
+    snprintf(custom_text[2], 64, "%s", like ? like->boot : "Dm_SY_BancChangeArrive");
+    custom.banc = custom_text[0], custom.start = custom_text[1], custom.boot = custom_text[2];
+    return dbg_warp_arm(CUSTOM);
 }
 
 void dbg_warp_cancel(void) {
@@ -527,7 +566,8 @@ static uint64_t call_saved(Cpu *c, uint64_t fn, const uint64_t a[8]) {
 #define GUEST_WARP_ACTOR 0x7000c6fb30ull   // actor, &matrix, 0
 #define FRAME_HOOK_ALIVE_NS 1000000000ull
 static _Atomic int tp_pending;
-static float tp_pos[3];
+static float tp_pos[3], tp_face[3];
+static int tp_has_face;
 static _Alignas(16) float tp_matrix[12];
 static _Atomic uint64_t frame_seen_ns;
 
@@ -537,6 +577,16 @@ int dbg_player_teleport(const float pos[3]) {
     if (!dbg_available() || !frame_hook_alive() || !dbg_player_actor()) return 0;
     if (!isfinite(pos[0]) || !isfinite(pos[1]) || !isfinite(pos[2])) return 0;
     memcpy(tp_pos, pos, sizeof tp_pos);
+    tp_has_face = 0;
+    atomic_store(&tp_pending, 1);
+    return 1;
+}
+
+int dbg_player_teleport_face(const float pos[3], const float face[3]) {
+    if (!dbg_available() || !frame_hook_alive() || !dbg_player_actor()) return 0;
+    if (!isfinite(pos[0]) || !isfinite(pos[1]) || !isfinite(pos[2]) || !isfinite(face[0]) || !isfinite(face[2])) return 0;
+    memcpy(tp_pos, pos, sizeof tp_pos), memcpy(tp_face, face, sizeof tp_face);
+    tp_has_face = 1;
     atomic_store(&tp_pending, 1);
     return 1;
 }
@@ -563,7 +613,15 @@ void dbg_frame_teleport(Cpu *c, const float pos[3], const float *face) {
     call_saved(c, GUEST_WARP_ACTOR, a);
 }
 
-static void teleport_run(Cpu *c) { dbg_frame_teleport(c, tp_pos, NULL); }
+static void teleport_run(Cpu *c) { dbg_frame_teleport(c, tp_pos, tp_has_face ? tp_face : NULL); }
+
+int dbg_player_facing(float face[3]) {
+    uint64_t actor = dbg_player_actor();
+    float ax[9];
+    if (!actor || !plat_mem_read(actor + ACTOR_AXES, ax, sizeof ax) || !isfinite(ax[6]) || !isfinite(ax[8])) return 0;
+    face[0] = ax[6], face[1] = 0, face[2] = ax[8];   // the z column: where the player looks, along the ground
+    return fabsf(face[0]) + fabsf(face[2]) > 1e-4f;
+}
 
 // Instant warp: with a warp armed, the player is put into the nearest loading zone of the area. The zone reserves its
 // area change and the redirect writes the destination over it. An entrance of an area is an actor named

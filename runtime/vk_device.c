@@ -14,6 +14,7 @@
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
+#include "dbg3d.h"
 #include "vk_fg.h"
 #include "vk_dlssg.h"
 
@@ -674,6 +675,7 @@ static long g_errors_total;     // outlives the device so the probe can print it
 static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
+    if (g_vk.device) vk_dbg3d_release();   // the debug overlays' pipelines and buffers (vk_dbg3d.c)
     if (g_vk.device) vk_dlaa_release();   // the DLSS features and NGX: the allocator and the device still live
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_crumbs_release();

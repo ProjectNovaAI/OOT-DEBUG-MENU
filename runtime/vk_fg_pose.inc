@@ -32,7 +32,7 @@ static PoseRange pose_ranges[POSE_ROWS];
 static int pose_count;
 static unsigned pose_seen[3], pose_written[3], pose_missing, pose_full, pose_unowned;
 
-static int pose_enabled(void) { return motion_owner_enabled(); }
+static int pose_enabled(void) { return motion_owner_selective(); }
 static int pose_raw(void) {
     static int raw = -1;
     if (raw < 0) raw = rt_knob("SELECTIVE_MOTION_RAW", "0");

@@ -2,6 +2,7 @@
 // commands in it run one per line and the answers go to debug_out.txt, which ends with "END". No socket is opened, so
 // nothing is reachable from the network: only whoever can write to the game's folder.
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +60,11 @@ static void out_put(const char *fmt, ...) {
     memcpy(out_buf + out_len, tmp, n);
     out_len += n;
     out_buf[out_len] = 0;
+}
+
+static int u64_order(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
 }
 
 static void fcount_line(uint64_t addr, uint32_t n, uint64_t lr, double first_s, void *ctx) {
@@ -669,6 +675,84 @@ static void run_command(char *line) {
         char line[192];
         for (int i = (n < want ? n : want) - 1; i >= 0; i--)
             if (dbg_watch_line(i, line, sizeof line)) out_put("%s\n", line);
+    } else if (!strcmp(cmd, "collision") || !strcmp(cmd, "hidemeshes") || !strcmp(cmd, "hideplayer")) {
+        // collision|hidemeshes|hideplayer [0|1]: the settings
+        const char *key = cmd[0] == 'c' ? "NX2NAVI_DEBUG_VIEW_COLLISION"
+                          : !strcmp(cmd, "hidemeshes") ? "NX2NAVI_DEBUG_HIDE_MESHES" : "NX2NAVI_DEBUG_HIDE_PLAYER";
+        if (a1) cfg_set(key, atoi(a1) ? "1" : "0");
+        out_put("%s %d\n", cmd, cfg_bool(key));
+    } else if (!strcmp(cmd, "coll")) {   // coll [RANGE]: the collision polygons near the player, by the way they face
+        static DbgHookPoly cp[40000];
+        char st[240];
+        dbg_view_kinds();   // follows the setting: starts the helper thread's read
+        dbg_hook_status(st, sizeof st);
+        int n = dbg_hook_polys(cp, 40000, a1 ? strtof(a1, NULL) : 30.0f, DBG_POLY_COLLISION), kind[4] = {0, 0, 0, 0};
+        for (int i = 0; i < n; i++) {
+            float e1[3], e2[3];
+            for (int k = 0; k < 3; k++) e1[k] = cp[i].p[1][k] - cp[i].p[0][k], e2[k] = cp[i].p[2][k] - cp[i].p[0][k];
+            float nx = e1[1] * e2[2] - e1[2] * e2[1], ny = e1[2] * e2[0] - e1[0] * e2[2], nz = e1[0] * e2[1] - e1[1] * e2[0];
+            float len = sqrtf(nx * nx + ny * ny + nz * nz);
+            if (len <= 0) continue;
+            ny /= len;
+            kind[ny > 0.7f ? 0 : ny > 0.25f ? 1 : ny > -0.25f ? 2 : 3]++;
+        }
+        // polygons with the same middle (to the centimetre) as another: the same surface read twice
+        static uint64_t mid[40000];
+        for (int i = 0; i < n; i++) {
+            int64_t c[3] = {0, 0, 0};
+            for (int k = 0; k < cp[i].n; k++)
+                for (int a = 0; a < 3; a++) c[a] += (int64_t)lrintf(cp[i].p[k][a] * 100.0f);
+            mid[i] = ((uint64_t)(c[0] / cp[i].n) * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)(c[1] / cp[i].n) * 0xC2B2AE3D27D4EB4Full) ^
+                     ((uint64_t)(c[2] / cp[i].n) * 0x165667B19E3779F9ull);
+        }
+        qsort(mid, (size_t)n, sizeof *mid, u64_order);
+        int dup = 0;
+        for (int i = 1; i < n; i++) dup += mid[i] == mid[i - 1];
+        out_put("%s\n%d polygons: %d ground, %d slope, %d wall, %d ceiling (by their corners' turn); %d repeat another's "
+                "middle\n", st, n, kind[0], kind[1], kind[2], kind[3], dup);
+    } else if (!strcmp(cmd, "under")) {   // under [X Z]: the collision polygons straight above or below a point (the player's)
+        static DbgHookPoly cp[40000];
+        float me[3] = {0, 0, 0}, at[2];
+        dbg_view_kinds();
+        if (!dbg_player_pos(me) && !a2) {
+            out_put("no player\n");
+            return;
+        }
+        at[0] = a1 && a2 ? strtof(a1, NULL) : me[0], at[1] = a1 && a2 ? strtof(a2, NULL) : me[2];
+        int n = dbg_hook_polys(cp, 40000, 12.0f, DBG_POLY_COLLISION), hits = 0;   // near enough to stay under the count
+        out_put("under %.2f %.2f (player at %.2f %.2f %.2f), %d polygons searched\n", at[0], at[1], me[0], me[1], me[2], n);
+        for (int i = 0; i < n; i++) {
+            const DbgHookPoly *q = &cp[i];
+            int in = 0;   // the point inside the polygon's outline seen from above (even-odd)
+            for (int k = 0, j = q->n - 1; k < q->n; j = k++)
+                if ((q->p[k][2] > at[1]) != (q->p[j][2] > at[1]) &&
+                    at[0] < (q->p[j][0] - q->p[k][0]) * (at[1] - q->p[k][2]) / (q->p[j][2] - q->p[k][2]) + q->p[k][0])
+                    in = !in;
+            if (!in) continue;
+            float e1[3], e2[3], nm[3];
+            for (int k = 0; k < 3; k++) e1[k] = q->p[1][k] - q->p[0][k], e2[k] = q->p[2][k] - q->p[0][k];
+            nm[0] = e1[1] * e2[2] - e1[2] * e2[1], nm[1] = e1[2] * e2[0] - e1[0] * e2[2], nm[2] = e1[0] * e2[1] - e1[1] * e2[0];
+            float len = sqrtf(nm[0] * nm[0] + nm[1] * nm[1] + nm[2] * nm[2]), y = 0;
+            if (fabsf(nm[1]) > 1e-6f)   // the plane's height at the point
+                y = q->p[0][1] - (nm[0] * (at[0] - q->p[0][0]) + nm[2] * (at[1] - q->p[0][2])) / nm[1];
+            if (hits++ < 40)
+                out_put("  y %8.2f  normal y %5.2f  corners %d  first %.1f %.1f %.1f\n", y, len > 0 ? nm[1] / len : 0, q->n,
+                        q->p[0][0], q->p[0][1], q->p[0][2]);
+        }
+        out_put("%d polygons over or under the point\n", hits);
+    } else if (!strcmp(cmd, "state")) {   // state [save|load N]: the save states (debug_state.c), N 1..4
+        if (a1 && a2 && (!strcmp(a1, "save") || !strcmp(a1, "load"))) {
+            int slot = atoi(a2) - 1;
+            int ok = !strcmp(a1, "save") ? dbg_state_save(slot) : dbg_state_load(slot);
+            out_put("%s %d: %s\n", a1, slot + 1, ok ? "ok" : "failed");
+        }
+        for (int i = 0; i < DBG_STATES; i++) {
+            char banc[64];
+            int64_t at;
+            if (dbg_state_info(i, banc, &at)) out_put("state %d: %s, saved at %lld\n", i + 1, banc, (long long)at);
+            else out_put("state %d: empty\n", i + 1);
+        }
+        out_put("loading %d; %s\n", dbg_state_loading(), dbg_state_note());
     } else if (!strcmp(cmd, "fog")) {   // fog [0|1]: 1 shows the volumetric fog, 0 removes it (NX2NAVI_DEBUG_FOG_OFF)
         if (a1) cfg_set("NX2NAVI_DEBUG_FOG_OFF", atoi(a1) ? "0" : "1");
         out_put("fog %s\n", cfg_bool("NX2NAVI_DEBUG_FOG_OFF") ? "off" : "on");
@@ -850,7 +934,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots novoid bombbug igt fog view cfg area perf gcall gres ftrace fcount snap pad clip\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots novoid bombbug igt fog collision hidemeshes hideplayer coll view cfg area perf gcall gres ftrace fcount snap pad clip\n");
     }
 }
 

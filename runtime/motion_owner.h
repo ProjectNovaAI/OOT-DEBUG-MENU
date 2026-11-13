@@ -27,4 +27,5 @@ void motion_owner_forget(uint64_t buffer);
 void motion_owner_reset(void);
 void motion_owner_forget_range(uint64_t address, uint64_t size);
 int vk_usnap_motion_owner(uint64_t address, uint64_t size, MotionOwner *out);
-int motion_owner_enabled(void);
+int motion_owner_enabled(void);    // the player's models are tracked (selective motion, or the debug menu's Hide meshes)
+int motion_owner_selective(void);  // NX2NAVI_SELECTIVE_MOTION: their draws are drawn again into the motion vectors
