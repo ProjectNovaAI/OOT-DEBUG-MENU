@@ -89,3 +89,6 @@ desktop.ini
 
 # The release folder (tools/make_release.py): nx2navi_xlate.exe with its id file, hactool, ninja and the DLLs
 /bin/
+
+# Private project documentation: kept locally, never uploaded
+/docs/
