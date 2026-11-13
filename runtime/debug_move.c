@@ -198,17 +198,16 @@ static void boots_frame(void) {
 // breathing mask take the stateless layer's pose instead of the carry's: both arms out to the sides, the bomb in the
 // right hand held out at shoulder height. FaceDefault fading in brings the arms back up over the head.
 //
-// While the option is on and the player lifts or carries a bomb (the lifter's state 2 or 3 and the blackboard's
-// LiftableType 4), dbg_bomb_layers, called from the animation owner's update after it has updated its layers
-// (debug_game.c debug_bomb_layers), gives the face layer the breathing mask's definition (mask_define: the bits are
-// built from it as the game builds them), so every pull while moving goes as it does after the ocarina. The face
-// states play as usual. When the carry ends (thrown, put away, set down) or the option goes off, the definition the
-// layer had goes back the same way.
+// While the option is on, dbg_bomb_layers, called from the animation owner's update after it has updated its layers
+// (debug_game.c debug_bomb_layers), keeps the breathing mask's definition on the face layer at all times (mask_define:
+// the bits are built from it as the game builds them), as after the ocarina but with nothing that clears it: a state
+// that sets a mask of its own (standing idle, a standing pull) has the breathing one back on the next frame. So every
+// pull while moving goes as it does after the ocarina. The face states play as usual. When the option goes off, the
+// definition the game gave the layer last goes back the same way.
 #define ACTOR_COMPS 0x270        // the actor's component array, their number at +0x278
 #define ACTOR_COMP_COUNT 0x278
 #define COMP_NAME 0x8            // a component's resource name
 #define AS_OWNER 0x70            // the AS component's animation owner
-#define OWNER_BB 0x58            // the owner's parameter store (blackboard)
 #define OWNER_LAYERS 0x198       // the owner's layers, LAYER_STEP apart
 #define LAYER_STEP 0x48
 #define LAYER_MAX 12
@@ -229,10 +228,6 @@ static void boots_frame(void) {
 #define DEF_ROOM 16
 #define LIST_COUNT 0x18          // the owner's layer list: the number of layers, their entries (LAYER_STEP apart)
 #define LIST_LAYERS 0x20
-#define LIFTER_STATE 0x2b0       // 0 nothing, 2 lifting, 3 carrying
-#define BB_INTS 0x18             // the blackboard's ints: their number, then the values from +8
-#define BB_LIFTABLE_TYPE 14      // LiftableType: 4 while a bomb is lifted or carried, 8 with nothing (both ages)
-#define LIFTABLE_BOMB 4
 
 // The breathing mask's definition as the game gives it with DemoOcarinaBreath (seen in the game, 1.1.1, both ages):
 // Root and the bones under it, then Spine_2 (the chest, both arms, the head) the other way, then the bones that hold
@@ -256,12 +251,11 @@ static int comp_named(uint64_t comp, const char *part, char *name, size_t n) {
 }
 
 // Found by bomb_frame on every frame (debug frame hook) and read by dbg_bomb_layers (the animation owner's update):
-// the face layer (0: none known, or the option off), the player's age, and where the lifter's state and the
-// blackboard's LiftableType are.
-static _Atomic uint64_t bomb_face, bomb_state_at, bomb_liftable_at;
+// the face layer (0: none known, or the option off) and the player's age.
+static _Atomic uint64_t bomb_face;
 static _Atomic int bomb_child, bomb_holding;   // bomb_holding: dbg_bomb_layers holds a mask, to be put back
 static struct {
-    uint64_t actor, comps, as, lifter;   // the player, its component array, its AS and lifter components
+    uint64_t actor, comps, as;   // the player, its component array, its AS component
 } bomb;
 // Used by dbg_bomb_layers only: the layer given the breathing mask, and the definition it had before.
 static struct {
@@ -275,13 +269,11 @@ static void bomb_components(uint64_t actor) {
     char name[96];
     uint64_t arr = rd64(actor + ACTOR_COMPS);
     uint32_t n = 0;
-    bomb.actor = actor, bomb.comps = arr, bomb.as = bomb.lifter = 0;
+    bomb.actor = actor, bomb.comps = arr, bomb.as = 0;
     if (!arr || !plat_mem_read(actor + ACTOR_COMP_COUNT, &n, 4) || n > 1024) return;
-    for (uint32_t i = 0; i < n; i++) {
+    for (uint32_t i = 0; i < n && !bomb.as; i++) {
         uint64_t c = rd64(arr + 8ull * i);
-        if (!c) continue;
-        if (!bomb.as && comp_named(c, ".root.asb", name, sizeof name)) atomic_store(&bomb_child, strstr(name, "_Child") != NULL), bomb.as = c;
-        else if (!bomb.lifter && comp_named(c, "PlayerLifter", name, sizeof name)) bomb.lifter = c;
+        if (c && comp_named(c, ".root.asb", name, sizeof name)) atomic_store(&bomb_child, strstr(name, "_Child") != NULL), bomb.as = c;
     }
 }
 
@@ -299,11 +291,7 @@ static uint64_t face_layer(uint64_t owner) {
     return 0;
 }
 
-static void bomb_forget(void) {
-    atomic_store(&bomb_face, 0);
-    atomic_store(&bomb_state_at, 0);
-    atomic_store(&bomb_liftable_at, 0);
-}
+static void bomb_forget(void) { atomic_store(&bomb_face, 0); }
 
 static void bomb_frame(void) {
     uint64_t actor = dbg_player_actor();
@@ -311,30 +299,13 @@ static void bomb_frame(void) {
         bomb_forget();
         return;
     }
-    if (actor != bomb.actor || rd64(actor + ACTOR_COMPS) != bomb.comps || !bomb.as || !bomb.lifter) {
+    if (actor != bomb.actor || rd64(actor + ACTOR_COMPS) != bomb.comps || !bomb.as) {
         bomb_forget();   // a new player (a reload, an age switch)
         bomb_components(actor);
-        if (!bomb.as || !bomb.lifter) return;
+        if (!bomb.as) return;
     }
-    uint64_t owner = rd64(bomb.as + AS_OWNER), bb = owner ? rd64(owner + OWNER_BB) : 0, ints = bb ? rd64(bb + BB_INTS) : 0;
-    uint64_t layer = owner ? face_layer(owner) : 0;
-    uint32_t nints = 0;
-    if (!ints || !plat_mem_read(ints, &nints, 4) || nints <= BB_LIFTABLE_TYPE || !layer) {
-        bomb_forget();
-        return;
-    }
-    atomic_store(&bomb_state_at, bomb.lifter + LIFTER_STATE);
-    atomic_store(&bomb_liftable_at, ints + 8 + 4 * BB_LIFTABLE_TYPE);
-    atomic_store(&bomb_face, layer);
-}
-
-// A bomb lifted or carried right now, read where bomb_frame found the lifter's state and LiftableType.
-static int bomb_carrying(void) {
-    uint64_t sa = atomic_load(&bomb_state_at), la = atomic_load(&bomb_liftable_at);
-    uint32_t state = 0;
-    int32_t liftable = 0;
-    return sa && la && plat_mem_read(sa, &state, 4) && plat_mem_read(la, &liftable, 4) && (state == 2 || state == 3) &&
-           liftable == LIFTABLE_BOMB;
+    uint64_t owner = rd64(bomb.as + AS_OWNER);
+    atomic_store(&bomb_face, owner ? face_layer(owner) : 0);
 }
 
 // Gives a layer's mask this definition, as the game does: the version moves on, then the bits are built and marked built
@@ -380,8 +351,8 @@ void dbg_bomb_layers(struct Cpu *c, uint64_t list) {
         return;
     }
     const int16_t *breath = atomic_load(&bomb_child) ? breath_child : breath_adult;
-    if (!atomic_load(&bomb_bug_on) || !bomb_carrying()) {
-        // The carry is over: the definition the layer had goes back, unless the game has given it another since.
+    if (!atomic_load(&bomb_bug_on)) {
+        // Switched off: the definition the game gave the layer last goes back, unless it has given another since.
         if (held.layer == face && mask_is_breath(face, breath, 0) == 1) mask_define(c, face, held.count, held.flags, held.bones);
         held.layer = 0;
         atomic_store(&bomb_holding, 0);
@@ -390,8 +361,8 @@ void dbg_bomb_layers(struct Cpu *c, uint64_t list) {
     int is = mask_is_breath(face, breath, 1);
     if (is < 0) return;
     if (!is) {
-        // A definition of the game's own (the one the carry started with, or one a state gave since) is kept in held to
-        // go back at the end; the breathing one takes its place.
+        // A definition of the game's own (the one the layer had, or one a state gave since) is kept in held to go back
+        // when the option goes off; the breathing one takes its place.
         int16_t bones[BREATH_BONES][2];
         for (int k = 0; k < BREATH_BONES; k++) bones[k][0] = 0, bones[k][1] = breath[k];
         mask_define(c, face, BREATH_BONES, breath_flags, (const int16_t (*)[2])bones);

@@ -413,8 +413,8 @@ int dbg_no_void_out_on(void);
 // PastyPixel's Bomb T-Pose (debug_move.c; kept from one start to the next; the cause is in docs/bomb-t-pose.md): while on,
 // every bomb pulled out while moving comes out held to the right side before going over the head, the game's own bug
 // after the ocarina. bomb_frame finds the player's face layer on every frame; dbg_bomb_layers, called from the animation
-// owner's update (debug_game.c debug_bomb_layers, recomp/patches-v111.txt set dbgframe), gives that layer the ocarina's
-// breathing mask while a bomb is lifted or carried, and puts its own mask back afterwards.
+// owner's update (debug_game.c debug_bomb_layers, recomp/patches-v111.txt set dbgframe), keeps the ocarina's breathing
+// mask on that layer at all times, and puts the game's mask back when the option goes off.
 void dbg_bomb_bug(int on);
 int dbg_bomb_bug_on(void);
 void dbg_bomb_layers(struct Cpu *c, uint64_t list);

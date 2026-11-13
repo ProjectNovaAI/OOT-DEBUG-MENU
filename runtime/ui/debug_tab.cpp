@@ -467,10 +467,10 @@ extern "C" void tab_debug(float scale) {
             dbg_no_void_out(!novoid);
         bool bombbug = dbg_bomb_bug_on() != 0;
         if (opt_toggle_text("##dbg_bombbug", "PastyPixel's Bomb T-Pose",
-                            "Every bomb Link pulls out while moving comes out held to his right side, both arms out, "
-                            "before going up over his head, as in the game's own bug after the ocarina, with no ocarina "
-                            "needed. A bomb pulled out standing still goes straight up, as it does in the game. Kept "
-                            "from one start to the next.", bombbug))
+                            "The game's own bug after the ocarina, on all the time and with no ocarina needed: every "
+                            "bomb or Bombchu Link pulls out while moving comes out held to his right side, both arms "
+                            "out, before going up over his head. Standing still no longer clears it. A pull standing "
+                            "still goes straight up, as it does in the game. Kept from one start to the next.", bombbug))
             dbg_bomb_bug(!bombbug);
         snprintf(value, sizeof value, "%.0f m/s", dbg_fly_speed());
         int r = opt_text_row("##dbg_flyspeed", "Fly speed", value, nullptr, "Left and right change it by 2 m/s.", false);
