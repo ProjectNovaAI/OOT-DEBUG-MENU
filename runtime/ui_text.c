@@ -55,6 +55,15 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PRESENT_DESC] = "Stops screen tearing. Off lowers input delay slightly.",
     [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "VSync", [UI_MENU_PRESENT_IMMEDIATE] = "Immediate",
     [UI_MENU_PRESENT_IN_USE] = "in use: %s",
+    [UI_MENU_LOW_LATENCY] = "Low latency",
+    [UI_MENU_LOW_LATENCY_DESC] = "The graphics driver holds each frame's start, so the controller is read as late as "
+                                 "possible (NVIDIA Reflex, AMD Anti-Lag). It keeps the frame rate limit too. Boost "
+                                 "keeps the graphics card at full clock.",
+    [UI_MENU_LOW_LATENCY_BOOST] = "On + Boost",
+    [UI_MENU_LOW_LATENCY_NO_DRIVER] = "this graphics driver has no low-latency mode",
+    [UI_MENU_LOW_LATENCY_DLSSG] = "DLSS frame generation uses its own",
+    [UI_MENU_LOW_LATENCY_FG] = "off while frame generation runs on this card",
+    [UI_MENU_LOW_LATENCY_FAILED] = "in use: off, the driver refused it (see lowlat in the log)",
     [UI_MENU_GPU] = "Graphics card", [UI_MENU_GPU_DESC] = "The graphics card that runs the game.",
     [UI_MENU_GPU_AUTO] = "Automatic",
     [UI_MENU_PERF_OVERLAY] = "Performance overlay",
@@ -73,6 +82,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                               "sharper than bilinear. Smaller window (Ocarina draws 2560 x 1440): the picture is shrunk "
                               "and FSR sharpens it by the strength below.",
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
+    [UI_MENU_UPSCALING_NATIVE] = "Native (100%)",
     [UI_MENU_GAME_ASPECT] = "Widescreen",
     [UI_MENU_GAME_ASPECT_DESC] = "Widens the view. HUD and menus stay 16:9.",
     [UI_MENU_GAME_ASPECT_16_9] = "16:9 (the game's)", [UI_MENU_GAME_ASPECT_WINDOW] = "Window shape",
@@ -91,6 +101,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_TEX_DETAIL_FULL] = "Full", [UI_MENU_TEX_DETAIL_REDUCED] = "Reduced", [UI_MENU_TEX_DETAIL_LOW] = "Low",
     [UI_MENU_LOWEND_INTRO] = "The settings of the low-end GPU mode. Each can be changed here; most take effect after a restart.",
     [UI_MENU_LOWEND_RESTART] = "The mode turns on after a restart. Its settings are listed here then.",
+    [UI_MENU_LOWEND_NOT_FOR_CARD] = "Not for this graphics card: it has mesh shaders and 8 GB of video memory or more. "
+                                    "The mode is for older cards and can break shadows on this one.",
     [UI_MENU_LOWEND_MEMORY] = "Video memory and textures",
     [UI_MENU_LOWEND_RENDER] = "Rendering",
     [UI_MENU_LOWEND_BUILD] = "Build",
@@ -112,15 +124,17 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_LOWEND_RESERVE] = "Video memory kept free",
     [UI_MENU_LOWEND_RESERVE_DESC] = "Room kept free in each video memory heap for what FidelityFX (FSR 3.1, frame generation) and the "
                                   "driver allocate on their own: a heap with less than this left takes no new allocation while "
-                                  "another heap can. Off: video memory can fill up with frame generation on, and the game ends.",
+                                  "another video memory heap can (an RX 580 has two; cards with one are not affected). Off: video "
+                                  "memory can fill up with frame generation on, and the game ends.",
     [UI_MENU_LOWEND_HEAP_LIMIT] = "Video memory heap limit",
     [UI_MENU_LOWEND_HEAP_LIMIT_DESC] = "Auto: on GPUs with a second video memory heap (an RX 580 shows 6 GB and 2 GB), "
                                      "each heap is filled only to its budget before the next one is used, so the "
                                      "driver does not run out. Off: no limit.",
     [UI_MENU_LOWEND_UPLOAD_BATCH] = "Upload batch limit",
     [UI_MENU_LOWEND_UPLOAD_BATCH_DESC] = "Texture uploads waiting in staging memory are sent to the GPU early once they "
-                                       "hold this much, so an area load cannot run video memory out.",
-    [UI_MENU_LOWEND_NO_LIMIT] = "No limit",
+                                       "hold this much, so an area load cannot run video memory out. Every batch is "
+                                       "sent at 64 MB at the latest, so none of these choices changes anything now.",
+    [UI_MENU_LOWEND_NO_LIMIT] = "64 MB",
     [UI_MENU_LOWEND_ASTC_KEEP] = "Keep the ASTC decode buffer",
     [UI_MENU_LOWEND_ASTC_KEEP_DESC] = "The buffer that GPU-decodes compressed textures is kept between upload batches "
                                     "instead of being allocated again for each one.",
@@ -168,7 +182,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                "decoder translated from the console. Lighter streaming while you move.",
     [UI_MENU_LOWEND_ASYNC] = "Asynchronous replay",
     [UI_MENU_LOWEND_ASYNC_DESC] = "Translates the game's GPU commands on a thread of their own instead of the game's, so "
-                                "the game prepares the next frame meanwhile.",
+                                "the game prepares the next frame meanwhile. Off by default: it can show a dark or "
+                                "flickering frame now and then.",
     [UI_MENU_LOWEND_PASS_TIMES] = "Pass times in the log",
     [UI_MENU_LOWEND_PASS_TIMES_DESC] = "GPU time of every render pass and dispatch goes to the log, with the largest "
                                      "viewport each kind of pass draws with. Costs a little frame time.",
@@ -276,6 +291,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODE_DOCKED] = "Docked", [UI_MENU_MODE_HANDHELD] = "Handheld",
     [UI_MENU_ASSUME_FOCUS] = "Keep running out of focus",
     [UI_MENU_ASSUME_FOCUS_DESC] = "Keeps the game running when you switch to another window.",
+    [UI_MENU_TEXT_SPEED] = "Text speed",
+    [UI_MENU_TEXT_SPEED_DESC] = "How fast the game's message windows show their text. Fast types three times as fast; "
+                                "instant shows each page at once. Text the game does not let you hurry, such as "
+                                "lines timed to a cutscene or a voice, keeps its speed.",
+    [UI_MENU_TEXT_SPEED_NORMAL] = "Normal", [UI_MENU_TEXT_SPEED_FAST] = "Fast",
+    [UI_MENU_TEXT_SPEED_INSTANT] = "Instant",
 
     [UI_MENU_MODS_BUILTIN] = "Built into the port", [UI_MENU_MODS_INSTALLED] = "Installed mods",
     [UI_MENU_MODS_NONE] = "No mods yet. Unpack a mod into the mods folder, one folder per mod with its romfs folder "
@@ -314,12 +335,28 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aim with the controller's gyro.",
+    [UI_MENU_SPRINT_BUTTON] = "Sprint button",
+    [UI_MENU_SPRINT_BUTTON_DESC] = "A button that makes Link sprint without rolling first. L3, the left stick's "
+                                   "click, has no other use. The game's B button sprints only while Link moves and "
+                                   "puts the weapon away as usual otherwise; with the game's Swap Jump Controls on, B "
+                                   "is the jump, so use L3.",
+    [UI_MENU_SPRINT_OFF] = "Off", [UI_MENU_SPRINT_B] = "The game's B button",
+    [UI_MENU_SPRINT_L3] = "L3 (left stick)",
+    [UI_MENU_SPRINT_MODE] = "Sprint mode",
+    [UI_MENU_SPRINT_MODE_DESC] = "Toggle: press once to sprint and again to stop. The sprint goes on through jumps "
+                                 "and ends when Link stops, attacks, rolls, targets, uses an item, swims or climbs. "
+                                 "Hold: Link sprints while the button is held.",
+    [UI_MENU_SPRINT_TOGGLE] = "Toggle", [UI_MENU_SPRINT_HOLD] = "Hold",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the vibration is.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
     [UI_MENU_RUMBLE_CURVE_DESC] = "Lower values make light vibration stronger.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Trigger vibration (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Also vibrates the triggers on Xbox controllers.",
+    [UI_MENU_RUMBLE_HD] = "HD vibration (Switch)",
+    [UI_MENU_RUMBLE_HD_DESC] = "Sends the game's detailed vibration to a Switch Pro Controller or Joy-Con as it is. "
+                               "The vibration strength still applies: its default is the game's own.",
+    [UI_MENU_RUMBLE_HD_NEEDS] = "Needs a Switch Pro Controller or Joy-Con",
     [UI_MENU_PAD_LAYOUT] = "Button layout",
     [UI_MENU_PAD_LAYOUT_DESC] = "Sets which button acts as A. Nintendo: by position, A right, B bottom, X top, Y "
                                 "left. Xbox and PlayStation: by label, A bottom, B right, X left, Y top (on a "
@@ -471,10 +508,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                  "prepares frames on a thread of their own. Measured on a Radeon RX 580 only: it can show a dark or flickering "
                                  "frame now and then, so leave it off on a newer card.",
     [UI_MENU_REPLAY_WORKERS] = "CPU helper threads (experimental)",
-    [UI_MENU_REPLAY_WORKERS_DESC] = "Uses more of your CPU's cores to prepare each frame for the graphics card. 0 turns it "
-                                    "off. 3 gave about 20% more frames a second on an 8-core CPU, and 5 a little more "
-                                    "with the settings below. Some players' games crashed with this on: set it back to "
-                                    "0 if yours does.",
+    [UI_MENU_REPLAY_WORKERS_DESC] = "Uses more of your CPU's cores to prepare each frame for the graphics card. Automatic "
+                                    "picks the number for your CPU: half its cores less one, none on four cores or fewer "
+                                    "and none on RX 6000 and older Radeon cards. 0 turns it off. 3 gave about 20% more "
+                                    "frames a second on an 8-core CPU. If your game crashes with this on, set it to 0.",
     [UI_MENU_REPLAY_PIPE] = "Helpers work ahead (experimental)",
     [UI_MENU_REPLAY_PIPE_DESC] = "The game carries on with the rest of the frame while the helper threads are still "
                                  "busy, instead of waiting for them. The number is how many batches of work the "
@@ -649,9 +686,12 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CAPTURE_FAILED] = "Bug capture %d could not be saved",
     [UI_BOOT_TITLE] = "Preparing shaders",
     [UI_BOOT_STARTING] = "Starting", [UI_BOOT_SHADERS] = "Shaders: %lld of %lld", [UI_BOOT_PIPELINES] = "Pipelines: %lld of %lld",
+    [UI_BOOT_COMPUTE] = "Compute pipelines: %lld of %lld", [UI_BOOT_DRIVER_CACHE] = "Driver cache: %lld of %lld",
     [UI_MENU_UPSCALING] = "Upscaling",
-    [UI_MENU_UPSCALING_DESC] = "How the picture is smoothed and scaled to your window.",
-    [UI_MENU_UPSCALING_DESC_FSR] = "How the picture is smoothed and scaled to your window.",
+    [UI_MENU_UPSCALING_DESC] = "How the picture is smoothed and scaled to your window. Native draws the 3D scene at "
+                               "the picture's full size with no upscaler: the sharpest, and the most GPU work.",
+    [UI_MENU_UPSCALING_DESC_FSR] = "How the picture is smoothed and scaled to your window. Native draws the 3D scene "
+                                   "at the picture's full size with no upscaler: the sharpest, and the most GPU work.",
     [UI_MENU_FRAMEGEN] = "Frame generation",
     [UI_MENU_FRAMEGEN_DESC] = "Adds generated frames for smoother motion. Needs DLSS or FSR 3.1.",
     [UI_MENU_FRAMEGEN_OFF] = "Off",
@@ -661,8 +701,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FRAMEGEN_NEEDS_FSR] = "choose an FSR 3.1 mode under Upscaling first",
     [UI_MENU_FRAMEGEN_NOTE_FSR] = "needs FSR 3.1",
     [UI_MENU_FRAMEGEN_DESC_FSR] = "Adds generated frames for smoother motion. Needs FSR 3.1.",
-    [UI_MENU_UPSCALING_DESC_NO_FSR] = "How the picture is smoothed and scaled to your window. AMD FSR 3.1 is not offered "
-                                      "here: it needs amd_fidelityfx_vk.dll, which cannot be loaded.",
+    [UI_MENU_UPSCALING_DESC_NO_FSR] = "How the picture is smoothed and scaled to your window. Native draws the 3D scene "
+                                      "at the picture's full size with no upscaler: the sharpest, and the most GPU "
+                                      "work. AMD FSR 3.1 is not offered here: it needs amd_fidelityfx_vk.dll, which "
+                                      "cannot be loaded.",
     [UI_MENU_FSR3_OFF] = "in use: off, FSR 3.1 is not available",
     [UI_MENU_FRAMEGEN_DESC_DLSS] = "Adds generated frames for smoother motion. Needs DLSS.",
     [UI_MENU_FRAMEGEN_NOTE_DLSS] = "needs DLSS",
@@ -684,6 +726,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FRAMEGEN_MULT_OLD_DLL] = "2x only: update the DLSS frame generation files",
     [UI_MENU_FRAMEGEN_UNAVAILABLE] = "in use: off: it needs an RTX 40 or newer; if you have one, see dlssg in the log",
     [UI_MENU_FRAMEGEN_OFF_FILES] = "in use: off, its files are missing",
+    [UI_MENU_FRAMEGEN_DESC_ANY] = "Adds generated frames for smoother motion, with any Upscaling choice.",
+    [UI_MENU_FRAMEGEN_DESC_NGX] = "Adds generated frames for smoother motion. NVIDIA DLSS needs a DLSS mode under "
+                                  "Upscaling when the game starts; it then runs with any Upscaling choice.",
+    [UI_MENU_FRAMEGEN_NOTE_NGX] = "needs DLSS when the game starts",
     [UI_MENU_GAME_RES] = "Resolution",
     [UI_MENU_GAME_RES_DESC] = "Size of the game's picture; outside fullscreen the window takes it too. Higher is sharper "
                               "but costs more GPU power.",
@@ -722,6 +768,22 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "Вертикальная синхронизация",
     [UI_MENU_PRESENT_IMMEDIATE] = "Без ожидания",
     [UI_MENU_PRESENT_IN_USE] = "сейчас: %s",
+    [UI_MENU_LOW_LATENCY] = "Низкая задержка",
+    [UI_MENU_LOW_LATENCY_DESC] = "Драйвер видеокарты задерживает начало каждого кадра, чтобы ввод считывался как "
+                                 "можно позже (NVIDIA Reflex, AMD Anti-Lag). Он же держит ограничение частоты кадров. "
+                                 "Boost не даёт видеокарте снижать частоту.",
+    [UI_MENU_LOW_LATENCY_BOOST] = "Вкл. + Boost",
+    [UI_MENU_LOW_LATENCY_NO_DRIVER] = "у этого драйвера нет режима низкой задержки",
+    [UI_MENU_LOW_LATENCY_DLSSG] = "генерация кадров DLSS использует свой режим",
+    [UI_MENU_LOW_LATENCY_FG] = "выключено, пока на этой видеокарте работает генерация кадров",
+    [UI_MENU_FRAMEGEN_DESC_ANY] = "Добавляет сгенерированные кадры для более плавного движения, с любым выбором в "
+                                  "Upscaling.",
+    [UI_MENU_FRAMEGEN_DESC_NGX] = "Добавляет сгенерированные кадры для более плавного движения. Для NVIDIA DLSS "
+                                  "нужен режим DLSS в Upscaling при запуске игры; после этого генерация работает с "
+                                  "любым "
+                                  "выбором в Upscaling.",
+    [UI_MENU_FRAMEGEN_NOTE_NGX] = "нужен DLSS при запуске игры",
+    [UI_MENU_LOW_LATENCY_FAILED] = "сейчас: выкл., драйвер отказал (см. lowlat в журнале)",
     [UI_MENU_GPU] = "Видеокарта", [UI_MENU_GPU_DESC] = "Видеокарта, на которой работает игра.",
     [UI_MENU_GPU_AUTO] = "Автоматически",
     [UI_MENU_PERF_OVERLAY] = "Индикатор производительности",
@@ -739,6 +801,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                               "билинейного. Окно меньше (Ocarina рисует 2560 × 1440): картинка уменьшается, и FSR "
                               "повышает её резкость на величину ниже.",
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Билинейное",
+    [UI_MENU_UPSCALING_NATIVE] = "Родное (100%)",
+    [UI_MENU_UPSCALING_DESC] = "Как картинка сглаживается и масштабируется под окно. «Родное» рисует 3D-сцену в "
+                               "полном размере картинки без апскейлера: самая чёткая картинка и самая большая "
+                               "нагрузка на видеокарту.",
+    [UI_MENU_UPSCALING_DESC_FSR] = "Как картинка сглаживается и масштабируется под окно. «Родное» рисует 3D-сцену в "
+                                   "полном размере картинки без апскейлера: самая чёткая картинка и самая большая "
+                                   "нагрузка на видеокарту.",
+    [UI_MENU_UPSCALING_DESC_NO_FSR] = "Как картинка сглаживается и масштабируется под окно. «Родное» рисует 3D-сцену "
+                                      "в полном размере картинки без апскейлера: самая чёткая картинка и самая "
+                                      "большая нагрузка на видеокарту. AMD FSR 3.1 здесь не предлагается: ему нужен "
+                                      "amd_fidelityfx_vk.dll, который не удаётся загрузить.",
     [UI_MENU_GAME_ASPECT] = "Широкий экран",
     [UI_MENU_GAME_ASPECT_DESC] = "Расширяет обзор. Интерфейс и меню остаются 16:9.",
     [UI_MENU_GAME_ASPECT_16_9] = "16:9 (как в игре)", [UI_MENU_GAME_ASPECT_WINDOW] = "По окну",
@@ -854,6 +927,12 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODE_DOCKED] = "В док-станции", [UI_MENU_MODE_HANDHELD] = "Портативный",
     [UI_MENU_ASSUME_FOCUS] = "Работать без фокуса",
     [UI_MENU_ASSUME_FOCUS_DESC] = "Игра продолжает работать, когда вы переключаетесь на другое окно.",
+    [UI_MENU_TEXT_SPEED] = "Скорость текста",
+    [UI_MENU_TEXT_SPEED_DESC] = "Как быстро окна сообщений игры показывают текст. Быстро: в три раза быстрее; "
+                                "мгновенно: каждая страница сразу целиком. Текст, который игра не даёт ускорить, "
+                                "например реплики в такт сценке или голосу, идёт с обычной скоростью.",
+    [UI_MENU_TEXT_SPEED_NORMAL] = "Обычная", [UI_MENU_TEXT_SPEED_FAST] = "Быстро",
+    [UI_MENU_TEXT_SPEED_INSTANT] = "Мгновенно",
 
     [UI_MENU_MODS_BUILTIN] = "Встроенные в порт", [UI_MENU_MODS_INSTALLED] = "Установленные моды",
     [UI_MENU_MODS_NONE] = "Модов пока нет. Распакуйте мод в папку mods, каждый мод в свою папку с папкой romfs внутри, и "
@@ -896,6 +975,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "Чем ниже, тем сильнее слабая вибрация.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Вибрация триггеров (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Вибрация также на курках контроллера Xbox.",
+    [UI_MENU_RUMBLE_HD] = "HD-вибрация (Switch)",
+    [UI_MENU_RUMBLE_HD_DESC] = "Передаёт детальную вибрацию игры на Switch Pro Controller или Joy-Con без изменений. "
+                               "Сила вибрации по-прежнему действует: значение по умолчанию — как в игре.",
+    [UI_MENU_RUMBLE_HD_NEEDS] = "Нужен Switch Pro Controller или Joy-Con",
     [UI_MENU_PAD_LAYOUT] = "Раскладка кнопок",
     [UI_MENU_PAD_LAYOUT_DESC] = "Какая кнопка работает как A. Nintendo: по положению, A справа, B снизу, X сверху, "
                                 "Y слева. Xbox и PlayStation: по подписи, A снизу, B справа, X слева, Y сверху (на "
@@ -1209,6 +1292,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CAPTURE_FAILED] = "Снимок ошибки %d не удалось сохранить",
     [UI_BOOT_TITLE] = "Подготовка шейдеров",
     [UI_BOOT_STARTING] = "Запуск", [UI_BOOT_SHADERS] = "Шейдеры: %lld из %lld", [UI_BOOT_PIPELINES] = "Конвейеры: %lld из %lld",
+    [UI_BOOT_COMPUTE] = "Вычислительные конвейеры: %lld из %lld", [UI_BOOT_DRIVER_CACHE] = "Кэш драйвера: %lld из %lld",
     [UI_MENU_CHEATS_REBUILD] = "Пересобрать игру сейчас",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Некоторые читы меняют код игры и ещё не собраны в неё: они новые или изменены, "
                                     "либо прошлая пересборка не удалась или была отменена. Закрывает игру; установщик "
@@ -1274,6 +1358,21 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PRESENT_DESC] = "Evita cortes na imagem. Desligado reduz um pouco o atraso.",
     [UI_MENU_PRESENT_MAILBOX] = "Mailbox", [UI_MENU_PRESENT_VSYNC] = "VSync", [UI_MENU_PRESENT_IMMEDIATE] = "Imediato",
     [UI_MENU_PRESENT_IN_USE] = "em uso: %s",
+    [UI_MENU_LOW_LATENCY] = "Baixa latência",
+    [UI_MENU_LOW_LATENCY_DESC] = "O driver de vídeo segura o início de cada quadro, para ler o controle o mais tarde "
+                                 "possível (NVIDIA Reflex, AMD Anti-Lag). Ele também mantém o limite de quadros. Boost "
+                                 "mantém a placa de vídeo em frequência máxima.",
+    [UI_MENU_LOW_LATENCY_BOOST] = "Ligado + Boost",
+    [UI_MENU_LOW_LATENCY_NO_DRIVER] = "este driver de vídeo não tem modo de baixa latência",
+    [UI_MENU_LOW_LATENCY_DLSSG] = "a geração de quadros DLSS usa o seu próprio",
+    [UI_MENU_LOW_LATENCY_FG] = "desligado enquanto a geração de quadros roda nesta placa",
+    [UI_MENU_FRAMEGEN_DESC_ANY] = "Adiciona quadros gerados para um movimento mais suave, com qualquer opção em "
+                                  "Upscaling.",
+    [UI_MENU_FRAMEGEN_DESC_NGX] = "Adiciona quadros gerados para um movimento mais suave. O NVIDIA DLSS precisa de um "
+                                  "modo DLSS em Upscaling quando o jogo inicia; depois funciona com qualquer opção em "
+                                  "Upscaling.",
+    [UI_MENU_FRAMEGEN_NOTE_NGX] = "precisa do DLSS ao iniciar o jogo",
+    [UI_MENU_LOW_LATENCY_FAILED] = "em uso: desligado, o driver recusou (veja lowlat no log)",
     [UI_MENU_GPU] = "Placa de vídeo", [UI_MENU_GPU_DESC] = "A placa de vídeo usada pelo jogo.",
     [UI_MENU_GPU_AUTO] = "Automática",
     [UI_MENU_PERF_OVERLAY] = "Indicador de desempenho",
@@ -1291,6 +1390,15 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                               "mais nítidos que o bilinear. Janela menor (Ocarina desenha 2560 x 1440): a imagem é "
                               "reduzida e o FSR aumenta a nitidez com a intensidade abaixo.",
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
+    [UI_MENU_UPSCALING_NATIVE] = "Nativo (100%)",
+    [UI_MENU_UPSCALING_DESC] = "Como a imagem é suavizada e ajustada à janela. Nativo desenha a cena 3D no tamanho "
+                               "total da imagem, sem upscaler: a mais nítida, e a que mais exige da GPU.",
+    [UI_MENU_UPSCALING_DESC_FSR] = "Como a imagem é suavizada e ajustada à janela. Nativo desenha a cena 3D no "
+                                   "tamanho total da imagem, sem upscaler: a mais nítida, e a que mais exige da GPU.",
+    [UI_MENU_UPSCALING_DESC_NO_FSR] = "Como a imagem é suavizada e ajustada à janela. Nativo desenha a cena 3D no "
+                                      "tamanho total da imagem, sem upscaler: a mais nítida, e a que mais exige da "
+                                      "GPU. O AMD FSR 3.1 não é oferecido aqui: ele precisa do amd_fidelityfx_vk.dll, "
+                                      "que não pode ser carregado.",
     [UI_MENU_GAME_ASPECT] = "Tela larga",
     [UI_MENU_GAME_ASPECT_DESC] = "Amplia a visão. A interface e os menus continuam em 16:9.",
     [UI_MENU_GAME_ASPECT_16_9] = "16:9 (o do jogo)", [UI_MENU_GAME_ASPECT_WINDOW] = "Formato da janela",
@@ -1305,6 +1413,12 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     [UI_MENU_ASSUME_FOCUS] = "Continuar rodando fora de foco",
     [UI_MENU_ASSUME_FOCUS_DESC] = "Mantém o jogo rodando quando você troca de janela.",
+    [UI_MENU_TEXT_SPEED] = "Velocidade do texto",
+    [UI_MENU_TEXT_SPEED_DESC] = "A rapidez com que as janelas de mensagem do jogo mostram o texto. Rápida escreve três "
+                                "vezes mais rápido; instantânea mostra cada página de uma vez. Textos que o jogo não "
+                                "deixa apressar, como falas sincronizadas com uma cena ou uma voz, mantêm a velocidade.",
+    [UI_MENU_TEXT_SPEED_NORMAL] = "Normal", [UI_MENU_TEXT_SPEED_FAST] = "Rápida",
+    [UI_MENU_TEXT_SPEED_INSTANT] = "Instantânea",
     [UI_MENU_FPS_DISPLAY] = "Taxa do monitor", [UI_MENU_FPS_DISPLAY_HZ] = "Taxa do monitor (%.0f Hz)",
     [UI_MENU_FPS_UNLIMITED] = "Sem limite",
     [UI_MENU_FPS_RTSS] = "limitado pelo RivaTuner Statistics Server",
@@ -1331,6 +1445,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "Valores menores reforçam a vibração fraca.",
     [UI_MENU_RUMBLE_TRIGGERS] = "Vibração dos gatilhos (Xbox)",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "Também vibra os gatilhos do controle Xbox.",
+    [UI_MENU_RUMBLE_HD] = "Vibração HD (Switch)",
+    [UI_MENU_RUMBLE_HD_DESC] = "Envia a vibração detalhada do jogo a um Pro Controller do Switch ou Joy-Con como ela "
+                               "é. A intensidade da vibração continua valendo: o valor padrão é a do jogo.",
+    [UI_MENU_RUMBLE_HD_NEEDS] = "Requer um Pro Controller do Switch ou Joy-Con",
     [UI_MENU_PAD_LAYOUT] = "Layout dos botões",
     [UI_MENU_PAD_LAYOUT_DESC] = "Define qual botão funciona como A. Nintendo: pela posição, A à direita, B embaixo, "
                                 "X em cima, Y à esquerda. Xbox e PlayStation: pela letra, A embaixo, B à direita, X à "
@@ -1753,6 +1871,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_CAPTURE_FAILED] = "Não foi possível salvar a captura de bug %d",
     [UI_BOOT_TITLE] = "Preparando shaders",
     [UI_BOOT_STARTING] = "Iniciando", [UI_BOOT_SHADERS] = "Shaders: %lld de %lld", [UI_BOOT_PIPELINES] = "Pipelines: %lld de %lld",
+    [UI_BOOT_COMPUTE] = "Pipelines de computação: %lld de %lld", [UI_BOOT_DRIVER_CACHE] = "Cache do driver: %lld de %lld",
     [UI_MENU_CHEATS_REBUILD] = "Recompilar o jogo agora",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Alguns cheats alteram o código do jogo e ainda não foram compilados nele: são "
                                     "novos ou editados, ou a última recompilação falhou ou foi cancelada. Fecha o "
@@ -1826,6 +1945,18 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PRESENT_VSYNC] = "垂直同步",
     [UI_MENU_PRESENT_IMMEDIATE] = "立即",
     [UI_MENU_PRESENT_IN_USE] = "使用中：%s",
+    [UI_MENU_LOW_LATENCY] = "低延迟",
+    [UI_MENU_LOW_LATENCY_DESC] = "显卡驱动推迟每一帧的开始，尽可能晚地读取手柄输入（NVIDIA Reflex、AMD Anti-Lag），"
+                                 "并由它保持帧率上限。增强让显卡保持最高频率。",
+    [UI_MENU_LOW_LATENCY_BOOST] = "开启 + 增强",
+    [UI_MENU_LOW_LATENCY_NO_DRIVER] = "此显卡驱动没有低延迟模式",
+    [UI_MENU_LOW_LATENCY_DLSSG] = "DLSS 帧生成使用自带的低延迟",
+    [UI_MENU_LOW_LATENCY_FG] = "此显卡运行帧生成时关闭",
+    [UI_MENU_FRAMEGEN_DESC_ANY] = "添加生成的帧，使动作更流畅，可搭配 Upscaling 中的任意选项。",
+    [UI_MENU_FRAMEGEN_DESC_NGX] = "添加生成的帧，使动作更流畅。NVIDIA DLSS 需要在游戏启动时于 Upscaling 中选择 DLSS "
+                                  "模式；之后可搭配 Upscaling 中的任意选项。",
+    [UI_MENU_FRAMEGEN_NOTE_NGX] = "需要在游戏启动时开启 DLSS",
+    [UI_MENU_LOW_LATENCY_FAILED] = "使用中：关闭，驱动拒绝了（见日志中的 lowlat）",
     [UI_MENU_GPU] = "显卡",
     [UI_MENU_GPU_DESC] = "运行游戏所用的显卡。",
     [UI_MENU_GPU_AUTO] = "自动",
@@ -1848,6 +1979,14 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                               "窗口更小时（Ocarina 绘制 2560 × 1440）：画面被缩小，FSR 按下方强度锐化。",
     [UI_MENU_UPSCALER_FSR] = "AMD FSR 1",
     [UI_MENU_UPSCALER_BILINEAR] = "双线性",
+    [UI_MENU_UPSCALING_NATIVE] = "原生（100%）",
+    [UI_MENU_UPSCALING_DESC] = "画面如何平滑并缩放到窗口。原生：以画面的完整尺寸绘制 3D 场景，不使用超分辨率："
+                               "最清晰，GPU 负担也最大。",
+    [UI_MENU_UPSCALING_DESC_FSR] = "画面如何平滑并缩放到窗口。原生：以画面的完整尺寸绘制 3D 场景，不使用超分辨率："
+                                   "最清晰，GPU 负担也最大。",
+    [UI_MENU_UPSCALING_DESC_NO_FSR] = "画面如何平滑并缩放到窗口。原生：以画面的完整尺寸绘制 3D 场景，不使用超分辨率："
+                                      "最清晰，GPU 负担也最大。此处不提供 AMD FSR 3.1：它需要 "
+                                      "amd_fidelityfx_vk.dll，但无法加载。",
     [UI_MENU_GAME_ASPECT] = "宽屏",
     [UI_MENU_GAME_ASPECT_DESC] = "扩大视野。界面和菜单保持 16:9。",
     [UI_MENU_GAME_ASPECT_16_9] = "16:9（游戏原生）", [UI_MENU_GAME_ASPECT_WINDOW] = "窗口比例",
@@ -1905,6 +2044,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODE_HANDHELD] = "掌机模式",
     [UI_MENU_ASSUME_FOCUS] = "后台保持运行",
     [UI_MENU_ASSUME_FOCUS_DESC] = "切换到其他窗口时游戏继续运行。",
+    [UI_MENU_TEXT_SPEED] = "文字速度",
+    [UI_MENU_TEXT_SPEED_DESC] = "游戏对话框显示文字的速度。快速为三倍速度；即时则每页立即全部显示。"
+                                "游戏不允许加快的文字（例如与过场动画或语音同步的台词）保持原速。",
+    [UI_MENU_TEXT_SPEED_NORMAL] = "正常", [UI_MENU_TEXT_SPEED_FAST] = "快速",
+    [UI_MENU_TEXT_SPEED_INSTANT] = "即时",
     [UI_MENU_VOLUME] = "音量",
     [UI_MENU_MENU_SOUNDS] = "菜单音效", [UI_MENU_MENU_SOUNDS_DESC] = "本菜单的音效音量。",
     [UI_MENU_VOLUME_DESC] = "游戏总音量。",
@@ -1916,6 +2060,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_RUMBLE_CURVE_DESC] = "数值越低，轻微震动越强。",
     [UI_MENU_RUMBLE_TRIGGERS] = "扳机振动（Xbox）",
     [UI_MENU_RUMBLE_TRIGGERS_DESC] = "同时震动 Xbox 手柄的扳机。",
+    [UI_MENU_RUMBLE_HD] = "HD 振动（Switch）",
+    [UI_MENU_RUMBLE_HD_DESC] = "将游戏的细腻振动原样发送到 Switch Pro 手柄或 Joy-Con。振动强度仍然有效：默认值即游戏原本的强度。",
+    [UI_MENU_RUMBLE_HD_NEEDS] = "需要 Switch Pro 手柄或 Joy-Con",
     [UI_MENU_PAD_LAYOUT] = "按键布局",
     [UI_MENU_PAD_LAYOUT_DESC] = "设置哪个按键作为 A 键。Nintendo：按位置，A 在右、B 在下、X 在上、Y 在左。Xbox 和 PlayStation："
                                 "按标注，A 在下、B 在右、X 在左、Y 在上（PlayStation 手柄上为叉、圆圈、方块和三角）。自动："
@@ -2389,6 +2536,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_CAPTURE_FAILED] = "错误快照 %d 无法保存",
     [UI_BOOT_TITLE] = "正在准备着色器",
     [UI_BOOT_STARTING] = "正在启动", [UI_BOOT_SHADERS] = "着色器：%lld / %lld", [UI_BOOT_PIPELINES] = "管线：%lld / %lld",
+    [UI_BOOT_COMPUTE] = "计算管线：%lld / %lld", [UI_BOOT_DRIVER_CACHE] = "驱动缓存：%lld / %lld",
     [UI_MENU_CHEATS_REBUILD] = "立即重新构建游戏",
     [UI_MENU_CHEATS_REBUILD_DESC] = "有些金手指会修改游戏代码，但尚未构建进游戏：它们是新增或修改的，或上次重新构建失败或被取消。将关闭游戏；安装程序会把它们构建进去（几分钟）并重新启动游戏。上次存档之后的进度会丢失。",
     [UI_MENU_MODS_EXEFS_UNSUPPORTED] = "此模组修改游戏代码（exefs）的方式本移植无法应用，因此整个模组保持关闭。%s",

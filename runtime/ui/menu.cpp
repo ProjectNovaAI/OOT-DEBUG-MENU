@@ -53,10 +53,13 @@ extern "C" {
 #include "perfmon.h"
 #include "platform/platform.h"
 #include "save_share.h"
+#include "sprint.h"
 #include "sysinfo.h"
+#include "text_speed.h"
 #include "ui/menu.h"
 #include "ui_text.h"
 #include "vk_dlssg.h"
+#include "vk_lowlat.h"
 // host.h and vk.h pull in cpu.h, which is C only: the functions the menu needs from them, as declared there.
 void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
@@ -64,6 +67,11 @@ void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
 int res_adjustable(void);
 int wide_available(void);
+int wide_scene_settable(void);
+void wide_picture(unsigned *w, unsigned *h);
+double wide_scene_share(void);
+double wide_scene_wanted(void);
+int wide_scene_restart(void);
 const char *const *vk_color_preset(const char *name);
 int vk_hdr_wanted(void);
 int vk_hdr_active(void);
@@ -83,6 +91,8 @@ int vk_fg4_active(void);                // ... its swapchain is in place
 const char *vk_fg4_name(void);          // ... the version the library runs here ("3.1.6", "4.0.2")
 int vk_texture_detail_auto(void);       // vk_texture.c: the texture detail auto picks on this card, 0 full to 2 low
 int vk_mesh_shader_native(void);        // vk_device.c: the GPU has mesh shaders (the mesh emulation does nothing)
+int vk_low_end_card(void);              // vk_device.c: no mesh shaders, or under 8 GiB of video memory
+int vk_exec_replay_workers_auto(const char **why);   // vk_exec.c: replay_workers = auto's count on this PC
 double frame_step_limit_hz(void);
 int frame_limit_adjustable(void);
 int rtss_limit_state(void);
@@ -871,6 +881,26 @@ static const char *vsync_note(void) {
     return note;
 }
 
+// Low latency without frame generation (NX2NAVI_LOW_LATENCY, vk_lowlat.c, at once): off, on, and on with boost where
+// the driver's mode is NVIDIA's (AMD's has no boost; a 2 set there shows as on, which is what it does). Greyed out with
+// the reason where it cannot run: a driver with neither mode, a run in which DLSS frame generation brings its own, and
+// NVIDIA's while a frame generation presents the frames (vk_lowlat_status). Set and refused by the driver, it says so.
+// In a run that started with it off the driver's mode is not on the device: the row can be set and says "after restart".
+static void row_low_latency(void) {
+    static const char *const values[] = {"0", "1", "2"};
+    const char *names[] = {menu_text(UI_MENU_OFF), menu_text(UI_MENU_ON), menu_text(UI_MENU_LOW_LATENCY_BOOST)};
+    const int st = vk_lowlat_status(), n = st == VK_LOWLAT_AMD ? 2 : 3;
+    int cur = cfg_int("NX2NAVI_LOW_LATENCY");
+    cur = cur < 0 ? 0 : cur >= n ? n - 1 : cur;
+    if (st == VK_LOWLAT_NO_DRIVER) opt_disable_next(UI_MENU_LOW_LATENCY_NO_DRIVER);
+    else if (st == VK_LOWLAT_DLSSG) opt_disable_next(UI_MENU_LOW_LATENCY_DLSSG);
+    else if (st == VK_LOWLAT_FG) opt_disable_next(UI_MENU_LOW_LATENCY_FG);
+    const char *note = st == VK_LOWLAT_FAILED && cur ? menu_text(UI_MENU_LOW_LATENCY_FAILED)
+                     : st == VK_LOWLAT_RESTART && cur ? menu_text(UI_MENU_AFTER_RESTART) : nullptr;
+    int nv = opt_choice_index("NX2NAVI_LOW_LATENCY", UI_MENU_LOW_LATENCY, names, n, cur, 0, UI_MENU_LOW_LATENCY_DESC, note);
+    if (nv >= 0 && nv < n) opt_apply("NX2NAVI_LOW_LATENCY", values[nv]);
+}
+
 // ---- the tabs
 
 // The PCI vendor of the GPU the game renders on (menu_overlay_frame reads it from the device it is given; 0 before the
@@ -899,6 +929,14 @@ static const char *fsr4_label(void) {
     return s;
 }
 
+// Native (the Upscaling row): the scene drawn at the picture's own size, which the upscaler's stand-in then only
+// decodes 1:1 (vk_tonemap.c), with no DLSS or FSR. It is scene_share = 1 (widescreen.c plain_share) with dlaa = 0; a
+// scene_share of 1 or more set by hand in nx2navi.ini reads the same.
+static bool share_native(void) {
+    const char *s = cfg_get("NX2NAVI_SCENE_SHARE");
+    return s && *s && atof(s) >= 1;
+}
+
 // The Upscaling row's name of what is set now, for the performance overlay.
 static void upscaling_name(char *out, size_t size) {
     static const char *const modes[] = {"dlaa", "quality", "balanced", "performance", "ultra_performance"};
@@ -906,7 +944,8 @@ static void upscaling_name(char *out, size_t size) {
     static const UiTextId fsr3[] = {UI_MENU_FSR3_NATIVE, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED, UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
     // FSR 3.1 set where it cannot load runs nothing (vk_dlaa.c vk_dlaa_fsr3): the game scales the picture as the rest says
     if (!cfg_bool("NX2NAVI_DLAA") || (!strcmp(cfg_value("NX2NAVI_TAA"), "fsr3") && !vk_ffx_available())) {
-        if (strcmp(cfg_value("NX2NAVI_UPSCALER"), "fsr")) snprintf(out, size, "%s", menu_text(UI_MENU_UPSCALER_BILINEAR));
+        if (share_native() && wide_scene_settable()) snprintf(out, size, "%s", menu_text(UI_MENU_UPSCALING_NATIVE));
+        else if (strcmp(cfg_value("NX2NAVI_UPSCALER"), "fsr")) snprintf(out, size, "%s", menu_text(UI_MENU_UPSCALER_BILINEAR));
         else snprintf(out, size, menu_text(UI_MENU_OV_FMT_FSR), cfg_int("NX2NAVI_SHARPNESS"));
         return;
     }
@@ -945,8 +984,9 @@ static void row_upscaling(void) {
     static const UiTextId fsr_names[] = {UI_MENU_FSR3_NATIVE, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                          UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
     // FSR 4 (vk_ffx4.cpp) is the same setting as FSR 3.1 with NX2NAVI_FSR4 on, and takes the same modes: listed where
-    // it runs on this device, after FSR 3.1's
-    enum { BILINEAR, FSR1, DLSS, FSR3, FSR4 };
+    // it runs on this device, after FSR 3.1's. Native (share_native) is listed where the scene's share can be set
+    // (widescreen.c wide_scene_settable), after the two entries that enlarge the game's smaller scene.
+    enum { BILINEAR, FSR1, NATIVE, DLSS, FSR3, FSR4 };
     struct Entry { int kind, mode; };
     static char text[15][96];
     Entry list[18];
@@ -956,6 +996,7 @@ static void row_upscaling(void) {
         list[n] = {kind, mode};
         if (kind == BILINEAR) names[n] = menu_text(UI_MENU_UPSCALER_BILINEAR);
         else if (kind == FSR1) names[n] = menu_text(UI_MENU_UPSCALER_FSR);
+        else if (kind == NATIVE) names[n] = menu_text(UI_MENU_UPSCALING_NATIVE);
         else {
             char *t = text[(kind == FSR4 ? 10 : kind == FSR3 ? 5 : 0) + mode];
             if (kind == DLSS) snprintf(t, sizeof text[0], mode ? "DLSS %s" : "NVIDIA %s", menu_text(mode_names[mode]));
@@ -965,7 +1006,7 @@ static void row_upscaling(void) {
         n++;
     };
     // what is set now
-    Entry now = {strcmp(cfg_value("NX2NAVI_UPSCALER"), "fsr") ? BILINEAR : FSR1, 0};
+    Entry now = {share_native() ? NATIVE : strcmp(cfg_value("NX2NAVI_UPSCALER"), "fsr") ? BILINEAR : FSR1, 0};
     if (cfg_bool("NX2NAVI_DLAA")) {
         now = {strcmp(cfg_value("NX2NAVI_TAA"), "fsr3") ? DLSS : vk_ffx_fsr4() ? FSR4 : FSR3, 0};   // set where it does
         for (int i = 0; i < 5; i++)                                                                // not run: FSR 3.1 does
@@ -974,6 +1015,7 @@ static void row_upscaling(void) {
     const bool dlss = dlss_offered(), fsr = vk_ffx_available(), fsr4 = fsr && vk_ffx4_available();
     add(BILINEAR, 0);
     add(FSR1, 0);
+    if (wide_scene_settable() || now.kind == NATIVE) add(NATIVE, 0);
     for (int i = 0; dlss && i < 5; i++) add(DLSS, i);
     for (int i = 0; fsr && i < 5; i++) add(FSR3, i);
     for (int i = 0; fsr4 && i < 5; i++) add(FSR4, i);
@@ -982,10 +1024,21 @@ static void row_upscaling(void) {
     int cur = 0;
     for (int i = 0; i < n; i++)
         if (list[i].kind == now.kind && list[i].mode == now.mode) cur = i;
-    // FSR 3.1 still set where it cannot load: nothing upscales, so the row says so under its value
+    // FSR 3.1 still set where it cannot load: nothing upscales, so the row says so under its value. A scene larger than
+    // the render-target heap the start made (Native, or DLAA chosen in a run that started with a smaller scene) waits
+    // for a restart; at the heap's limit for this picture it stays smaller, and the note says how large it is
+    // (widescreen.c wide_scene_restart, heap_share)
     const char *note = nullptr;
+    static char in_use[64];
+    const double share = wide_scene_settable() ? wide_scene_share() : 0;
     if (!fsr && now.kind == FSR3) note = menu_text(UI_MENU_FSR3_OFF);
-    else if (upscaling_restart()) note = menu_text(UI_MENU_AFTER_RESTART);
+    else if (upscaling_restart() || (share > 0 && wide_scene_restart())) note = menu_text(UI_MENU_AFTER_RESTART);
+    else if (share > 0 && wide_scene_wanted() > share + 0.001) {
+        char pct[16];
+        snprintf(pct, sizeof pct, "%.0f %%", share * 100);
+        snprintf(in_use, sizeof in_use, menu_text(UI_MENU_PRESENT_IN_USE), pct);
+        note = in_use;
+    }
     int nv = opt_choice_index("NX2NAVI_UPSCALER", UI_MENU_UPSCALING, names, n, cur, 1,
                               !fsr ? UI_MENU_UPSCALING_DESC_NO_FSR : dlss ? UI_MENU_UPSCALING_DESC : UI_MENU_UPSCALING_DESC_FSR,
                               note);
@@ -993,7 +1046,10 @@ static void row_upscaling(void) {
     const Entry e = list[nv];
     opt_apply("NX2NAVI_UPSCALER", e.kind == FSR1 ? "fsr" : "bilinear");
     opt_apply("NX2NAVI_DLAA", e.kind >= DLSS ? "1" : "0");
-    if (e.kind < DLSS) opt_apply("NX2NAVI_FRAMEGEN", "off");   // it needs DLSS's or FSR 3.1's motion vectors (row_framegen)
+    // Native is scene_share = 1. Leaving it unsets the key (the game's own share, widescreen.c PLAIN_SHARE); a share of
+    // the whole picture set by hand beside DLSS or FSR stays while one of their modes is chosen
+    if (e.kind == NATIVE) opt_apply("NX2NAVI_SCENE_SHARE", "1");
+    else if (share_native() && (e.kind < DLSS || now.kind == NATIVE)) opt_apply("NX2NAVI_SCENE_SHARE", "");
     if (e.kind >= DLSS) opt_apply("NX2NAVI_DLSS", modes[e.mode]);
     if (e.kind >= DLSS) opt_apply("NX2NAVI_TAA", e.kind >= FSR3 ? "fsr3" : "dlss");
     if (e.kind >= FSR3) opt_apply("NX2NAVI_FSR4", e.kind == FSR4 ? "1" : "0");
@@ -1138,27 +1194,31 @@ static const char *fg4_label(void) {
     snprintf(s, sizeof s, *v ? "AMD FSR 4 library (%s)" : "AMD FSR 4 library", v);
     return s;
 }
-// It is the one in use: set (NX2NAVI_FSR4_FG) with FSR 4 as the upscaler, where it runs (vk_fg.cpp use4).
+// It is the one in use: set (NX2NAVI_FSR4_FG) with FSR 4 as the upscaler, where it runs (vk_fg.cpp use4). Without an
+// upscaler (dlaa = 0) the FSR 3.1 library's runs.
 static bool fg4_chosen(void) {
-    return cfg_bool("NX2NAVI_FSR4_FG") && vk_ffx_fsr4() && vk_fg4_available() && !vk_fg4_failed();
+    return cfg_bool("NX2NAVI_FSR4_FG") && cfg_bool("NX2NAVI_DLAA") && vk_ffx_fsr4() && vk_fg4_available() &&
+           !vk_fg4_failed();
 }
 
-// Frame generation (vk_fg.cpp, at once; NVIDIA's after a restart); it needs a temporal upscaler's motion vectors
+// Frame generation (vk_fg.cpp, at once; NVIDIA's after a restart), with any Upscaling choice: vk_dlaa.c makes its depth,
+// motion vectors and picture without the HUD with an upscaler or without one (fg_only_frame)
 static void row_framegen(void) {
-    // the generated frames are made from DLSS's or FSR 3.1's motion vectors: without one of them it would do nothing,
-    // and FSR 3.1 set where it cannot load (vk_ffx_available) is none
+    // FSR 3.1 set where it cannot load (vk_ffx_available) has no frame generation
     const bool dlss = dlss_offered(), fsr = vk_ffx_framegen_available();
-    const bool upscaled = cfg_bool("NX2NAVI_DLAA") && (strcmp(cfg_value("NX2NAVI_TAA"), "fsr3") || vk_ffx_available());
+    // Through NGX (every build but the Windows one) NVIDIA's needs NGX, which comes up only with DLSS upscaling on when
+    // the game starts (vk_ngxfg_wanted): before such a start it waits for a DLSS mode under Upscaling and a restart
+    const bool via_ngx = framegen_ngx() && dlss;
+    const bool dlss_set = cfg_bool("NX2NAVI_DLAA") && strcmp(cfg_value("NX2NAVI_TAA"), "fsr3");
     const char *v = cfg_value("NX2NAVI_FRAMEGEN");
     int cur = !strcmp(v, "fsr3") ? 1 : !strcmp(v, "dlss") ? 2 : 0;
-    // what the texts promise follows what runs here: DLSS's frame generation, AMD's, both or neither
-    const UiTextId desc = dlss ? (fsr ? UI_MENU_FRAMEGEN_DESC : UI_MENU_FRAMEGEN_DESC_DLSS)
-                               : (fsr ? UI_MENU_FRAMEGEN_DESC_FSR : UI_MENU_FRAMEGEN_DESC_NONE);
-    UiTextId note = dlss ? (fsr ? UI_MENU_FRAMEGEN_NOTE : UI_MENU_FRAMEGEN_NOTE_DLSS)
-                         : (fsr ? UI_MENU_FRAMEGEN_NOTE_FSR : UI_MENU_FRAMEGEN_NOTE);   // neither: the general note
+    // what the texts promise follows what runs here: frame generation with any choice, NGX's start rule, or none
+    const UiTextId desc = !dlss && !fsr ? UI_MENU_FRAMEGEN_DESC_NONE : via_ngx ? UI_MENU_FRAMEGEN_DESC_NGX
+                                                                            : UI_MENU_FRAMEGEN_DESC_ANY;
+    // UI_TEXT_COUNT: no note
+    UiTextId note = !dlss && !fsr ? UI_MENU_FRAMEGEN_NOTE : via_ngx ? UI_MENU_FRAMEGEN_NOTE_NGX : UI_TEXT_COUNT;
     if (!dlss && !fsr && cur == 0) opt_disable_next(UI_MENU_FRAMEGEN_NEEDS_NONE);
-    else if (!upscaled) opt_disable_next(dlss ? (fsr ? UI_MENU_FRAMEGEN_NEEDS : UI_MENU_FRAMEGEN_NEEDS_DLSS)
-                                              : (fsr ? UI_MENU_FRAMEGEN_NEEDS_FSR : UI_MENU_FRAMEGEN_NEEDS_NONE));
+    else if (via_ngx && !fsr && !vk_ngxfg_wanted() && !dlss_set) opt_disable_next(UI_MENU_FRAMEGEN_NEEDS_DLSS);
     // Off, AMD's where FSR 3.1 loads and NVIDIA DLSS (vk_dlssg.c, through Streamline and nx2navi_dlssg.dll) on NVIDIA GPUs,
     // now that Reflex paces it from the frame's start and generated frames are presented; elsewhere one stays listed
     // while it is set
@@ -1167,7 +1227,8 @@ static void row_framegen(void) {
     // upscaler to FSR 4 as well; both are NX2NAVI_FRAMEGEN = fsr3, told apart by NX2NAVI_FSR4_FG.
     enum { OFF, FSR3, FSR4LIB, DLSS };
     const bool four = cur == 1 && fg4_chosen();
-    const bool four_offered = fsr && vk_ffx4_available() && vk_fg4_available() && !vk_fg4_failed();
+    const bool four_offered = fsr && cfg_bool("NX2NAVI_DLAA") && vk_ffx4_available() && vk_fg4_available() &&
+                              !vk_fg4_failed();   // beside FSR 4 upscaling only: not offered without an upscaler
     const int now = cur == 2 ? DLSS : cur == 1 ? (four ? FSR4LIB : FSR3) : OFF;
     const char *all_names[] = {menu_text(UI_MENU_FRAMEGEN_OFF), "AMD FSR 3.1", fg4_label(), "NVIDIA DLSS"};
     int kinds[4];
@@ -1189,8 +1250,9 @@ static void row_framegen(void) {
     const int st = cur != 2 || restart ? DLSSG_RUNS : ngx ? (vk_ngxfg_max() ? DLSSG_RUNS : DLSSG_NO_FILES) : vk_dlssg_status();
     if (st == DLSSG_UNAVAILABLE) note = UI_MENU_FRAMEGEN_UNAVAILABLE;
     else if (st == DLSSG_NO_FILES) note = UI_MENU_FRAMEGEN_OFF_FILES;
-    // the note under AMD's names FSR 3.1 as what it needs; the FSR 4 library's runs beside FSR 4, so it has none
-    int nv = opt_choice_index("NX2NAVI_FRAMEGEN", UI_MENU_FRAMEGEN, names, n, at, 0, desc, four && !restart ? NULL : menu_text(note));
+    // the FSR 4 library's runs beside FSR 4 and has no note of its own
+    int nv = opt_choice_index("NX2NAVI_FRAMEGEN", UI_MENU_FRAMEGEN, names, n, at, 0, desc,
+                              (four && !restart) || note == UI_TEXT_COUNT ? NULL : menu_text(note));
     if (nv >= 0 && nv < n) {
         const int k = kinds[nv];
         opt_apply("NX2NAVI_FRAMEGEN", k == OFF ? "off" : k == DLSS ? "dlss" : "fsr3");
@@ -1201,8 +1263,8 @@ static void row_framegen(void) {
             opt_apply("NX2NAVI_FSR4_FG", "0");
         }
     }
-    else if (cur == 2 && upscaled && dlss && ngx) row_framegen_mult_ngx();
-    else if (cur == 2 && upscaled && dlss) row_framegen_mult(restart);
+    else if (cur == 2 && dlss && ngx) row_framegen_mult_ngx();   // nothing while NGX's frame generation cannot run
+    else if (cur == 2 && dlss) row_framegen_mult(restart);
 }
 
 // One Resolution row for the picture's height (NX2NAVI_GAME_RES, widescreen.c picture_height: 1080, the game's 1440 or
@@ -1264,6 +1326,7 @@ static void tab_screen(float scale) {
     // On is the default mode, mailbox with its fallbacks (gfx_present.c pick_present_mode): plain fifo would drop the
     // game to 30 at every slow frame on a 60 Hz display. A fifo already saved also reads as on.
     opt_toggle_value("NX2NAVI_VK_PRESENT", UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_DESC, "mailbox", "immediate", vsync_note());
+    row_low_latency();
     row_gpu();
     static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
     opt_choice("NX2NAVI_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
@@ -1401,6 +1464,12 @@ static void tab_game(float scale) {
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("NX2NAVI_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("NX2NAVI_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    // The message window's typing speed (text_speed.c), where the game version has the patch set text_speed; live. The
+    // names follow the values in their cfg.c order.
+    if (text_speed_available()) {
+        static const UiTextId speed[] = {UI_MENU_TEXT_SPEED_NORMAL, UI_MENU_TEXT_SPEED_FAST, UI_MENU_TEXT_SPEED_INSTANT};
+        opt_choice("NX2NAVI_TEXT_SPEED", UI_MENU_TEXT_SPEED, speed, 3, UI_MENU_TEXT_SPEED_DESC);
+    }
     // discord_rpc.c reads the setting on its own thread and connects or clears the status within half a second
     opt_toggle("NX2NAVI_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
     rows_saves();
@@ -1408,15 +1477,28 @@ static void tab_game(float scale) {
     opt_group_text("Testing");
     // vk_exec.c rw_init and tail_enabled read these at start: each row notes the restart and the bar's Restart does
     // it. A row whose setting does nothing without another one (rw_init) is greyed out until that one is set.
-    opt_slider("NX2NAVI_REPLAY_WORKERS", UI_MENU_REPLAY_WORKERS, 0, 8, UI_MENU_REPLAY_WORKERS_DESC, 1, "%.0f");
-    const bool workers = cfg_int("NX2NAVI_REPLAY_WORKERS") > 0, pipe = workers && cfg_int("NX2NAVI_REPLAY_PIPE") > 0;
+    // Automatic first, the default (vk_exec.c vk_exec_replay_workers_auto), named with the count it gives on this PC
+    {
+        static const char *const vals[] = {"auto", "0", "1", "2", "3", "4", "5", "6", "7", "8"};
+        static char auto_name[64];
+        snprintf(auto_name, sizeof auto_name, "%s (%d)", menu_text(UI_MENU_AUTO), vk_exec_replay_workers_auto(nullptr));
+        const char *names[] = {auto_name, "0", "1", "2", "3", "4", "5", "6", "7", "8"};
+        opt_choice_list("NX2NAVI_REPLAY_WORKERS", UI_MENU_REPLAY_WORKERS, vals, names, 10, UI_MENU_REPLAY_WORKERS_DESC);
+    }
+    const char *wset = cfg_value("NX2NAVI_REPLAY_WORKERS");
+    const bool workers = (!strcmp(wset, "auto") ? vk_exec_replay_workers_auto(nullptr) : atoi(wset)) > 0,
+               pipe = workers && cfg_int("NX2NAVI_REPLAY_PIPE") > 0;
     if (!workers) opt_disable_next(UI_MENU_NEEDS_WORKERS);
     opt_slider("NX2NAVI_REPLAY_PIPE", UI_MENU_REPLAY_PIPE, 0, 4, UI_MENU_REPLAY_PIPE_DESC, 1, "%.0f");
     if (!pipe) opt_disable_next(workers ? UI_MENU_NEEDS_PIPE : UI_MENU_NEEDS_WORKERS);
-    opt_slider("NX2NAVI_REPLAY_SMALL", UI_MENU_REPLAY_SMALL, 0, 64, UI_MENU_REPLAY_SMALL_DESC, 4, "%.0f");
+    opt_slider("NX2NAVI_REPLAY_SMALL", UI_MENU_REPLAY_SMALL, 0, 60, UI_MENU_REPLAY_SMALL_DESC, 4, "%.0f");
     opt_toggle("NX2NAVI_TAIL_EARLY", UI_MENU_TAIL_EARLY, UI_MENU_TAIL_EARLY_DESC);
     // Last, as its own settings follow it while it is on (rows_low_end). cfg.c LOWEND: the defaults for older graphics
     // cards, read at start.
+    // Offered on the cards it was written for (vk_low_end_card). On any other the row cannot turn the mode on; while
+    // the mode is on there (set earlier, or in nx2navi.ini) the row stays usable, to turn it off again.
+    if (!cfg_bool("NX2NAVI_LOW_END_GPU") && !cfg_low_end_active() && !vk_low_end_card())
+        opt_disable_next(UI_MENU_LOWEND_NOT_FOR_CARD);
     opt_toggle("NX2NAVI_LOW_END_GPU", UI_MENU_LOW_END_GPU, UI_MENU_LOW_END_GPU_DESC);
     // the mode's settings are read only while it is on (cfg.c LOWEND_ONLY), so their rows wait for the restart too
     if (cfg_low_end_active()) rows_low_end();
@@ -1520,6 +1602,7 @@ static int restart_pending(void) {
     bool prompts;
     prompts_note(&prompts);
     return cfg_pending_count() + upscaling_restart() + framegen_restart() + (vk_hdr_needs_restart() != 0)
+           + (wide_scene_settable() && wide_scene_share() > 0 && wide_scene_restart() && !upscaling_restart())
            + (prompts && !cfg_pending("NX2NAVI_PROMPTS"));
 }
 
@@ -1597,9 +1680,21 @@ static void tab_controls(float scale) {
     bool restart;
     opt_choice("NX2NAVI_PROMPTS", UI_MENU_PROMPTS, prompts, 5, UI_MENU_PROMPTS_DESC, prompts_note(&restart));
     opt_toggle("NX2NAVI_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
+    // The sprint button (sprint.c), where the game version has the patch set sprint; both rows are live. The names
+    // follow the values in their cfg.c order.
+    if (sprint_available()) {
+        static const UiTextId sprint_button[] = {UI_MENU_SPRINT_OFF, UI_MENU_SPRINT_B, UI_MENU_SPRINT_L3};
+        static const UiTextId sprint_mode[] = {UI_MENU_SPRINT_TOGGLE, UI_MENU_SPRINT_HOLD};
+        opt_choice("NX2NAVI_SPRINT_BUTTON", UI_MENU_SPRINT_BUTTON, sprint_button, 3, UI_MENU_SPRINT_BUTTON_DESC);
+        opt_choice("NX2NAVI_SPRINT_MODE", UI_MENU_SPRINT_MODE, sprint_mode, 2, UI_MENU_SPRINT_MODE_DESC);
+    }
     opt_slider("NX2NAVI_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("NX2NAVI_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
     opt_toggle("NX2NAVI_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
+    // HD rumble can be switched only while the gamepad in use is one whose actuators take the game's values (a Switch
+    // Pro Controller or Joy-Con, input.c hd_probe); with any other the row is greyed out and says what it needs.
+    if (!input_rumble_hd_available()) opt_disable_next(UI_MENU_RUMBLE_HD_NEEDS);
+    opt_toggle("NX2NAVI_RUMBLE_HD", UI_MENU_RUMBLE_HD, UI_MENU_RUMBLE_HD_DESC);
     opt_group(UI_MENU_GROUP_STICKS);
     double now[2];
     bool pad = input_pad_stick_percent(now) != 0;
@@ -1980,6 +2075,14 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
 static void perf_picture(const MenuTarget *t, PerfPanel *p) {
     unsigned out[2], scene[2];
     res_sizes(out, scene);
+    // Ocarina's build has no output and scene patch sets, so res_sizes holds the other builds' placeholders there: the
+    // picture and the scene are widescreen.c's, the scene at the share it writes for the game (wide_present; in the
+    // first two seconds of a run the game's own dynamic resolution still sizes it)
+    const double share = !res_adjustable() && wide_scene_settable() ? wide_scene_share() : 0;
+    if (share > 0) {
+        wide_picture(&out[0], &out[1]);
+        scene[0] = (unsigned)lround(out[0] * share), scene[1] = (unsigned)lround(out[1] * share);
+    }
     char (*v)[64] = p->picture;
     snprintf(v[0], sizeof v[0], menu_text(UI_MENU_OV_FMT_SIZE), t->width, t->height);
     snprintf(v[1], sizeof v[1], menu_text(UI_MENU_OV_FMT_SIZE), (unsigned)t->image_w, (unsigned)t->image_h);
@@ -2216,8 +2319,9 @@ extern "C" int menu_boot_frame(const MenuTarget *t) {
     int phase = g_boot_phase.load(std::memory_order_acquire);
     long long done = g_boot_done.load(std::memory_order_relaxed), total = g_boot_total.load(std::memory_order_relaxed);
     char step[160];
-    if (phase == 1 || phase == 2)
-        snprintf(step, sizeof step, ui_text(phase == 1 ? UI_BOOT_SHADERS : UI_BOOT_PIPELINES), done, total);
+    static const UiTextId steps[] = {UI_BOOT_SHADERS, UI_BOOT_PIPELINES, UI_BOOT_COMPUTE, UI_BOOT_DRIVER_CACHE};
+    if (phase >= 1 && phase <= 4)
+        snprintf(step, sizeof step, ui_text(steps[phase - 1]), done, total);
     else
         snprintf(step, sizeof step, "%s", ui_text(UI_BOOT_STARTING));
     const char *title = ui_text(UI_BOOT_TITLE);
@@ -2228,7 +2332,7 @@ extern "C" int menu_boot_frame(const MenuTarget *t) {
     ImFont *head = g_title_font ? g_title_font : body;
     float head_px = g_title_font ? g_title_font->FontSize * io.FontGlobalScale : body_px * 1.2f;   // as GetFontSize scales
     float frac = -1;
-    if ((phase == 1 || phase == 2) && total > 0) frac = done <= 0 ? 0 : done >= total ? 1 : (float)done / (float)total;
+    if (phase >= 1 && phase <= 4 && total > 0) frac = done <= 0 ? 0 : done >= total ? 1 : (float)done / (float)total;
     float s = (float)fmod((now - g_boot_t0) / 1e9 * 0.8, 2.0);
     skin_boot_panel(ImGui::GetForegroundDrawList(), head, head_px, body, body_px, title, step, frac, s < 1 ? s : 2 - s,
                     (float)t->width, (float)t->height, scale);

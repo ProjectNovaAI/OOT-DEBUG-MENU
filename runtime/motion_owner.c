@@ -33,11 +33,11 @@ static int owner_on;
 
 static void owner_init(void *unused) {
     (void)unused;
-    // NX2NAVI_SELECTIVE_MOTION (selective_motion; default 0, 1 on): off until it has been played. On, every guest
+    // NX2NAVI_SELECTIVE_MOTION (selective_motion; default 1, 0 off: the estimate from colour and depth). On, every guest
     // submission walks the player's actor, equipment and models in guest memory (motion_owner_capture), each scene
     // draw is looked up in that list (vk_fg_pose.inc pose_owner), and the player's meshes are drawn a second time
     // into the motion vectors DLSS, FSR 3.1 and frame generation read.
-    owner_on = RT_V111 && rt_knob("SELECTIVE_MOTION", "0");
+    owner_on = RT_V111 && rt_knob("SELECTIVE_MOTION", "1");
 }
 // Hide meshes with Hide player off (the debug menu, vk_exec_draw.c hide_meshes_now) keeps the player's draws, which
 // takes the same tracking: it runs while that is so, without the motion pass (motion_owner_selective).
@@ -274,7 +274,7 @@ void motion_owner_capture(MotionOwnerSnapshot *out) {
     capture_model_buffers(out);
     O.nbindings=out->count;
     memcpy(O.bindings,out->bindings,out->count*sizeof *O.bindings);
-    if(O.captures%720==0) rt_log("motion direct: %u shape bindings from %u models",out->count,O.count);
+    if(O.captures%43200==0) rt_log("motion direct: %u shape bindings from %u models",out->count,O.count);
     plat_mutex_unlock(&owner_lock);
     qsort(out->bindings, out->count, sizeof *out->bindings, binding_address_order);
 }
@@ -283,7 +283,7 @@ void motion_owner_present(void) {
     if (!motion_owner_enabled()) return;
     plat_mutex_lock(&owner_lock);
     ++O.producer_frame;
-    if (O.producer_frame % 120 == 0)
+    if (O.producer_frame % 7200 == 0)   // on by default: a line every minute or two, not every two seconds
         rt_log("motion ownership: %u models, %llu captures, %llu owned/%llu other queries, "
                "%llu conflicts, %llu capacity misses, %u attachment rejections",
                O.count, (unsigned long long)O.captures, (unsigned long long)O.owned_queries,

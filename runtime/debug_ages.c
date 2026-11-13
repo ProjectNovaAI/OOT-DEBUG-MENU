@@ -6,7 +6,7 @@
 // without the flag of the current age is greyed out and cannot be put on a button. Each table entry is read by
 // main+0x33a2500 (the entry type's field visitor): ActorShort at +0x38, PouchActorShort at +0x40, IsUsableAdult at
 // +0x48, IsUsableChild at +0x49, then one "key present" byte per field at +0x4a to +0x4d in the same order. The visitor
-// calls the patch page at +0xf30 in place of its last `mov w0, w21` (set dbgframe, debug_game.c debug_pouch_entry),
+// calls the patch page at +0xe30 in place of its last `mov w0, w21` (set dbgframe, debug_game.c debug_pouch_entry),
 // with the entry in x20: dbg_pouch_entry notes each entry with its own two bytes. With the setting on, every noted
 // entry says usable at both ages; off, each gets its own values back. An entry is written only while it still holds
 // the names it had when it was read, so memory the table gave back is left alone.
