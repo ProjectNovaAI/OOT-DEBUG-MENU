@@ -19,12 +19,12 @@ static void debug_frame(Cpu *c) {
 
 __attribute__((constructor)) static void debug_frame_register(void) { rt_register_host(HOST_DEBUG_FRAME, debug_frame); }
 
-// Force age (set dbgage). main+0x943550, which builds an actor's resource set, calls the patch page at +0xf60 in place
+// Force age (set dbgage). main+0x943550, which builds an actor's resource set, calls the patch page at +0xf00 in place
 // of its `ldr x8, [x0, #0x20]`, with the set in x0: the host function makes that load after debug_warp.c
 // dbg_resource_set has noted the player's set. main+0x945610, which gives a set its age and fills in that age's
 // resources, calls +0xf50 in place of its `mov w20, w1`, with the set in x0 and the area's age in w1: the host function
 // puts the age dbg_resource_age returns in both w1 and w20, which the rest of the function reads.
-#define HOST_DEBUG_RESOURCE_SET (RT_PATCH_PAGE + 0xf60)
+#define HOST_DEBUG_RESOURCE_SET (RT_PATCH_PAGE + 0xf00)
 #define HOST_DEBUG_RESOURCE_AGE (RT_PATCH_PAGE + 0xf50)
 
 static void debug_resource_set(Cpu *c) {

@@ -27,6 +27,13 @@
 
 uint8_t rt_patch_on[RT_PATCH_COUNT > 0 ? RT_PATCH_COUNT : 1];   // read by the generated C at every patched site
 
+#ifdef RT_PATCH_PAGE
+// The time of day's site of the set ostep (patches-v111.txt) calls the page's +0xf60 (frame_rate.c).
+__attribute__((constructor)) static void day_register(void) {
+    if (RT_V111) rt_register_host(RT_PATCH_PAGE + 0xf60, frame_rate_day_host);
+}
+#endif
+
 #if RT_PATCH_COUNT
 static const struct { const char *name, *env; int on; } sets[] = {
 #define X(i, n, e, d) {#n, e, d},
