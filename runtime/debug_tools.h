@@ -138,6 +138,7 @@ void dbg_bind_set(int i, const uint8_t keys[DBG_BIND_KEYS], uint8_t pad);   // w
 uint32_t dbg_bind_pads(void);
 uint64_t dbg_bind_poll(uint32_t pads, uint8_t *keys, int menu_open);
 void dbg_bind_run(uint64_t actions);
+int dbg_bind_uses_key(int key);   // 1 when an action is bound to that key (KEY_ id): a fixed F key steps aside
 // The game's pause menu (the item, map, quest and equipment pages) is open: the menu button and the bound buttons are
 // the game's then.
 int dbg_game_menu_open(void);
@@ -409,6 +410,14 @@ int dbg_hover_boots_on(void);
 // debug_game.c debug_abyss_hits reads it (recomp/patches-v111.txt, set dbgframe).
 void dbg_no_void_out(int on);
 int dbg_no_void_out_on(void);
+// PastyPixel's Bomb T-Pose (debug_move.c; kept from one start to the next; the cause is in docs/bomb-t-pose.md): while on,
+// every bomb pulled out while moving comes out held to the right side before going over the head, the game's own bug
+// after the ocarina. bomb_frame finds the player's face layer on every frame; dbg_bomb_layers, called from the animation
+// owner's update (debug_game.c debug_bomb_layers, recomp/patches-v111.txt set dbgframe), gives that layer the ocarina's
+// breathing mask while a bomb is lifted or carried, and puts its own mask back afterwards.
+void dbg_bomb_bug(int on);
+int dbg_bomb_bug_on(void);
+void dbg_bomb_layers(struct Cpu *c, uint64_t list);
 void dbg_move_frame(struct Cpu *c);
 
 // Call tracing on the lifted code's function-entry hook (debug_fntrace.c; the console's ftrace and fcount). Watch:
@@ -423,6 +432,24 @@ void dbg_fntrace_off(void);
 int dbg_fntrace_ring(uint64_t i, uint64_t *addr, uint64_t *lr, uint64_t *x0, uint64_t *ns);
 int dbg_fntrace_counts(uint32_t lo, uint32_t hi, void (*fn)(uint64_t addr, uint32_t n, uint64_t lr, double first_s, void *ctx), void *ctx,
                        uint32_t *distinct, uint32_t *dropped);
+
+// Frame recorder (debug_snap.c; the console's snap): every game frame copies up to 16 memory ranges (128 KiB a frame
+// in all, 512 MiB with the ring) into a ring of the given number of frames; save writes the kept frames to a file,
+// oldest first. dbg_snap_frame runs from the debug frame hook.
+int dbg_snap_start(const uint64_t *addr, const uint64_t *len, int n, uint32_t frames);
+void dbg_snap_stop(void);
+int dbg_snap_save(const char *path);
+uint32_t dbg_snap_frames(void);
+int dbg_snap_on(void);
+void dbg_snap_frame(void);
+
+// Scripted controller input (debug_pad.c; the console's pad): steps that hold buttons and the left stick for a time,
+// or until a byte of memory reads a value; while the script runs it replaces the controller in input.c input_poll.
+int dbg_pad_add(uint64_t buttons, int32_t lx, int32_t ly, uint64_t ms, uint64_t addr, uint8_t value);
+void dbg_pad_clear(void);
+int dbg_pad_run(void);
+int dbg_pad_state(int *step, int *total, uint64_t *waits, int max);
+void dbg_pad_apply(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 
 #ifdef __cplusplus
 }

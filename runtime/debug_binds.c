@@ -1,5 +1,6 @@
 // Hotkeys the player binds to the debug tools (debug_tools.h, "Hotkeys the player binds"): each action has a setting
 // debug_hotkey_<name> holding up to two keys and one controller button in the bind line format ("key:g, pad:dpad_up").
+// An action may have a default bind, used while its setting is unset; clearing it writes "none".
 // The game's input poll (input.c poll_merged) hands over the keys and physical buttons held; a bound one is cleared before
 // the bindings to the game's buttons are applied, so the game never sees it, and its press runs the action once the
 // poll has let go of the input lock.
@@ -7,6 +8,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "clip.h"
 #include "debug_tools.h"
 #include "input_map.h"
 #include "platform/platform.h"
@@ -15,6 +17,8 @@
 typedef struct {
     DbgBindInfo info;
     void (*run)(void);
+    const char *dflt;   // the bind while the setting is unset, or NULL
+    int always;         // runs on any game version (not a debug tool of the game's memory)
 } Action;
 
 static void say(const char *what, int on) {
@@ -41,6 +45,7 @@ static void a_fly(void) { dbg_fly(!dbg_fly_on()), say("Fly", dbg_fly_on()); }
 static void a_hover(void) { dbg_hover(!dbg_hover_on()), say("Hover", dbg_hover_on()); }
 static void a_boots(void) { dbg_hover_boots(!dbg_hover_boots_on()), say("Infinite Hover Boots", dbg_hover_boots_on()); }
 static void a_novoid(void) { dbg_no_void_out(!dbg_no_void_out_on()), say("No void-out", dbg_no_void_out_on()); }
+static void a_bombbug(void) { dbg_bomb_bug(!dbg_bomb_bug_on()), say("PastyPixel's Bomb T-Pose", dbg_bomb_bug_on()); }
 static void a_god(void) { dbg_invulnerable(!dbg_invulnerable_on()), say("Invulnerable", dbg_invulnerable_on()); }
 static void a_onehit(void) { dbg_one_hit(!dbg_one_hit_on()), say("One-hit kills", dbg_one_hit_on()); }
 static void a_magic(void) { dbg_magic_infinite(!dbg_magic_infinite_on()), say("Infinite magic", dbg_magic_infinite_on()); }
@@ -79,6 +84,7 @@ static void a_igt(void) {
     dbg_igt_toggle();
     dbg_toast_show(dbg_igt_running() ? "Speedrun timer started" : "Speedrun timer stopped");
 }
+static void a_clip(void) { clip_save(); }
 static void a_split(void) {
     char t[48];
     dbg_igt_split();
@@ -92,6 +98,7 @@ static const Action actions[] = {
     {{"hover", "Hover", "Switches Hover on and off: the player keeps the height it was switched on at."}, a_hover},
     {{"hoverboots", "Infinite Hover Boots", "Switches Infinite Hover Boots on and off."}, a_boots},
     {{"novoid", "No void-out", "Switches No void-out on and off."}, a_novoid},
+    {{"bombbug", "PastyPixel's Bomb T-Pose", "Switches PastyPixel's Bomb T-Pose on and off."}, a_bombbug},
     {{"god", "Invulnerable", "Switches Invulnerable on and off."}, a_god},
     {{"onehit", "One-hit kills", "Switches One-hit kills on and off."}, a_onehit},
     {{"infmagic", "Infinite magic", "Switches Infinite magic on and off."}, a_magic},
@@ -118,6 +125,7 @@ static const Action actions[] = {
     {{"timer", "Timer start / stop", "Starts or stops the timer."}, a_timer},
     {{"igt", "Speedrun timer start / stop", "Starts or pauses the speedrun timer."}, a_igt},
     {{"split", "Speedrun timer split", "Takes a split, named after the current area."}, a_split},
+    {{"clip", "Save clip", "Saves the last seconds of play as an MP4 in the clips folder (Clips, below)."}, a_clip, "key:f5", 1},
 };
 enum { N = sizeof actions / sizeof *actions };
 _Static_assert(N <= 64, "dbg_bind_poll returns one bit per action");
@@ -175,7 +183,8 @@ void dbg_bind_get(int i, uint8_t keys[DBG_BIND_KEYS], uint8_t *pad) {
     if (i < 0 || i >= N) return;
     char name[64];
     setting_of(i, name, sizeof name);
-    parse(cfg_get(name), keys, pad);
+    const char *v = cfg_get(name);
+    parse(v ? v : actions[i].dflt, keys, pad);
 }
 
 void dbg_bind_set(int i, const uint8_t keys[DBG_BIND_KEYS], uint8_t pad) {
@@ -190,6 +199,8 @@ void dbg_bind_set(int i, const uint8_t keys[DBG_BIND_KEYS], uint8_t pad) {
         n += (size_t)snprintf(v + n, sizeof v - n, "%spad:%s", n ? ", " : "", input_pad_name(pad));
     if (n) {
         cfg_set(name, v);
+    } else if (actions[i].dflt) {   // nothing bound, where the default would come back if the line went
+        cfg_set(name, "none");
     } else {   // nothing bound: the line leaves nx2navi.ini
         const char *k = name;
         cfg_reset(&k, 1);
@@ -236,7 +247,17 @@ uint64_t dbg_bind_poll(uint32_t pads, uint8_t *keys, int menu_open) {
         if (down && !held[i] && !menu_open && !game_menu) fired |= 1ull << i;
         held[i] = (uint8_t)down;
     }
-    return dbg_available() ? fired : 0;
+    if (!dbg_available())
+        for (int i = 0; i < N; i++)
+            if (!actions[i].always) fired &= ~(1ull << i);
+    return fired;
+}
+
+int dbg_bind_uses_key(int key) {
+    refresh();
+    for (int i = 0; key && i < N; i++)
+        if (binds[i].keys[0] == key || binds[i].keys[1] == key) return 1;
+    return 0;
 }
 
 void dbg_bind_run(uint64_t actions_fired) {

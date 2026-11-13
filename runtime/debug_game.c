@@ -84,6 +84,19 @@ static void debug_abyss_type(Cpu *c) {
     if (dbg_no_void_out_on()) c->x[8] = 0;
     ST32(c->x[19] + 0x191c, (uint32_t)c->x[8]);
 }
+
+// Bomb T-Pose (debug_move.c dbg_bomb_layers): the animation owner's update (main+0x29d740, its layer list in x19: their
+// number at +0x18, the layers at +0x20, 0x48 apart) has updated every layer when it reaches main+0x29e548, where it goes
+// through them again; its `ldrsw x8, [x19, #0x18]` there calls +0xec0. The host function lets dbg_bomb_layers set up
+// the player's face layer (it may call the game), then makes the load.
+#define HOST_DEBUG_BOMB_LAYERS (RT_PATCH_PAGE + 0xec0)
+static void debug_bomb_layers(Cpu *c) {
+    uint64_t list = c->x[19];
+    dbg_bomb_layers(c, list);
+    c->x[8] = (uint64_t)(int64_t)(int32_t)LD32(list + 0x18);
+}
+__attribute__((constructor)) static void debug_bomb_register(void) { rt_register_host(HOST_DEBUG_BOMB_LAYERS, debug_bomb_layers); }
+
 __attribute__((constructor)) static void debug_abyss_register(void) {
     rt_register_host(HOST_DEBUG_ABYSS_HITS, debug_abyss_hits);
     rt_register_host(HOST_DEBUG_ABYSS_TYPE, debug_abyss_type);

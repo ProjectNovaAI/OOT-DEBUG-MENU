@@ -1100,6 +1100,7 @@ static int blocked(volatile int32_t *flag, volatile uint64_t *closed, const char
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     poll_merged(buttons, lx, ly, rx, ry);
+    dbg_pad_apply(buttons, lx, ly, rx, ry);   // a console input script replaces the controller (debug_pad.c)
     *buttons &= ~dbg_fly_game_mask();   // fly's B with the ocarina out (debug_move.c)
     if (!g_block && !g_menu) menu_cursor_poll(buttons);
     const int32_t axes[4] = {*lx, *ly, *rx, *ry};

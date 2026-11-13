@@ -11,6 +11,7 @@
 #include "debug_remote.h"
 #include "debug_tools.h"
 #include "host.h"
+#include "input_map.h"
 #include "layout.h"
 #include "platform/platform.h"
 #include "ui/menu.h"
@@ -67,8 +68,17 @@ int dbg_player_set_pos(const float pos[3]) {
 #define HEALTH_MAX_HASH 0xFBE01DA1u
 #define HEALTH_SCAN_FROM 0x100000000ull   // the guest heap lies between these (host addresses = guest addresses)
 #define HEALTH_SCAN_TO 0x700000000ull
+#define HEALTH_RECS 8                     // more health records than the game has at once
+#define HEALTH_NEAR 0x20000000ull         // a quick search covers this much on each side of the records known
+#define HEALTH_NEAR_EVERY_NS 15000000000ull
 
-static _Atomic uint64_t health_addr;
+// The game keeps more than one health record ({life, key, class, -, max, key, class}): a record of an earlier area
+// stays valid and unchanged while the hearts on screen follow another one (seen at Death Mountain Crater as a child: the
+// first record found stayed at 52 while the second ran down to 0). Every valid record is kept; writes go to all of
+// them, and reads follow the one the game itself changed last (rec_last holds the value each had when last seen).
+static _Atomic uint64_t health_recs[HEALTH_RECS];
+static _Atomic int rec_last[HEALTH_RECS], health_live = -1;
+static _Atomic uint64_t health_near_ns;   // when the last quick search started
 static _Atomic int health_locating, god_on;
 
 static int health_entry_ok(uint64_t a, uint32_t out[8]) {
@@ -82,49 +92,106 @@ static int health_entry_ok(uint64_t a, uint32_t out[8]) {
     return 1;
 }
 
-static void health_locate_thread(void *arg) {
-    (void)arg;
+static void rec_add(uint64_t a) {
+    for (int i = 0; i < HEALTH_RECS; i++)
+        if (atomic_load(&health_recs[i]) == a) return;
+    for (int i = 0; i < HEALTH_RECS; i++) {
+        uint64_t zero = 0;
+        if (atomic_load(&health_recs[i])) continue;
+        atomic_store(&rec_last[i], -1);
+        if (atomic_compare_exchange_strong(&health_recs[i], &zero, a)) return;
+    }
+}
+
+static int recs_known(void) {
+    int n = 0;
+    for (int i = 0; i < HEALTH_RECS; i++) n += atomic_load(&health_recs[i]) != 0;
+    return n;
+}
+
+static void scan_health(uint64_t from, uint64_t to) {
     enum { CHUNK = 1 << 20 };
-    static uint32_t buf[CHUNK / 4];
-    uint64_t addr = HEALTH_SCAN_FROM;
-    while (addr < HEALTH_SCAN_TO && !atomic_load(&health_addr)) {
+    static uint32_t buf[CHUNK / 4];   // one search runs at a time (health_locating)
+    for (uint64_t addr = from; addr < to;) {
         uint64_t end = 0;
-        int st = plat_mem_state(addr, HEALTH_SCAN_TO, &end);
+        int st = plat_mem_state(addr, to, &end);
         if (end <= addr) break;
-        if (st == PLAT_PROT_RW) {
+        if (st == PLAT_PROT_RW)
             for (uint64_t at = addr; at < end; at += CHUNK) {
                 uint64_t n = (end - at < CHUNK ? end - at : CHUNK) / 4;
                 if (!plat_mem_read(at, buf, n * 4)) continue;
                 for (uint64_t i = 1; i < n; i++)
-                    if (buf[i] == HEALTH_HASH && health_entry_ok(at + (i - 1) * 4, NULL)) {
-                        atomic_store(&health_addr, at + (i - 1) * 4);
-                        break;
-                    }
-                if (atomic_load(&health_addr)) break;
+                    if (buf[i] == HEALTH_HASH && health_entry_ok(at + (i - 1) * 4, NULL)) rec_add(at + (i - 1) * 4);
             }
-        }
         addr = end;
+    }
+}
+
+// arg 0: the whole heap (about half a minute; the first record found is used at once). arg 1: around the records
+// known, for one the game made since (a new area, the other age).
+static void health_locate_thread(void *arg) {
+    if (!arg) {
+        scan_health(HEALTH_SCAN_FROM, HEALTH_SCAN_TO);
+    } else {
+        uint64_t known[HEALTH_RECS];
+        for (int i = 0; i < HEALTH_RECS; i++) known[i] = atomic_load(&health_recs[i]);
+        for (int i = 0; i < HEALTH_RECS; i++)
+            if (known[i]) {
+                uint64_t lo = known[i] > HEALTH_SCAN_FROM + HEALTH_NEAR ? (known[i] - HEALTH_NEAR) & ~0xFFFFull : HEALTH_SCAN_FROM;
+                uint64_t hi = known[i] + HEALTH_NEAR < HEALTH_SCAN_TO ? known[i] + HEALTH_NEAR : HEALTH_SCAN_TO;
+                scan_health(lo, hi);
+            }
     }
     atomic_store(&health_locating, 0);
 }
 
-int dbg_health_locating(void) { return atomic_load(&health_locating); }
+static void health_search(int near) {
+    int zero = 0;
+    if (!atomic_compare_exchange_strong(&health_locating, &zero, 1)) return;
+    if (near) atomic_store(&health_near_ns, plat_now_ns());
+    if (!plat_thread_spawn(health_locate_thread, (void *)(uintptr_t)near, "debug-health", 0)) atomic_store(&health_locating, 0);
+}
+
+int dbg_health_locating(void) { return atomic_load(&health_locating) && !recs_known(); }
+
+// Every valid record's life, max and address (n of them); records no longer valid are dropped. Returns the index in
+// the arrays of the record the game changed last (the first one before any change), -1 with none.
+static int health_read_all(int cur[HEALTH_RECS], int max[HEALTH_RECS], uint64_t at[HEALTH_RECS], int *n) {
+    int live = atomic_load(&health_live), pick = -1;
+    *n = 0;
+    for (int i = 0; i < HEALTH_RECS; i++) {
+        uint64_t a = atomic_load(&health_recs[i]);
+        uint32_t e[8];
+        if (!a) continue;
+        if (!health_entry_ok(a, e)) {   // freed or reused (an area change, a new save)
+            atomic_compare_exchange_strong(&health_recs[i], &a, 0);
+            continue;
+        }
+        int prev = atomic_exchange(&rec_last[i], (int)e[0]);
+        if (prev >= 0 && prev != (int)e[0]) atomic_store(&health_live, i), live = i;
+        if (i == live || pick < 0) pick = *n;
+        cur[*n] = (int)e[0], max[*n] = (int)e[4], at[*n] = a, (*n)++;
+    }
+    if (!*n) health_search(0);
+    return pick;
+}
+
+// A write of ours does not count as the game's change (rec_last).
+static void health_write(uint64_t a, uint32_t off, uint32_t v) {
+    if (!dbg_write32(a + off, v) || off) return;
+    for (int i = 0; i < HEALTH_RECS; i++)
+        if (atomic_load(&health_recs[i]) == a) atomic_store(&rec_last[i], (int)v);
+}
 
 int dbg_health_get(int *cur, int *max) {
     if (!dbg_available()) return 0;
-    uint32_t e[8];
-    uint64_t a = atomic_load(&health_addr);
-    if (a && health_entry_ok(a, e)) {
-        if (cur) *cur = (int)e[0];
-        if (max) *max = (int)e[4];
-        return 1;
-    }
-    if (a) atomic_store(&health_addr, 0);   // moved (a new save was loaded): look again
-    int zero = 0;
-    if (atomic_compare_exchange_strong(&health_locating, &zero, 1)) {
-        if (!plat_thread_spawn(health_locate_thread, NULL, "debug-health", 0)) atomic_store(&health_locating, 0);
-    }
-    return 0;
+    int c[HEALTH_RECS], m[HEALTH_RECS], n;
+    uint64_t at[HEALTH_RECS];
+    int k = health_read_all(c, m, at, &n);
+    if (k < 0) return 0;
+    if (cur) *cur = c[k];
+    if (max) *max = m[k];
+    return 1;
 }
 
 int dbg_write32(uint64_t at, uint32_t v) {
@@ -136,19 +203,21 @@ int dbg_write32(uint64_t at, uint32_t v) {
 }
 
 int dbg_health_set(int cur) {
-    int c, m;
-    if (!dbg_health_get(&c, &m)) return 0;
-    if (cur < 0) cur = 0;
-    if (cur > m) cur = m;
-    return dbg_write32(atomic_load(&health_addr), (uint32_t)cur);
+    int c[HEALTH_RECS], m[HEALTH_RECS], n;
+    uint64_t at[HEALTH_RECS];
+    if (!dbg_available() || health_read_all(c, m, at, &n) < 0) return 0;
+    for (int i = 0; i < n; i++) health_write(at[i], 0, (uint32_t)(cur < 0 ? 0 : cur > m[i] ? m[i] : cur));
+    return 1;
 }
 
 int dbg_health_set_max(int max) {
-    int c, m;
-    if (!dbg_health_get(&c, &m)) return 0;
+    int c[HEALTH_RECS], m[HEALTH_RECS], n;
+    uint64_t at[HEALTH_RECS];
+    if (!dbg_available() || health_read_all(c, m, at, &n) < 0) return 0;
     if (max < 4) max = 4;
     if (max > 80) max = 80;
-    return dbg_write32(atomic_load(&health_addr) + 0x10, (uint32_t)max);
+    for (int i = 0; i < n; i++) health_write(at[i], 0x10, (uint32_t)max);
+    return 1;
 }
 
 // The Debug tab's settings stay as set from one start to the next: each is also a setting of nx2navi.ini [debug],
@@ -206,10 +275,15 @@ static void health_tick(void) {
     kept_load();
     int lock = atomic_load(&lock_val);
     if (!lock && !atomic_load(&god_on)) return;
-    int c, m;
-    if (!dbg_health_get(&c, &m)) return;
-    int want = lock ? (lock < m ? lock : m) : m;
-    if (c != want) dbg_write32(atomic_load(&health_addr), (uint32_t)want);
+    int c[HEALTH_RECS], m[HEALTH_RECS], n;
+    uint64_t at[HEALTH_RECS];
+    if (!dbg_available() || health_read_all(c, m, at, &n) < 0) return;
+    for (int i = 0; i < n; i++) {   // every record: the one the hearts follow may not be the one found first
+        int want = lock ? (lock < m[i] ? lock : m[i]) : m[i];
+        if (c[i] != want) health_write(at[i], 0, (uint32_t)want);
+    }
+    // a record made since the last search (a new area, the other age) is looked for near the known ones
+    if (plat_now_ns() - atomic_load(&health_near_ns) > HEALTH_NEAR_EVERY_NS) health_search(1);
 }
 
 // ---- flags, magic and counted items
@@ -588,7 +662,7 @@ static struct Owned {
     {"Equipment", "Hover Boots", "Armor_Adult_HoverBoot", 1},
     {"Items", "Deku Sticks", "Item_DekuStick", 10},
     {"Items", "Deku Nuts", "Item_DekuNut", 20},
-    {"Items", "Bombs (needs a bomb bag)", "Item_Bomb", 20},
+    {"Items", "Bombs (gives a bomb bag too)", "Item_Bomb", 20},
     {"Items", "Bombchus", "Item_Bombchu", 20},
     {"Items", "Magic Beans", "Item_MagicBean", 10},
     {"Items", "Fairy Slingshot", "Weapon_Range_SlingShot", 1},
@@ -725,8 +799,54 @@ int dbg_owned_get(int i) {
     return dbg_flag_get_bool(owned[i].get_key);
 }
 
+// A bomb bag is more than its two item flags. A save whose bag came from the game's own chest also has the bomb
+// capacity (an int with no known name, key e753508b, the Bomb member of the capacity struct) at the bag's size and
+// CurrentExpansionActor_Bomb naming the bag ("Item_BombBag_Small"); without them the item menu shows "Bomb 20/0" and
+// ZR takes out nothing (seen 2026-11-12 in a save given the bag by the menu). The two larger names follow the small
+// bag's; only the small one has been seen in a save.
+#define BOMB_CAPACITY_KEY 0xe753508bu
+static const struct { const char *name; int capacity; } bomb_bags[] = {
+    {"Item_BombBag_Small", 20}, {"Item_BombBag_Medium", 30}, {"Item_BombBag_Large", 40}};
+#define NBOMB_BAGS ((int)(sizeof bomb_bags / sizeof bomb_bags[0]))
+
+static int owned_index(const char *name) {
+    for (int i = 0; i < NOWNED; i++)
+        if (!strcmp(owned[i].name, name)) return i;
+    return -1;
+}
+
+static int bomb_bag_of(const char *name) {
+    for (int b = 0; b < NBOMB_BAGS; b++)
+        if (!strcmp(bomb_bags[b].name, name)) return b;
+    return -1;
+}
+
+// Sets the capacity and the current bag from the largest bag held, or to none when no bag is held.
+static int bomb_bags_apply(void) {
+    int best = -1;
+    for (int b = 0; b < NBOMB_BAGS; b++)
+        if (dbg_owned_get(owned_index(bomb_bags[b].name)) == 1) best = b;
+    int ok = dbg_flag_set(BOMB_CAPACITY_KEY, best < 0 ? 0 : bomb_bags[best].capacity);
+    return dbg_flag_set_string(dbg_flag_key("CurrentExpansionActor_Bomb"), best < 0 ? "" : bomb_bags[best].name) && ok;
+}
+
+static int owned_set_flags(int i, int on);
+
 int dbg_owned_set(int i, int on) {
     if (i < 0 || i >= NOWNED) return 0;
+    int ok = owned_set_flags(i, on);
+    if (bomb_bag_of(owned[i].name) >= 0) return bomb_bags_apply() && ok;
+    // bombs cannot be taken out without a bag: giving bombs to a player with none gives the smallest
+    if (on && !strcmp(owned[i].name, "Item_Bomb")) {
+        int held = 0;
+        for (int b = 0; b < NBOMB_BAGS; b++) held |= dbg_owned_get(owned_index(bomb_bags[b].name)) == 1;
+        if (!held) ok = owned_set_flags(owned_index(bomb_bags[0].name), 1) && ok;
+        return bomb_bags_apply() && ok;
+    }
+    return ok;
+}
+
+static int owned_set_flags(int i, int on) {
     struct Owned *o = &owned[i];
     owned_keys(o);
     int v = 0, ok = 1;
@@ -1015,6 +1135,9 @@ float dbg_speed_step(int dir) {
 int dbg_hotkey(int fkey) {
     if (!dbg_hotkeys() || !dbg_available()) return 0;
     if (fkey != DBG_SHIFT + 2 && fkey != DBG_SHIFT + 3 && (fkey < 2 || (fkey > 9 && fkey != 12))) return 0;
+    // a key bound to an action (debug_binds.c, "Save clip" on F5 by default) belongs to that action
+    static const int fk[13] = {0, 0, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, 0, KEY_F9, 0, 0, KEY_F12};
+    if (fkey < DBG_SHIFT && fkey < 13 && dbg_bind_uses_key(fk[fkey])) return 0;
     char t[64];
     switch (fkey) {
     case 2:

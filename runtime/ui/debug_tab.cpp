@@ -15,6 +15,7 @@
 
 extern "C" {
 #include "cfg.h"
+#include "clip.h"
 #include "debug_remote.h"
 #include "debug_scan.h"
 #include "input.h"
@@ -464,6 +465,13 @@ extern "C" void tab_debug(float scale) {
                             "void-out back at once. Kept from one start to the next.",
                             novoid))
             dbg_no_void_out(!novoid);
+        bool bombbug = dbg_bomb_bug_on() != 0;
+        if (opt_toggle_text("##dbg_bombbug", "PastyPixel's Bomb T-Pose",
+                            "Every bomb Link pulls out while moving comes out held to his right side, both arms out, "
+                            "before going up over his head, as in the game's own bug after the ocarina, with no ocarina "
+                            "needed. A bomb pulled out standing still goes straight up, as it does in the game. Kept "
+                            "from one start to the next.", bombbug))
+            dbg_bomb_bug(!bombbug);
         snprintf(value, sizeof value, "%.0f m/s", dbg_fly_speed());
         int r = opt_text_row("##dbg_flyspeed", "Fly speed", value, nullptr, "Left and right change it by 2 m/s.", false);
         if (r == -1 || r == 1) dbg_set_fly_speed(dbg_fly_speed() + 2.0f * r);
@@ -1103,11 +1111,37 @@ extern "C" void tab_debug(float scale) {
         bool hk = dbg_hotkeys() != 0;
         if (opt_toggle_text("##dbg_hotkeys", "Keyboard hotkeys", "With the menu closed: F5 saves the position in slot 1, F6 goes to it, "
                             "F7 and F8 lower and raise the game speed, F9 starts and stops the timer, F12 reloads the area. "
-                            "The speedrun timer uses F2 (start, pause), F3 (split) and F4 (reset).", hk))
+                            "The speedrun timer uses F2 (start, pause), F3 (split) and F4 (reset). A key given to a hotkey "
+                            "below does that hotkey's job instead: F5 saves a clip unless \"Save clip\" is bound elsewhere.", hk))
             dbg_hotkeys_set(!hk);
     }
 
     hotkey_rows();
+
+    opt_group_text("Clips");
+    {
+        bool on = clip_enabled() != 0;
+        if (opt_toggle_text("##clip_on", "Record clips",
+                            "Keeps the last seconds of play (picture and sound, without this menu) ready to save: the "
+                            "\"Save clip\" hotkey (F5 unless bound elsewhere) writes them as an MP4 to the clips folder "
+                            "next to the game. Uses Windows' video encoder, on the graphics card when it has one. Off: "
+                            "nothing is recorded. Saved in the settings.",
+                            on))
+            clip_set_enabled(!on);
+        char value[32];
+        snprintf(value, sizeof value, "%d s", clip_seconds());
+        int r = opt_text_row("##clip_len", "Clip length", value, nullptr,
+                             "How much a saved clip holds, ending when the hotkey is pressed. Left and right change it "
+                             "by 5 seconds (5 to 120). Saved in the settings.", false);
+        if (r == -1 || r == 1) clip_set_seconds(clip_seconds() + 5 * r);
+        if (opt_text_row("##clip_folder", "Open the clips folder", "A: open", nullptr,
+                         "Shows the folder the clips are saved in.", false) == 2 && !clip_open_folder())
+            dbg_toast_show("Could not open the clips folder");
+        char st[160], line[200];
+        clip_status(st, sizeof st);
+        snprintf(line, sizeof line, "Recording: %s", st);
+        opt_text_str(line);
+    }
 
     opt_group_text("Remote console");
     {

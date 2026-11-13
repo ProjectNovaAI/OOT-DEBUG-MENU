@@ -17,6 +17,7 @@
 
 #include "audren.h"
 #include "cfg.h"
+#include "clip.h"
 #include "coop.h"
 #include "flight.h"
 #include "fs.h"
@@ -620,6 +621,138 @@ int vk_thumbs_read(uint64_t frame, uint8_t *rgba) {
             rgba[i] = rgba[i + 2], rgba[i + 2] = t;
         }
     return ok != 0;
+}
+
+// ---- clips (clip.h): when clip_frame_due says so, the game's picture (before the menu overlay, so the menu and its
+// messages stay out of the video) is blitted, scaled to fit 1920 x 1080 with even sides, into g_cl_img and copied
+// into a free one of CLIP_BUFS host-visible buffers. The present that next waits for the same fence slot hands that
+// buffer to the recorder (clip_frame), which gives it back with vk_clip_release from its own thread.
+#define CLIP_BUFS 3
+#define CLIP_MAX_W 1920
+#define CLIP_MAX_H 1080
+#define CLIP_BYTES ((VkDeviceSize)CLIP_MAX_W * CLIP_MAX_H * 4)
+enum { CL_FREE, CL_GPU, CL_RECORDER };
+static int g_cl_failed;
+static VkBuffer g_cl_buf;
+static VmaAllocation g_cl_alloc;
+static uint8_t *g_cl_ptr;
+static VkImage g_cl_img;
+static VmaAllocation g_cl_img_alloc;
+static VkFormat g_cl_fmt;
+static int g_cl_w, g_cl_h;
+static int g_cl_state[CLIP_BUFS];   // CL_*, read and written with atomics (vk_clip_release runs on the recorder's thread)
+static struct { int buf, w, h, kind; uint64_t ns; } g_cl_pending[FRAMES] = {{-1}, {-1}};
+
+void vk_clip_release(int buf) {
+    if (buf >= 0 && buf < CLIP_BUFS) __atomic_store_n(&g_cl_state[buf], CL_FREE, __ATOMIC_RELEASE);
+}
+
+// Waits (up to half a second) for the recorder to give back what it holds; the buffers then go.
+static void free_clip(void) {
+    VkCtx *c = vk_ctx();
+    for (int i = 0; i < CLIP_BUFS; i++)
+        for (int n = 0; n < 500 && __atomic_load_n(&g_cl_state[i], __ATOMIC_ACQUIRE) == CL_RECORDER; n++) plat_sleep_ms(1);
+    if (g_cl_img && c) vmaDestroyImage(c->vma, g_cl_img, g_cl_img_alloc);
+    if (g_cl_buf && c) vmaDestroyBuffer(c->vma, g_cl_buf, g_cl_alloc);
+    g_cl_img = VK_NULL_HANDLE, g_cl_buf = VK_NULL_HANDLE, g_cl_ptr = NULL;
+    for (int i = 0; i < CLIP_BUFS; i++) __atomic_store_n(&g_cl_state[i], CL_FREE, __ATOMIC_RELEASE);
+    for (int i = 0; i < FRAMES; i++) g_cl_pending[i].buf = -1;
+}
+
+// The buffers on first use, and the blit target in the swapchain's format at the clip size for the swapchain's. The
+// target is made again when either changes, after the other fence slot's submission (which may blit into the old
+// one) has finished. A failure turns clips off for the session. Returns a free buffer, or -1.
+static int ensure_clip(unsigned slot) {
+    if (g_cl_failed || !g_sc_ext.width || !g_sc_ext.height) return -1;
+    VkCtx *c = vk_ctx();
+    if (!g_cl_buf) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = CLIP_BYTES * CLIP_BUFS,
+                                 .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                      .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+        VmaAllocationInfo info;
+        if (vmaCreateBuffer(c->vma, &bi, &ai, &g_cl_buf, &g_cl_alloc, &info) != VK_SUCCESS || !info.pMappedData) {
+            if (g_cl_buf) vmaDestroyBuffer(c->vma, g_cl_buf, g_cl_alloc);
+            g_cl_buf = VK_NULL_HANDLE;
+            g_cl_failed = 1;
+            rt_log("gfx: clips off: no host-visible buffers of %llu MB", (unsigned long long)(bi.size >> 20));
+            return -1;
+        }
+        g_cl_ptr = info.pMappedData;
+    }
+    int w = (int)g_sc_ext.width, h = (int)g_sc_ext.height;
+    if (w > CLIP_MAX_W || h > CLIP_MAX_H) {   // scaled to fit, the aspect kept
+        double k = (double)CLIP_MAX_W / w < (double)CLIP_MAX_H / h ? (double)CLIP_MAX_W / w : (double)CLIP_MAX_H / h;
+        w = (int)(w * k), h = (int)(h * k);
+    }
+    w &= ~1, h &= ~1;
+    if (w < 16 || h < 16) return -1;
+    if (g_cl_img && (g_cl_fmt != g_sc_fmt || g_cl_w != w || g_cl_h != h)) {
+        for (unsigned i = 0; i < FRAMES; i++)
+            if (i != slot) vkWaitForFences(c->device, 1, &g_fence[i], VK_TRUE, 1000000000ull);
+        vmaDestroyImage(c->vma, g_cl_img, g_cl_img_alloc);
+        g_cl_img = VK_NULL_HANDLE;
+    }
+    if (!g_cl_img) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = g_sc_fmt,
+                                .extent = {(uint32_t)w, (uint32_t)h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(c->vma, &ci, &ai, &g_cl_img, &g_cl_img_alloc, NULL) != VK_SUCCESS) {
+            g_cl_img = VK_NULL_HANDLE;
+            g_cl_failed = 1;
+            rt_log("gfx: clips off: no %dx%d image", w, h);
+            return -1;
+        }
+        g_cl_fmt = g_sc_fmt, g_cl_w = w, g_cl_h = h;
+    }
+    for (int i = 0; i < CLIP_BUFS; i++) {
+        int want = CL_FREE;
+        if (__atomic_compare_exchange_n(&g_cl_state[i], &want, CL_GPU, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return i;
+    }
+    return -1;   // the recorder still holds them all: this frame is left out
+}
+
+// dst (TRANSFER_SRC) -> g_cl_img -> buffer buf, for the present that next waits for fence_slot.
+static void record_clip(VkCommandBuffer cb, VkImage dst, unsigned fence_slot, int buf) {
+    sync_barrier(cb, g_cl_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageBlit region = {
+        .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int)g_sc_ext.width, (int)g_sc_ext.height, 1}},
+        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {g_cl_w, g_cl_h, 1}}};
+    vkCmdBlitImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_cl_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region,
+                   VK_FILTER_LINEAR);
+    sync_barrier(cb, g_cl_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 VK_ACCESS_2_TRANSFER_READ_BIT);
+    VkBufferImageCopy bc = {.bufferOffset = CLIP_BYTES * (VkDeviceSize)buf, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                            .imageExtent = {(uint32_t)g_cl_w, (uint32_t)g_cl_h, 1}};
+    vkCmdCopyImageToBuffer(cb, g_cl_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_cl_buf, 1, &bc);
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
+                           .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &d);
+    int kind = g_cl_fmt == VK_FORMAT_A2R10G10B10_UNORM_PACK32   ? CLIP_PX_PQ_A2R10
+             : g_cl_fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32   ? CLIP_PX_PQ_A2B10
+             : g_cl_fmt == VK_FORMAT_R8G8B8A8_UNORM || g_cl_fmt == VK_FORMAT_R8G8B8A8_SRGB ? CLIP_PX_RGBA
+                                                                                          : CLIP_PX_BGRA;
+    g_cl_pending[fence_slot].buf = buf, g_cl_pending[fence_slot].w = g_cl_w, g_cl_pending[fence_slot].h = g_cl_h;
+    g_cl_pending[fence_slot].kind = kind, g_cl_pending[fence_slot].ns = plat_now_ns();
+}
+
+// After fence_slot's fence has signalled: the frame its submission copied goes to the recorder.
+static void hand_clip(unsigned fence_slot) {
+    int b = g_cl_pending[fence_slot].buf;
+    if (b < 0) return;
+    g_cl_pending[fence_slot].buf = -1;
+    VkCtx *c = vk_ctx();
+    vmaInvalidateAllocation(c->vma, g_cl_alloc, CLIP_BYTES * (VkDeviceSize)b, CLIP_BYTES);
+    __atomic_store_n(&g_cl_state[b], CL_RECORDER, __ATOMIC_RELEASE);
+    clip_frame(b, g_cl_ptr + CLIP_BYTES * (VkDeviceSize)b, g_cl_pending[fence_slot].w, g_cl_pending[fence_slot].h,
+               g_cl_pending[fence_slot].w * 4, g_cl_pending[fence_slot].kind, g_cl_pending[fence_slot].ns);
 }
 
 void vk_present_capture(int on) {
@@ -1381,6 +1514,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         g_th_tag[g_th_pending[slot] % (uint64_t)g_th_n] = g_th_pending[slot];
         g_th_pending[slot] = 0;
     }
+    hand_clip(slot);   // and the clip frame it copied
 
     int cx = 0, cy = 0, cw = w, ch = h;
     if (crop && crop[2] > 0 && crop[3] > 0) { cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3]; }
@@ -1424,6 +1558,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     }
     int cap = (g_capture || menu_shot) && ensure_capture_buffer();
     int thumb = src && g_th_n && ensure_thumbs();
+    int clip_buf = src && clip_frame_due(plat_now_ns()) ? ensure_clip(slot) : -1;
 
     VkCommandBuffer cb = g_cb[slot];
     vkResetCommandBuffer(cb, 0);
@@ -1471,6 +1606,14 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     VkAccessFlags2 last_write = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    if (clip_buf >= 0) {   // the clip frame: the game's picture, before the menu goes over it
+        sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        last = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        last_write = 0;
+        record_clip(cb, dst, slot, clip_buf);
+    }
     // HDR10: the menu goes into vk_hdr.c's RGBA8 image, which is then blended onto the swapchain image at the HUD's white
     VkImageView menu_view = overlay && g_sc_hdr ? vk_hdr_ui_target(cb, g_sc_ext.width, g_sc_ext.height) : VK_NULL_HANDLE;
     if (overlay && g_sc_hdr && !menu_view) overlay = 0;
@@ -1567,6 +1710,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         VkResult r2 = vkQueueSubmit2(c->gfx_queue, 1, &settle, g_fence[slot]);
         vk_queue_unlock();
         if (r2 != VK_SUCCESS) rt_log("gfx: the present slot could not be settled either (%d)", (int)r2);
+        if (g_cl_pending[slot].buf >= 0) vk_clip_release(g_cl_pending[slot].buf), g_cl_pending[slot].buf = -1;
         plat_xchg32(&g_dirty, 1);
     }
     g_frame++;
@@ -1626,6 +1770,7 @@ void gfx_window_release_vk(void) {
         vk_contact_release();
         free_capture();
         free_thumbs();
+        free_clip();
         for (int i = 0; i < FRAMES; i++) {
             vkDestroySemaphore(c->device, g_acquire[i], NULL);
             vkDestroyFence(c->device, g_fence[i], NULL);

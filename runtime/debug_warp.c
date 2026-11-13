@@ -807,6 +807,7 @@ void dbg_game_frame(Cpu *c) {
     if (!dbg_available()) return;
     dbg_pause_wait();
     atomic_store(&frame_seen_ns, plat_now_ns());
+    dbg_snap_frame();
     if (atomic_load(&gcall.state) == 1) {
         gcall.result = call_saved(c, gcall.fn, gcall.a);
         atomic_store(&gcall.state, 2);

@@ -183,3 +183,12 @@ site dbgframe main 31e4634 b9403038 9472f23b   # ldr w24, [x1, #0x30] -> bl page
 # The player's abyss check (main+0x82c510) stores the abyss type it found with str w8, [x19, #0x191c], after it has
 # saved x30; that store calls page+0xf10, which stores 0 and leaves 0 in w8 while No void-out is on.
 site dbgframe main 82c690 b9191e68 9519d220   # str w8, [x19, #0x191c] -> bl page+0xf10
+
+# Bomb T-Pose (runtime/debug_game.c debug_bomb_layers, debug_move.c dbg_bomb_layers; docs/bomb-t-pose.md): the player's
+# animation owner's update (main+0x29d740, the owner's layer list in x19: their number at +0x18, the array at +0x20, 0x48
+# apart) first updates each of its layers (main+0x7310d0, or main+0x7361e0 for a layer that follows another), then, from
+# main+0x29e548, goes through them again. Its `ldrsw x8, [x19, #0x18]` there (the number of layers) calls a host function
+# on the patch page that makes the load after giving the face layer's mask the ocarina's breathing definition while the
+# player lifts or carries a bomb with the option on. x30 is saved by the function's prologue and reloaded before it
+# returns.
+site dbgframe main 29e548 b9801a68 95300a5e   # ldrsw x8, [x19, #0x18] -> bl page+0xec0

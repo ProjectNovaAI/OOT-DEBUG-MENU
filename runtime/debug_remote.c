@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "clip.h"
 #include "debug_remote.h"
 #include "debug_scan.h"
 #include "debug_tools.h"
@@ -117,10 +118,13 @@ struct find_ctx {
     size_t len, align;
     int found;
     int want_rw_only;
+    uint64_t from;   // hits below this address are skipped, so a search past MAX_FIND can go on from the last hit
 };
 
 static void region_find(uint64_t a, uint64_t e, int prot, void *vctx) {
     struct find_ctx *c = vctx;
+    if (e <= c->from) return;
+    if (a < c->from) a = c->from & ~(uint64_t)7;
     if (c->found >= MAX_FIND || (c->want_rw_only && prot != PLAT_PROT_RW) || e - a < c->len) return;
     enum { CHUNK = 1 << 20 };
     static uint8_t buf[CHUNK + 64];
@@ -417,22 +421,26 @@ static void run_command(char *line) {
         plat_mem_prepare_write(a, n);
         memcpy((void *)(uintptr_t)a, b, n);
         out_put("wrote %zu bytes\n", n);
-    } else if (!strcmp(cmd, "find") && a1) {   // find HEXBYTES [rw]: the pattern anywhere in memory (aligned to its size up to 8)
+    } else if (!strcmp(cmd, "find") && a1) {
+        // find HEXBYTES [rw] [FROM]: the pattern anywhere in memory (aligned to its size up to 8), at or above FROM
         struct find_ctx c;
         memset(&c, 0, sizeof c);
         c.len = parse_hex(a1, c.pat, sizeof c.pat);
         c.align = c.len >= 8 ? 8 : c.len >= 4 ? 4 : 1;
         c.want_rw_only = a2 && !strcmp(a2, "rw");
+        const char *from = c.want_rw_only ? a3 : a2;
+        if (from) c.from = num(from);
         if (!c.len) { out_put("bad pattern\n"); return; }
         each_region(region_find, &c);
         out_put("%d found%s\n", c.found, c.found >= MAX_FIND ? " (limit)" : "");
-    } else if (!strcmp(cmd, "findptr") && a1) {   // findptr VALUE: 8-byte aligned qwords equal to VALUE
+    } else if (!strcmp(cmd, "findptr") && a1) {   // findptr VALUE [FROM]: 8-byte aligned qwords equal to VALUE, at or above FROM
         struct find_ctx c;
         memset(&c, 0, sizeof c);
         uint64_t v = num(a1);
         memcpy(c.pat, &v, 8);
         c.len = 8;
         c.align = 8;
+        if (a2) c.from = num(a2);
         each_region(region_find, &c);
         out_put("%d found%s\n", c.found, c.found >= MAX_FIND ? " (limit)" : "");
     } else if (!strcmp(cmd, "scan") && a1) {   // scan INT
@@ -594,6 +602,9 @@ static void run_command(char *line) {
     } else if (!strcmp(cmd, "novoid")) {   // novoid [0|1]: no void-out
         if (a1) dbg_no_void_out(atoi(a1));
         out_put("novoid %d\n", dbg_no_void_out_on());
+    } else if (!strcmp(cmd, "bombbug")) {   // bombbug [0|1]: every lifted bomb is held out to the side
+        if (a1) dbg_bomb_bug(atoi(a1));
+        out_put("bombbug %d\n", dbg_bomb_bug_on());
     } else if (!strcmp(cmd, "hook") || !strcmp(cmd, "walls")) {   // hook|walls [RANGE]: the hookshot or wall overlay's state and what is near
         static DbgHookPoly hp[4096];
         static DbgHookLabel hl[64];
@@ -737,6 +748,59 @@ static void run_command(char *line) {
             if (dbg_guest_result(&r)) { out_put("result 0x%llx\n", (unsigned long long)r); break; }
             plat_sleep_ns(20000000ull);
         }
+    } else if (!strcmp(cmd, "pad")) {
+        // pad clear; pad hold BUTTONS LX LY MS; pad wait ADDR VALUE BUTTONS LX LY MAXMS (hold until the byte at ADDR
+        // reads VALUE); pad run; pad: the state. BUTTONS are Switch npad bits in hex (1 A, 2 B, 200 ZR, 1000 D-pad left).
+        if (a1 && !strcmp(a1, "clear")) {
+            dbg_pad_clear();
+            out_put("pad cleared\n");
+        } else if (a1 && !strcmp(a1, "run")) {
+            out_put(dbg_pad_run() ? "pad running\n" : "pad: no steps\n");
+        } else if (a1 && (!strcmp(a1, "hold") || !strcmp(a1, "wait"))) {
+            char *v[6] = {a2, a3, NULL, NULL, NULL, NULL};
+            for (int i = 2; i < 6; i++) v[i] = strtok(NULL, " \t\r\n");
+            int ok;
+            if (a1[0] == 'h')
+                ok = v[3] && dbg_pad_add(num(v[0]), (int32_t)strtol(v[1], NULL, 0), (int32_t)strtol(v[2], NULL, 0), num(v[3]), 0, 0);
+            else
+                ok = v[5] && dbg_pad_add(num(v[2]), (int32_t)strtol(v[3], NULL, 0), (int32_t)strtol(v[4], NULL, 0), num(v[5]),
+                                         num(v[0]), (uint8_t)num(v[1]));
+            out_put(ok ? "pad step added\n" : "pad: bad step, too many steps or a script running\n");
+        } else {
+            int step, total;
+            uint64_t w[64];
+            int on = dbg_pad_state(&step, &total, w, 64);
+            out_put("pad %s, step %d of %d; waits held (ms):", on ? "running" : "idle", step, total);
+            for (int i = 0; i < total && i < 64; i++) out_put(" %llu", (unsigned long long)w[i]);
+            out_put("\n");
+        }
+    } else if (!strcmp(cmd, "clip")) {   // clip: save a clip now, as the Save clip hotkey does
+        out_put(clip_save() ? "clip saving\n" : "clip: not recording or busy\n");
+    } else if (!strcmp(cmd, "snap")) {
+        // snap FRAMES ADDR LEN [ADDR LEN ...]: record the ranges on every frame into a ring of FRAMES; snap save FILE:
+        // the kept frames to a file next to the game; snap off; snap: the state.
+        if (a1 && !strcmp(a1, "off")) {
+            dbg_snap_stop();
+            out_put("snap off, %u frames kept\n", dbg_snap_frames());
+        } else if (a1 && !strcmp(a1, "save") && a2) {
+            uint32_t n = dbg_snap_frames();
+            out_put(dbg_snap_save(a2) ? "saved %u frames to %s\n" : "cannot save (%u frames) to %s\n", n, a2);
+        } else if (a1 && a2 && a3) {
+            uint64_t ad[16], ln[16];
+            int n = 0;
+            char *t;
+            ad[n] = num(a2), ln[n++] = num(a3);
+            while (n < 16 && (t = strtok(NULL, " \t\r\n"))) {
+                char *l = strtok(NULL, " \t\r\n");
+                if (!l) break;
+                ad[n] = num(t), ln[n++] = num(l);
+            }
+            out_put(dbg_snap_start(ad, ln, n, (uint32_t)num(a1)) ? "recording %d range(s), %s frames\n"
+                                                                 : "refused: %d range(s), %s frames (128 KiB a frame, 512 MiB in all)\n",
+                    n, a1);
+        } else {
+            out_put("snap %s, %u frames kept\n", dbg_snap_on() ? "on" : "off", dbg_snap_frames());
+        }
     } else if (!strcmp(cmd, "ftrace")) {
         // ftrace ADDR [ADDR ...]: log every entry of these guest functions (up to 16) with the caller; ftrace: the log;
         // ftrace off. The caller is the return address, inside the calling function.
@@ -786,7 +850,7 @@ static void run_command(char *line) {
         if (dbg_guest_result(&r)) out_put("result 0x%llx\n", (unsigned long long)r);
         else out_put("no result yet\n");
     } else {
-        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots novoid igt fog view cfg area perf gcall gres ftrace fcount\n");
+        out_put("unknown or incomplete command. Commands: overlay hotkeys hexec hwatch hunwatch anchor saves watch unwatch wlog dump vtable main regions read ptrs chain str write find findptr scan scanf next hits set player teleport speed health sethealth setmaxhealth god onehit lank lock flag fget fset items item magic infmagic infitems warps warp warpcancel agesw reload warpage own give magiclvl fly hover hoverboots novoid bombbug igt fog view cfg area perf gcall gres ftrace fcount snap pad clip\n");
     }
 }
 
