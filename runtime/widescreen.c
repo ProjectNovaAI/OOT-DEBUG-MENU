@@ -57,10 +57,12 @@ static double wanted_ratio(void) {
     return (double)w / h;
 }
 
-// NX2NAVI_GAME_RES: the picture's height, 1080 up to 4320 ("window": the window's height, or the monitor's in
-// fullscreen, never below the game's 1440). 1080 is the one height below the game's own: a lighter picture for slower
-// GPUs, whose scene the game sizes against that picture itself, as the comment at scale_k says.
-#define PICTURE_MIN_H 1080
+// NX2NAVI_GAME_RES: the picture's height, 540 up to 4320 ("window": the window's height, or the monitor's in
+// fullscreen, never below the game's 1440). 1080, 720 and 540 are below the game's own: lighter pictures for slower
+// GPUs, whose scene the game sizes against that picture itself, as the comment at scale_k says. 540 is the least: DLSS
+// Ultra Performance there renders a 320-pixel-wide 16:9 scene, the narrowest the DLSS pass recognises
+// (vk_dlaa.h DLAA_SCENE_MIN_W).
+#define PICTURE_MIN_H 540
 static unsigned picture_height(void) {
     const char *s = cfg_value("NX2NAVI_GAME_RES");
     int w = 0, h = GAME_H, min = PICTURE_MIN_H;
@@ -207,7 +209,7 @@ static double heap_share(void) {
 
 // The game turns the scale at +240 into a scene size against its own 1440-line picture while the picture is taller
 // (a 2160-line picture at 1.0 gave a 1440-line scene), so the share goes there times the picture's height over 1440.
-// Under a 1080-line picture the game measures against that picture instead (a share of 1.0 times 1080/1440 gave an
+// Under a 1440-line picture (1080, 720 or 540) the game measures against that picture instead (a share of 1.0 times 1080/1440 gave an
 // 810-line scene, three quarters of the picture), so there the share goes in as it is: wide_init sets the factor.
 static double scale_k = 1.0;
 

@@ -217,7 +217,7 @@ static const CfgMeta metas[] = {
     {"SKIN_MOTION", "1", "0|1", RESTART},
     {"AA", "game", "game|off|fxaa|smaa|taa", LIVE},   // vk_aa.c: what runs in place of the game's SMAA
     {"GAME_ASPECT", "16:9", "16:9|window|21:9|32:9", RESTART},   // widescreen.c
-    {"GAME_RES", "1440", "1080|1440|1800|2160|2880|window", RESTART},   // widescreen.c: the picture's height
+    {"GAME_RES", "1440", "540|720|1080|1440|1800|2160|2880|window", RESTART},   // widescreen.c: the picture's height
     {"ASPECT", "fit", "fit|stretch", LIVE}, {"FOV", "100", "70..140", LIVE},
     {"ANISO", "16", "game|2|4|8|16", LIVE},   // vk_texture.c sampler_features, vk_sampler_aniso_live; 16: the game asks 1x or 2x
     {"TEXTURE_DETAIL", "auto", "auto|full|reduced|low", RESTART},   // vk_texture.c "texture detail", read at the first texture

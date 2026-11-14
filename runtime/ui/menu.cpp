@@ -1270,16 +1270,17 @@ static void row_framegen(void) {
     else if (cur == 2 && dlss) row_framegen_mult(restart);
 }
 
-// One Resolution row for the picture's height (NX2NAVI_GAME_RES, widescreen.c picture_height: 1080, the game's 1440 or
-// more) and the window outside fullscreen (NX2NAVI_WINDOW_SIZE): each height is shown as the size of the game's shape at
+// One Resolution row for the picture's height (NX2NAVI_GAME_RES, widescreen.c picture_height: 540, 720, 1080, the
+// game's 1440 or more) and the window outside fullscreen (NX2NAVI_WINDOW_SIZE): each height is shown as the size of the game's shape at
 // it (16:9 2560 x 1440, 21:9 3440 x 1440, 32:9 5120 x 1440, the window's own shape where the picture follows the window),
 // and choosing one sets both. The window takes it at once (gfx_present.c applies a changed size at the next present),
 // within the monitor, and the picture after a restart. Native draws at the window's size and leaves the window as it is.
 // As two rows of their own, a window of one size took a picture of another and scaled it for nothing.
 static void row_resolution(void) {
-    static const int heights[] = {1080, 1440, 1800, 2160, 2880};
-    static const int wide169[] = {1920, 2560, 3200, 3840, 5120}, wide219[] = {2560, 3440, 4300, 5120, 6880},
-                     wide329[] = {3840, 5120, 6400, 7680, 10240};
+    static const int heights[] = {540, 720, 1080, 1440, 1800, 2160, 2880};
+    static const int wide169[] = {960, 1280, 1920, 2560, 3200, 3840, 5120},
+                     wide219[] = {1280, 1720, 2560, 3440, 4300, 5120, 6880},
+                     wide329[] = {1920, 2560, 3840, 5120, 6400, 7680, 10240};
     enum { N = sizeof heights / sizeof *heights };
     const char *aspect = cfg_value("NX2NAVI_GAME_ASPECT");
     int mw = 0, mh = 0, ww = 0, wh = 0;
