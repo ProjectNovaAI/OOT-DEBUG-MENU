@@ -2107,6 +2107,9 @@ def step_compile(out, cache_dir, msys, jobs, romfs_job=None, update=False):
         say(f'  {kept}')
     if WIN and place_dlssg(out):   # DLSS Frame Generation (runtime/vk_dlssg.c): Windows DLLs too
         say('  DLSS Frame Generation: nx2navi_dlssg.dll, Streamline and nvngx_dlssg.dll beside the game')
+    if (KIT / 'tools' / 'randomizer.py').is_file():   # the Randomizer tab runs it from here (runtime/randomizer.c find_tool)
+        (out / 'tools').mkdir(exist_ok=True)
+        copy_if_changed(KIT / 'tools' / 'randomizer.py', out / 'tools' / 'randomizer.py')
     beside = copy_dlls(exe, msys / 'bin', out) if WIN else []
     say(f'  {EXE_NAME} {exe.stat().st_size / 1e6:.0f} MB' + (f'; beside it: {", ".join(beside)}' if beside else ''))
     (out / 'profile').mkdir(exist_ok=True)

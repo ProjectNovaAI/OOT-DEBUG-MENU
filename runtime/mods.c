@@ -26,6 +26,7 @@
 #include "host.h"
 #include "mods.h"
 #include "platform/platform.h"
+#include "randomizer.h"
 
 #define TITLE "0400486024DEC000"   // the game's title id, which names a mod's Atmosphere folders
 #define MAX_MODS 512
@@ -114,6 +115,76 @@ static int list_pos(const char *list, const char *name) {
         p = bar ? bar + 1 : NULL;
     }
     return -1;
+}
+
+// A mod's setting (mods.h): the first folder under <mod>/settings by name, its value folders in the order shown, and the
+// value NX2NAVI_MODS_SETTINGS names for it (none, or a value it does not have: the first).
+typedef struct { char names[MOD_VALUES][64]; int n; } Names;
+static int names_cb(const char *name, int kind, uint64_t size, void *ctx) {
+    (void)size;
+    Names *c = ctx;
+    if ((kind == PLAT_FS_DIR || kind == PLAT_FS_LINK) && c->n < MOD_VALUES && strlen(name) < sizeof c->names[0] &&
+        !strchr(name, '|') && !strchr(name, '='))
+        snprintf(c->names[c->n++], sizeof c->names[0], "%s", name);
+    return 1;
+}
+static int is_number(const char *s) {
+    char *end;
+    return *s && (strtod(s, &end), !*end);
+}
+static int numeric;   // value folders all numbers, while sorting
+static int by_value(const void *a, const void *b) {
+    if (numeric) {
+        double x = strtod(a, NULL), y = strtod(b, NULL);
+        return x < y ? -1 : x > y;
+    }
+    return strcmp(a, b);
+}
+// The value of setting name in the '|'-separated name=value list, into out ("" none).
+static void setting_lookup(const char *list, const char *name, char *out, size_t cap) {
+    size_t n = strlen(name);
+    out[0] = 0;
+    for (const char *p = list; p && *p;) {
+        const char *bar = strchr(p, '|');
+        size_t len = bar ? (size_t)(bar - p) : strlen(p);
+        if (len > n && p[n] == '=' && !memcmp(p, name, n)) {
+            snprintf(out, cap, "%.*s", (int)(len - n - 1), p + n + 1);
+            return;
+        }
+        p = bar ? bar + 1 : NULL;
+    }
+}
+static void setting_scan(ModInfo *m, const char *path) {
+    char sdir[2200];
+    snprintf(sdir, sizeof sdir, "%s/settings", path);
+    if (!plat_dir_exists(sdir)) return;
+    Names set = {0};
+    plat_fs_list(sdir, names_cb, &set);
+    if (!set.n) return;
+    numeric = 0;
+    qsort(set.names, (size_t)set.n, sizeof set.names[0], by_value);
+    snprintf(m->setting, sizeof m->setting, "%s", set.names[0]);
+    char vdir[2300];
+    snprintf(vdir, sizeof vdir, "%s/%s", sdir, m->setting);
+    Names val = {0};
+    plat_fs_list(vdir, names_cb, &val);
+    if (!val.n) {
+        m->setting[0] = 0;
+        return;
+    }
+    numeric = 1;
+    for (int i = 0; i < val.n; i++) numeric &= is_number(val.names[i]);
+    qsort(val.names, (size_t)val.n, sizeof val.names[0], by_value);
+    memcpy(m->values, val.names, sizeof val.names);
+    m->nvalues = val.n;
+    char want[64];
+    setting_lookup(cfg_get("NX2NAVI_MODS_SETTINGS"), m->setting, want, sizeof want);
+    for (int i = 0; i < val.n; i++)
+        if (!strcmp(val.names[i], want)) m->value = i;
+    m->start_value = m->value;
+    if (snprintf(m->romfs, sizeof m->romfs, "%s/%s/romfs", vdir, m->values[m->value]) >= (int)sizeof m->romfs ||
+        !plat_dir_exists(m->romfs))
+        m->romfs[0] = 0;
 }
 
 static const char *order_list;   // NX2NAVI_MODS_ORDER while sorting
@@ -346,6 +417,7 @@ static int scan_cb(const char *name, int kind, uint64_t size, void *ctx) {
     if (kind == PLAT_FS_LINK && !plat_dir_exists(path)) return 1;
     find_root(path, "romfs", m->romfs, sizeof m->romfs);
     if (!m->romfs[0]) find_root(path, "romfslite", m->romfs, sizeof m->romfs);
+    setting_scan(m, path);
     find_root(path, "exefs", m->exefs, sizeof m->exefs);
     find_root(path, "cheats", m->cheats, sizeof m->cheats);
     if (m->romfs[0] && has_file(m->romfs)) m->kind |= MOD_ROMFS;
@@ -392,6 +464,7 @@ void mods_scan(void) {
         rt_log("mods: no folder %s", dir);
         return;
     }
+    rando_apply_pending(dir);   // a seed the Randomizer tab made last session, before its files are listed
     mods = calloc(MAX_MODS, sizeof *mods);
     if (!mods) return;
     if (plat_fs_list(dir, scan_cb, (void *)cfg_get("NX2NAVI_MODS_DISABLED")) != PLAT_FS_OK)
@@ -402,6 +475,7 @@ void mods_scan(void) {
     for (int i = 0; i < nmods; i++) {
         snprintf(start_order[i], sizeof start_order[i], "%s", mods[i].name);
         const ModInfo *m = &mods[i];
+        if (m->nvalues) rt_log("mods: %s: %s = %s", m->name, m->setting, m->values[m->value]);
         rt_log("mods: %s: %s,%s%s%s%s%s, %s%s%s", m->name, m->enabled ? "on" : "off", m->kind & MOD_ROMFS ? " romfs" : "",
                m->kind & MOD_EXEFS ? " exefs" : "", m->kind & MOD_SUBSDK ? " subsdk" : "",
                m->kind & MOD_CHEATS ? " cheats" : "", m->kind ? "" : " no files", problem_name(m->problem),
@@ -467,6 +541,33 @@ static void write_keys(void) {
     }
     free(order);
     free(off);
+    // each setting name once, with the value of its first mod (mods_set_value keeps mods sharing a name in step)
+    size_t scap = (size_t)nmods * 130 + 1;
+    char *set = calloc(scap, 1);
+    if (!set) return;
+    for (int i = 0; i < nmods; i++) {
+        if (!mods[i].nvalues) continue;
+        int seen = 0;
+        for (int j = 0; j < i && !seen; j++) seen = mods[j].nvalues && !strcmp(mods[j].setting, mods[i].setting);
+        if (seen) continue;
+        if (*set) strcat(set, "|");
+        strcat(set, mods[i].setting);
+        strcat(set, "=");
+        strcat(set, mods[i].values[mods[i].value]);
+    }
+    cfg_set("NX2NAVI_MODS_SETTINGS", set);
+    free(set);
+}
+
+void mods_set_value(int i, int v) {
+    if (i < 0 || i >= nmods || v < 0 || v >= mods[i].nvalues) return;
+    const char *want = mods[i].values[v];
+    for (int j = 0; j < nmods; j++) {
+        if (!mods[j].nvalues || strcmp(mods[j].setting, mods[i].setting)) continue;
+        for (int k = 0; k < mods[j].nvalues; k++)
+            if (!strcmp(mods[j].values[k], want)) mods[j].value = k;
+    }
+    write_keys();
 }
 
 void mods_set_enabled(int i, int on) {
@@ -486,6 +587,8 @@ void mods_move(int i, int delta) {
 
 int mods_changed(void) {
     for (int i = 0; i < nmods; i++)
-        if (strcmp(mods[i].name, start_order[i]) || mods[i].enabled != mods[i].start_enabled) return 1;
+        if (strcmp(mods[i].name, start_order[i]) || mods[i].enabled != mods[i].start_enabled ||
+            mods[i].value != mods[i].start_value)
+            return 1;
     return 0;
 }

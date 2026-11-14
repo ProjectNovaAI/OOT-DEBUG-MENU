@@ -735,6 +735,9 @@ static struct Owned {
     {"Masks", "Zora Mask", "Armor_Child_Mask_Zora", 1},
     {"Masks", "Gerudo Mask", "Armor_Child_Mask_Gerudo", 1},
     {"Masks", "Mask of Truth", "Armor_Child_Mask_Truth", 1},
+    // The two masks an amiibo gives (Fairy-Kid and Princess): pouch rows like the other masks.
+    {"Masks", "Fairy-Kid Mask", "Armor_Child_Mask_Amiibo0", 1},
+    {"Masks", "Princess Mask", "Armor_Child_Mask_Amiibo1", 1},
     {"Bottles", "Bottle 1", "BottleA", OWN_BOTTLE},
     {"Bottles", "Bottle 2", "BottleB", OWN_BOTTLE},
     {"Bottles", "Bottle 3", "BottleC", OWN_BOTTLE},

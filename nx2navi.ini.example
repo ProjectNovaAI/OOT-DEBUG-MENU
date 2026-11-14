@@ -968,6 +968,37 @@
 # Default: every cheat off.
 # cheat_0123abcd = 1
 
+[randomizer]
+# The Randomizer tab of the menu: Generate runs tools\randomizer.py with these, which writes the Randomizer mod
+# (mods\Randomizer, with spoiler.txt) from the game's own files and puts it first in the Mods order; it applies at the
+# next start. The same seed and options give the same game. Default: a new seed at the first Generate.
+# rando_seed =
+# glitchless: every item can be reached without tricks; none: anything anywhere. Default: glitchless.
+# rando_logic = glitchless
+# Chests: on shuffles what they hold (keys stay in their own chests). Default: on.
+# rando_chests = on
+# Pots, grass, rocks, crates, beehives and enemies with a set drop: off, own_pool (among themselves) or with_chests
+# (one pool with the chests; only items the game drops as an object). Default: off.
+# rando_drops = off
+# Maps and compasses: own_dungeon (between the chests of their dungeon) or vanilla. Default: own_dungeon.
+# rando_maps = own_dungeon
+# Lone enemies: off, same_kind (ground, flying, water) or any_kind. Default: off.
+# rando_enemies = off
+# Loading zones, swapped in pairs so the way back leads back: off, dungeons, bosses (the boss rooms that are stages of
+# their own), overworld or all. Overworld and all turn the logic off. Default: off.
+# rando_entrances = off
+# separate: dungeons lead only to dungeons, boss rooms to boss rooms, field exits to field exits; mixed: the shuffled
+# entrances share one pool with the field connections, so a dungeon can be anywhere (turns the logic off).
+# Default: separate.
+# rando_entrance_pools = separate
+# same: child dungeons swap with child dungeons and adult with adult; any: with dungeons of either age (separate pools).
+# Default: same.
+# rando_dungeon_ages = same
+# 1: write mods\Randomizer\spoiler.txt. Default: 1.
+# rando_spoiler = 1
+# The python.exe that runs the generator; it needs the zstandard package (or Python 3.14). Default: the setup's.
+# rando_python =
+
 [debug]
 # 1: no volumetric fog. The fog's first compute pass writes every froxel as empty (vk_pipeline.c spirv_fog_off); the
 # switch applies at once. It can leave a faint ghost image under Link, Navi and other characters, and may have other

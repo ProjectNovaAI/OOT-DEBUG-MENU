@@ -485,6 +485,13 @@ extern "C" void tab_debug(float scale) {
                             "out, before going up over his head. Standing still no longer clears it. A pull standing "
                             "still goes straight up, as it does in the game. Kept from one start to the next.", bombbug))
             dbg_bomb_bug(!bombbug);
+        bool rd = dbg_ragdoll_on() != 0;
+        if (opt_text_row("##dbg_ragdoll", "Ragdoll", rd ? "down" : "A: fall", nullptr,
+                         "Drops Link into the game's own ragdoll, the one the Wallmaster's drop uses: he goes limp and "
+                         "falls where he stands, then gets back up by himself a second after he lies still, as a "
+                         "knocked-down enemy does. A hotkey can do the same (Hotkeys, below).",
+                         false) == 2 && !rd)
+            dbg_ragdoll(1);
         snprintf(value, sizeof value, "%.0f m/s", dbg_fly_speed());
         int r = opt_text_row("##dbg_flyspeed", "Fly speed", value, nullptr, "Left and right change it by 2 m/s.", false);
         if (r == -1 || r == 1) dbg_set_fly_speed(dbg_fly_speed() + 2.0f * r);
@@ -619,6 +626,20 @@ extern "C" void tab_debug(float scale) {
         if (dbg_warp_armed() >= 0 &&
             opt_text_row("##dbg_wcancel", "Cancel the warp", "A", nullptr, "Lets the next area change go where the game sends it.", false) == 2)
             dbg_warp_cancel();
+        {
+            static int boss_i;
+            std::vector<const char *> boss_names;
+            for (int i = 0; i < dbg_boss_count(); i++) boss_names.push_back(dbg_boss_name(i));
+            int rb = opt_text_choice("##dbg_wboss", "Boss", boss_names.data(), (int)boss_names.size(), boss_i,
+                                     "A boss fight to warp to: the boss's room in its dungeon. Left and right choose; A "
+                                     "opens the list.");
+            if (rb >= 0) boss_i = rb;
+            if (opt_text_row("##dbg_wbossgo", "Warp to the boss", "A: go", nullptr,
+                             "An instant warp into the chosen boss's room. The boss appears as when the player walks in, "
+                             "while it has not been beaten in this save; a beaten boss's room is empty.",
+                             false) == 2)
+                dbg_boss_warp(boss_i);
+        }
         if (dbg_warp_note()[0]) opt_text_str(dbg_warp_note());
     }
 
@@ -699,6 +720,10 @@ extern "C" void tab_debug(float scale) {
              "Draws a health bar over every enemy and boss in range, with the game's own life values (current / "
              "maximum, in the game's units: a Skulltula has 2, a Gerudo thief 18). Breakable rocks, cracked walls "
              "and floors get one too (the boulders take 6). Saved in the settings."},
+            {"NX2NAVI_DEBUG_VIEW_BOMBS", "##dbg_v_bombs", "Show bomb paths",
+             "Draws the path of every bomb and Bombchu you throw, drop or set down, from your hands to where it lay "
+             "still and went off: a yellow cross, numbered, at each bounce and a red cross at the end. The last 8 stay, "
+             "the newest brightest, so throws can be compared. Saved in the settings."},
         };
         for (const auto &s : vs) {
             bool on = cfg_bool(s.key) != 0;
@@ -915,9 +940,6 @@ extern "C" void tab_debug(float scale) {
             snprintf(value, sizeof value, "%s", dbg_health_locating() ? "searching the game's memory (about half a minute)..." : "not found: load a save");
         opt_text_row("##dbg_health", "Health", value, nullptr,
                      "Read from the game's flag store, found by its key on first use. A quarter heart is one unit.", false);
-        bool lank = dbg_lank_on() != 0;
-        if (opt_toggle_text("##dbg_lank", "Play as Lank", "Gives child Link the adult skeleton's proportions and adult Link the child's. "
-                            "Keeps the current model, animations and gameplay age.", lank)) dbg_lank(!lank);
         bool god = dbg_invulnerable_on() != 0;
         if (opt_toggle_text("##dbg_god", "Invulnerable", "Raises health back to full on every frame. A hit that would kill in a single "
                             "frame can still get through.", god))
@@ -2127,6 +2149,57 @@ static void draw_title_profiles(float scale) {
     dl->AddText(font, fs2, ImVec2((ds.x - s2.x) * 0.5f, p0.y + 14 * scale + s1.y), c2, sub);
 }
 
+// Bomb paths (Show bomb paths, debug_bombs.c): each kept flight as a line from the player's hands to where the bomb
+// lay still, the newest brightest, a yellow cross and its number where it bounced, a red cross where it ended.
+static void draw_bombs(float scale) {
+    static DbgBombPath bp[DBG_BOMB_PATHS];
+    ViewProj P;
+    float aspect = 16.0f / 9.0f;
+    if (!vk_dbgcam_vp(P.vp, &aspect)) return;
+    ImVec2 ds = ImGui::GetIO().DisplaySize;
+    if (ds.x <= 0 || ds.y <= 0) return;
+    if (aspect <= 0.1f || aspect > 10) aspect = 16.0f / 9.0f;
+    if (ds.x / ds.y > aspect) P.h = ds.y, P.w = ds.y * aspect;
+    else P.w = ds.x, P.h = ds.x / aspect;
+    P.x0 = (ds.x - P.w) * 0.5f, P.y0 = (ds.y - P.h) * 0.5f;
+    int n = dbg_bomb_paths(bp, DBG_BOMB_PATHS);
+    ImDrawList *dl = ImGui::GetBackgroundDrawList();
+    auto cross = [&](const float c[3], float r, ImU32 col, float th) {
+        for (int ax = 0; ax < 3; ax++) {
+            float a[3] = {c[0], c[1], c[2]}, b[3] = {c[0], c[1], c[2]};
+            a[ax] -= r, b[ax] += r;
+            edge_w(dl, P, a, b, col, th);
+        }
+    };
+    auto label = [&](const float w[3], const char *text, ImU32 col) {
+        float c[4];
+        clip_of(P, w, c);
+        if (c[3] < kNear) return;
+        ImVec2 at = screen_of(P, c);
+        dl->AddText(ImVec2(at.x + 5, at.y - 15), IM_COL32(0, 0, 0, 200), text);
+        dl->AddText(ImVec2(at.x + 4, at.y - 16), col, text);
+    };
+    for (int i = n - 1; i >= 0; i--) {   // the oldest first, so the newest is on top
+        const DbgBombPath &p = bp[i];
+        int a = i == 0 ? 255 : 230 - 22 * i;
+        ImU32 line = IM_COL32(255, 150, 40, a), bounce = IM_COL32(255, 235, 60, a), end = IM_COL32(255, 60, 60, a);
+        float th = (i == 0 ? 3.0f : 1.8f) * scale;
+        for (int k = 1; k < p.n; k++) edge_w(dl, P, p.pt[k - 1], p.pt[k], line, th);
+        for (int k = 0; k < p.bounces; k++) {
+            cross(p.bounce[k], 0.25f, bounce, th);
+            if (i == 0) {
+                char t[8];
+                snprintf(t, sizeof t, "%d", k + 1);
+                label(p.bounce[k], t, bounce);
+            }
+        }
+        if (p.ended) {
+            cross(p.end, 0.5f, end, th);
+            if (i == 0) label(p.end, "end", end);
+        }
+    }
+}
+
 extern "C" void debug_overlay_draw(float scale) {
     draw_title_profiles(scale);
     g3d = vk_dbg3d_ready() != 0;
@@ -2138,6 +2211,7 @@ extern "C" void debug_overlay_draw(float scale) {
     if ((dbg_view_kinds() & DBG_VOL_WALL) && dbg_available()) draw_hook(scale, true);
     if ((dbg_view_kinds() & DBG_VOL_HOOK) && dbg_available()) draw_hook(scale, false);
     if ((dbg_view_kinds() & DBG_VOL_ENEMY) && dbg_available()) draw_health(scale);
+    if (cfg_bool("NX2NAVI_DEBUG_VIEW_BOMBS") && dbg_available()) draw_bombs(scale);
     if (g3d)   // this frame's shapes to the scene (an empty list clears the last one)
         vk_dbg3d_submit(g3_tri.data(), (int)g3_tri.size(), g3_line.data(), (int)g3_line.size(),
                         cfg_bool("NX2NAVI_DEBUG_VIEW_OCCLUDE") != 0);

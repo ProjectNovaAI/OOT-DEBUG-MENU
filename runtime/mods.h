@@ -5,9 +5,15 @@
 // builds into the game (tools/exefs_patches.py), switched with their mod (mods_exefs_switch). The list is scanned once at start (romfs.c overlay_init);
 // its order and switches live in nx2navi.ini [mods] (NX2NAVI_MODS_ORDER: names top first, separated by '|';
 // NX2NAVI_MODS_DISABLED: names switched off). The top mod wins a file two mods replace.
+// A mod may have one setting: <mod>/settings/<setting name>/<value>/romfs, one folder per value. The chosen value's
+// romfs is the mod's RomFS root (its own romfs folder is not used then). NX2NAVI_MODS_SETTINGS holds the choices as
+// name=value entries separated by '|'; mods whose settings have the same name share the value, so mods that replace
+// the same files with versions of one choice stay in step. No entry: the first value (values sort as numbers when
+// they all are numbers).
 #pragma once
 #include <stdint.h>
 
+enum { MOD_VALUES = 16 };   // values of a mod's setting at most
 enum { MOD_ROMFS = 1, MOD_EXEFS = 2, MOD_SUBSDK = 4, MOD_CHEATS = 8 };   // ModInfo.kind bits
 typedef enum {
     MOD_OK,
@@ -38,6 +44,9 @@ typedef struct {
     int nsets;
     uint32_t sets[16];                      // the built patch sets mod_<hash> of its ExeFS patch files
     char overrides[256];                    // the port's own patch sets its patches replace, comma separated
+    char setting[64];                       // its setting's name; "" none
+    char values[MOD_VALUES][64];            // the setting's values, in the order shown
+    int nvalues, value, start_value;        // value: the index chosen; start_value: chosen at the scan (in use)
 } ModInfo;
 
 void mods_scan(void);              // once; later calls return at once
@@ -48,7 +57,8 @@ ModInfo *mods_at(int i);           // 0 = top of the order; NULL out of range
 // cfg_set; romfs.c used the start state, so they apply at the next start.
 void mods_set_enabled(int i, int on);
 void mods_move(int i, int delta);  // -1 up, +1 down; nothing at the ends
-int mods_changed(void);            // 1 when the order or a switch differs from the start
+void mods_set_value(int i, int v); // mod i's setting to value v, and every mod's setting of the same name with it
+int mods_changed(void);            // 1 when the order, a switch or a setting differs from the start
 // After rt_patches_init: the patch sets of the enabled mods' ExeFS patches on, the port's own sets they replace off.
 void mods_exefs_switch(void);
 // The ExeFS patch files of the enabled mods that the build lacks, their FNV-1a mixed into *key (cheats.c starts the

@@ -97,6 +97,16 @@ static void debug_bomb_layers(Cpu *c) {
 }
 __attribute__((constructor)) static void debug_bomb_register(void) { rt_register_host(HOST_DEBUG_BOMB_LAYERS, debug_bomb_layers); }
 
+// Player parameters (debug_move.c dbg_player_param): the PlayerGameParam reader (main+0x3009910) calls +0xe60 in place
+// of its `add x8, x0, #0x2a0`, with the block it is about to fill in x0. The host function notes the block, then makes
+// the add.
+#define HOST_DEBUG_PLAYER_PARAM (RT_PATCH_PAGE + 0xe60)
+static void debug_player_param(Cpu *c) {
+    dbg_player_param(c->x[0]);
+    c->x[8] = c->x[0] + 0x2a0;
+}
+__attribute__((constructor)) static void debug_param_register(void) { rt_register_host(HOST_DEBUG_PLAYER_PARAM, debug_player_param); }
+
 __attribute__((constructor)) static void debug_abyss_register(void) {
     rt_register_host(HOST_DEBUG_ABYSS_HITS, debug_abyss_hits);
     rt_register_host(HOST_DEBUG_ABYSS_TYPE, debug_abyss_type);

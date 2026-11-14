@@ -27,7 +27,8 @@
 #define FRAME_DT_MAX 0.1f           // seconds: a longer gap (a loading screen) moves nothing
 #define CAMERA_NAME "PlayerCamera"  // its position is the eye: the player minus it is the view direction
 
-static _Atomic int fly_on, hover_on, boots_on, no_void_on, bomb_bug_on;
+static _Atomic int fly_on, hover_on, boots_on, no_void_on, bomb_bug_on, bunny_on, mask_powers_on;
+static _Atomic float bunny_factor = 1.5f;
 static _Atomic float fly_speed = 8.0f;
 
 void dbg_fly(int on) { atomic_store(&fly_on, on != 0); }
@@ -56,6 +57,10 @@ static void move_load(void) {
     atomic_store(&boots_on, cfg_bool("NX2NAVI_DEBUG_HOVER_BOOTS") != 0);
     atomic_store(&no_void_on, cfg_bool("NX2NAVI_DEBUG_NO_VOID_OUT") != 0);
     atomic_store(&bomb_bug_on, cfg_bool("NX2NAVI_DEBUG_BOMB_BUG") != 0);
+    atomic_store(&bunny_on, cfg_bool("NX2NAVI_DEBUG_BUNNY") != 0);
+    atomic_store(&mask_powers_on, cfg_bool("NX2NAVI_DEBUG_MASK_POWERS") != 0);
+    float bf = strtof(cfg_value("NX2NAVI_DEBUG_BUNNY_SPEED"), NULL);
+    atomic_store(&bunny_factor, bf >= 1.0f && bf <= 3.0f ? bf : 1.5f);
     float ms = strtof(cfg_value("NX2NAVI_DEBUG_FLY_SPEED"), NULL);
     atomic_store(&fly_speed, ms >= 1.0f && ms <= 100.0f ? ms : 8.0f);
 }
@@ -81,6 +86,21 @@ void dbg_bomb_bug(int on) {
     dbg_keep("NX2NAVI_DEBUG_BOMB_BUG", on ? "1" : "0");
 }
 int dbg_bomb_bug_on(void) { move_load(); return atomic_load(&bomb_bug_on); }
+void dbg_bunny(int on) {
+    move_load();
+    atomic_store(&bunny_on, on != 0);
+    dbg_keep("NX2NAVI_DEBUG_BUNNY", on ? "1" : "0");
+}
+int dbg_bunny_on(void) { move_load(); return atomic_load(&bunny_on); }
+float dbg_bunny_speed(void) { move_load(); return atomic_load(&bunny_factor); }
+void dbg_set_bunny_speed(float f) {
+    move_load();
+    if (!(f >= 1.0f && f <= 3.0f)) return;
+    atomic_store(&bunny_factor, f);
+    char v[16];
+    snprintf(v, sizeof v, "%.2f", f);
+    dbg_keep("NX2NAVI_DEBUG_BUNNY_SPEED", v);
+}
 float dbg_fly_speed(void) { move_load(); return atomic_load(&fly_speed); }
 void dbg_set_fly_speed(float ms) {
     move_load();
@@ -401,13 +421,289 @@ static void air_step(struct Cpu *c, const float p[3], uint64_t b, int32_t lx, in
     dbg_frame_teleport(c, air_pos, (sx != 0 || sy != 0) ? move : NULL);
 }
 
+// ---- Ragdoll
+// The game's own player ragdoll, started and ended as the AI node ExecuteEventPlayerImmediateRagdollDown does it (the
+// Wallmaster's drop back to the entrance; the node's enter method main+0x26b3ec0, its leave method main+0x26b42c0).
+// The player's ragdoll controller is a component of the actor's physics owner ([[[[actor+0x270]+0x50]+0x20]+0x10], as
+// main+0x837620 reads it), found by main+0x5f88c0. Its request (RD_START) takes a block of the actor, a weight of 1 and
+// the two modes the node gives (1 and 2) and sets the controller's state to 3; its end (RD_END, the node's leave) puts
+// the body back under the animation, the player standing, and the state to 0. The state is not 0 while a ragdoll runs.
+#define RD_FIND 0x70005f88c0ull    // physics owner -> ragdoll controller
+#define RD_START 0x7003218d30ull   // controller, &request
+#define RD_END 0x7003219090ull     // controller, &{actor, 0}; returns at once with no ragdoll running
+#define RD_STATE 0x17c
+static _Atomic int rd_req = -2;    // -2 nothing asked; else dbg_ragdoll's how
+static _Atomic uint64_t rd_actor, rd_ctrl;   // the controller found for that actor
+static _Alignas(16) uint8_t rd_block[0x30];
+
+static uint64_t ragdoll_owner(uint64_t actor) {
+    uint64_t p = rd64(actor + 0x270);
+    p = p ? rd64(p + 0x50) : 0;
+    p = p ? rd64(p + 0x20) : 0;
+    return p ? rd64(p + 0x10) : 0;
+}
+
+static uint32_t ragdoll_state(uint64_t ctrl) {
+    uint32_t v = 0;
+    return ctrl && plat_mem_read(ctrl + RD_STATE, &v, 4) ? v : 0;
+}
+
+int dbg_ragdoll(int how) {
+    if (!dbg_player_actor()) return 0;
+    atomic_store(&rd_req, how < 0 ? -1 : how != 0);
+    return 1;
+}
+
+int dbg_ragdoll_on(void) {
+    uint64_t actor = dbg_player_actor();
+    return actor && actor == atomic_load(&rd_actor) && ragdoll_state(atomic_load(&rd_ctrl)) != 0;
+}
+
+// The player gets up by himself, as a knocked-down enemy does: the enemies' common ragdoll setting
+// (GameParameter/RagdollReactionParam/Enemy_Common, GroundDownTime 30 game frames) keeps the body down 30 frames once it
+// lies on the ground, then stands it up. The player has no such setting, so the same time, a second at the game's 30
+// frames a second, is counted here once the body (the actor's position follows it) has stopped moving, in game time
+// (the game speed setting slows it too). RD_MAX_S ends a ragdoll that keeps sliding.
+#define RD_DOWN_S 1.0f
+#define RD_STILL_MS 0.4f   // ground and vertical speed under this: lying still (the body's own jitter stays under 0.15)
+#define RD_MAX_S 10.0f
+static float rd_still_s, rd_total_s;
+static int rd_ours;   // a ragdoll this file started and will end
+
+static void ragdoll_call(struct Cpu *c, uint64_t fn, uint64_t ctrl) {
+    uint64_t a[8] = {ctrl, (uint64_t)(uintptr_t)rd_block};
+    dbg_frame_call(c, fn, a);
+}
+
+static void ragdoll_frame(struct Cpu *c, float dt) {
+    int how = atomic_exchange(&rd_req, -2);
+    uint64_t actor = dbg_player_actor(), owner = actor ? ragdoll_owner(actor) : 0;
+    if (!owner || actor != atomic_load(&rd_actor)) rd_ours = 0;   // no player, or a new one (a reload, an age switch)
+    if (!owner) return;
+    uint64_t ctrl = atomic_load(&rd_ctrl);
+    if (how != -2 || actor != atomic_load(&rd_actor)) {
+        if (how == -2) return;
+        uint64_t a[8] = {owner};
+        ctrl = dbg_frame_call(c, RD_FIND, a);
+        if (!ctrl) return;
+        atomic_store(&rd_ctrl, ctrl), atomic_store(&rd_actor, actor);
+    }
+    int on = ragdoll_state(ctrl) != 0;
+    if (!on) rd_ours = 0;   // ended by the game, or never started
+    memset(rd_block, 0, sizeof rd_block);
+    memcpy(rd_block, &actor, 8);
+    if (how == -1) how = !on;
+    if (how == 1 && !on) {
+        const float weight = 1.0f;
+        const uint32_t modes[2] = {1, 2};
+        memcpy(rd_block + 0x08, &weight, 4);
+        memcpy(rd_block + 0x1c, modes, sizeof modes);
+        ragdoll_call(c, RD_START, ctrl);
+        rd_ours = 1, rd_still_s = rd_total_s = 0.0f;
+        return;
+    }
+    if (how == 0 && on) {
+        ragdoll_call(c, RD_END, ctrl);
+        rd_ours = 0;
+        return;
+    }
+    if (!rd_ours) return;
+    float gdt = dt * dbg_time_scale();
+    rd_total_s += gdt;
+    int still = dbg_ground_speed() < RD_STILL_MS && fabsf(dbg_vertical_speed()) < RD_STILL_MS;
+    rd_still_s = still ? rd_still_s + gdt : 0.0f;
+    if (rd_still_s >= RD_DOWN_S || rd_total_s >= RD_MAX_S) {
+        ragdoll_call(c, RD_END, ctrl);
+        rd_ours = 0;
+    }
+}
+
+
+
+// ---- the player's game parameters
+// The PlayerGameParam blocks the game filled when the save loaded (debug_game.c debug_player_param): one for the child,
+// one for the adult; the byte at +0x560 (IsChild) tells them apart. Fields are floats at the offsets the reader writes
+// them to (main+0x3009910: GroundSpeedScale +0x2a0, JumpMaxInitSpeed +0x338, RollingMaxSpeed +0x3e8, SwimDashSpeedMps
+// +0x4c4, SwimDiveSpeedMaxMps +0x4e0, SwimMaxSpeedMps +0x4f4, ...).
+#define PARAM_IS_CHILD 0x560
+#define PARAM_SIZE 0x570
+enum { PARAM_BLOCKS = 4 };
+static _Atomic uint64_t param_block[PARAM_BLOCKS];
+static _Atomic int param_next;
+
+void dbg_player_param(uint64_t block) {
+    for (int i = 0; i < PARAM_BLOCKS; i++)
+        if (atomic_load(&param_block[i]) == block) return;
+    atomic_store(&param_block[atomic_fetch_add(&param_next, 1) % PARAM_BLOCKS], block);
+}
+
+// The block of the player's current age, 0 when none is known.
+uint64_t dbg_player_param_block(void) {
+    int child = dbg_is_child();
+    if (child < 0) return 0;
+    uint64_t best = 0;
+    for (int k = 0; k < PARAM_BLOCKS; k++) {   // the newest first
+        int i = ((atomic_load(&param_next) - 1 - k) % PARAM_BLOCKS + PARAM_BLOCKS) % PARAM_BLOCKS;
+        uint64_t b = atomic_load(&param_block[i]);
+        uint8_t is_child;
+        if (b && plat_mem_read(b + PARAM_IS_CHILD, &is_child, 1) && (is_child != 0) == (child != 0)) return b;
+        if (b && !best) best = b;
+    }
+    (void)best;
+    return 0;
+}
+
+int dbg_player_param_get(uint32_t off, float *v) {
+    uint64_t b = dbg_player_param_block();
+    return b && off + 4 <= PARAM_SIZE && plat_mem_read(b + off, v, 4);
+}
+
+int dbg_player_param_set(uint32_t off, float v) {
+    uint64_t b = dbg_player_param_block();
+    if (!b || off + 4 > PARAM_SIZE || !isfinite(v)) return 0;
+    plat_mem_prepare_write(b + off, 4);
+    memcpy((void *)(uintptr_t)(b + off), &v, 4);
+    return 1;
+}
+
+// ---- Mask abilities
+// What the worn mask does (the string flag PlayerStatus.EquipHeadArmor names the head armour on), read four times a
+// second. Running is the run animation's own motion, not a speed parameter, so the Bunny Hood runs faster by playing the
+// player's animations faster (the AS component's rate, ANIM_RATE) while the player moves along the ground; it also jumps
+// further (JumpMaxInitSpeed, StepJumpForwardSpeedMaxMps). A roll is the animation's motion too: the Goron Mask plays it
+// twice as fast while the body layer is in its Rolling state. The Zora Mask swims and dives fast through the player's
+// game parameters (dbg_player_param_set), as do the Goron Mask's rolling fields: each is scaled from the value it had, and that value
+// is put back when the mask comes off, the option goes off or the block changes (a new save). Nothing changes in events.
+#define ANIM_RATE 0x98                  // the AS component's playback rate, 1 normally
+#define BUNNY_MOVING_MS 0.5f            // ground speed above which the faster animation plays
+#define GORON_ROLL_RATE 2.0f            // a roll's animation rate under the Goron Mask
+enum { MASK_NONE, MASK_BUNNY, MASK_ZORA, MASK_GORON };
+static const struct {
+    int mask;
+    uint16_t off;   // the field in the player's game parameters
+    float scale;    // 0: the Bunny speed
+} mask_fields[] = {
+    {MASK_BUNNY, 0x338, 0}, {MASK_BUNNY, 0x4a8, 0},                              // JumpMaxInitSpeed, StepJumpForwardSpeedMaxMps
+    {MASK_ZORA, 0x4f4, 3.0f}, {MASK_ZORA, 0x4c4, 2.5f}, {MASK_ZORA, 0x4bc, 2.5f}, // SwimMaxSpeedMps, SwimDashSpeedMps, SwimDashHeavySpeedMps
+    {MASK_ZORA, 0x4e0, 2.5f}, {MASK_ZORA, 0x4e4, 2.5f},                          // SwimDiveSpeedMaxMps, SwimDiveSpeedMinMps
+    {MASK_ZORA, 0x4f8, 2.0f}, {MASK_ZORA, 0x4f0, 2.0f}, {MASK_ZORA, 0x520, 2.0f}, // SwimMaxUpSppedMps, SwimMaxDownSppedMps, SwimVerticalDashSpeed
+    {MASK_ZORA, 0x4fc, 2.0f}, {MASK_ZORA, 0x500, 1.5f},                          // SwimSpeedMpsFollowStream, SwimSpeedMpsReverseStream
+    {MASK_GORON, 0x3e8, 2.5f}, {MASK_GORON, 0x3f4, 2.5f}, {MASK_GORON, 0x350, 2.5f}, // RollingMaxSpeed, RollingMinSpeed, LockOnRollingMaxSpeed
+};
+enum { MASK_FIELDS = sizeof mask_fields / sizeof mask_fields[0] };
+static uint32_t k_head, k_event;
+static int mask_worn, mask_applied;           // the mask on, the one whose fields are scaled now
+static uint64_t mask_checked, mask_block;     // when the flag was read; the block mask_orig came from
+static float mask_orig[MASK_FIELDS], mask_bunny_applied;
+static struct { uint64_t actor, comps, as; float written; } rate;   // the player's AS component and the rate put there
+
+void dbg_mask_powers(int on) {
+    move_load();
+    atomic_store(&mask_powers_on, on != 0);
+    dbg_keep("NX2NAVI_DEBUG_MASK_POWERS", on ? "1" : "0");
+}
+int dbg_mask_powers_on(void) { move_load(); return atomic_load(&mask_powers_on); }
+
+static int mask_of(const char *head) {
+    if (!strcmp(head, "Armor_Child_Mask_Bunny")) return MASK_BUNNY;
+    if (!strcmp(head, "Armor_Child_Mask_Zora")) return MASK_ZORA;
+    if (!strcmp(head, "Armor_Child_Mask_Goron")) return MASK_GORON;
+    return MASK_NONE;
+}
+static int mask_enabled(int m) {
+    return m == MASK_BUNNY ? atomic_load(&bunny_on) : m != MASK_NONE && atomic_load(&mask_powers_on);
+}
+
+// Puts the scaled fields back to what they were (only into the block they were read from).
+static void mask_restore(void) {
+    if (mask_applied && mask_block && mask_block == dbg_player_param_block())
+        for (int i = 0; i < MASK_FIELDS; i++)
+            if (mask_fields[i].mask == mask_applied) dbg_player_param_set(mask_fields[i].off, mask_orig[i]);
+    mask_applied = 0, mask_block = 0;
+}
+
+static void mask_apply(int m) {
+    uint64_t block = dbg_player_param_block();
+    float bf = atomic_load(&bunny_factor);
+    if (m == mask_applied && block == mask_block && (m != MASK_BUNNY || bf == mask_bunny_applied)) return;
+    if (block != mask_block) mask_applied = 0;   // a new block holds the game's own values
+    mask_restore();
+    if (!m || !block) return;
+    for (int i = 0; i < MASK_FIELDS; i++) {
+        if (mask_fields[i].mask != m || !dbg_player_param_get(mask_fields[i].off, &mask_orig[i])) continue;
+        dbg_player_param_set(mask_fields[i].off, mask_orig[i] * (mask_fields[i].scale ? mask_fields[i].scale : bf));
+    }
+    mask_applied = m, mask_block = block, mask_bunny_applied = bf;
+}
+
+// The player's AS component (rate.as), found again for a new player; 0 when there is none.
+static uint64_t rate_find(void) {
+    uint64_t actor = dbg_player_actor();
+    if (!actor) return 0;
+    if (actor != rate.actor || rd64(actor + ACTOR_COMPS) != rate.comps || !rate.as) {
+        char name[96];
+        uint64_t arr = rd64(actor + ACTOR_COMPS);
+        uint32_t n = 0;
+        rate.actor = actor, rate.comps = arr, rate.as = 0, rate.written = 0;
+        if (!arr || !plat_mem_read(actor + ACTOR_COMP_COUNT, &n, 4) || n > 1024) return 0;
+        for (uint32_t i = 0; i < n && !rate.as; i++) {
+            uint64_t c = rd64(arr + 8ull * i);
+            if (c && comp_named(c, ".root.asb", name, sizeof name)) rate.as = c;
+        }
+    }
+    return rate.as;
+}
+
+// The body's animation layer (the owner's first) is in the state named so, in either of its two slots (the state
+// being left and the one being entered): Wait, Move, Rolling, ...
+static int body_state_is(const char *state) {
+    uint64_t as = rate_find(), owner = as ? rd64(as + AS_OWNER) : 0, l = owner ? rd64(owner + OWNER_LAYERS) : 0;
+    if (!l || rd64(l) != MOD_MAIN_BASE + LAYER_CLASS) return 0;
+    for (int s = 0; s < 2; s++) {
+        char nm[24] = "";
+        uint64_t p = rd64(l + LAYER_STATE_NAMES + 8ull * s);
+        if (p && plat_mem_read(p, nm, sizeof nm - 1) && !strcmp(nm, state)) return 1;
+    }
+    return 0;
+}
+
+// The player's animation rate: want, put back to 1 only where it is still the rate this code wrote.
+static void rate_set(float want) {
+    if (!rate_find()) return;
+    float cur;
+    if (!plat_mem_read(rate.as + ANIM_RATE, &cur, 4) || cur == want) return;
+    if (cur != 1.0f && cur != rate.written) return;   // the game's own rate
+    plat_mem_prepare_write(rate.as + ANIM_RATE, 4);
+    memcpy((void *)(uintptr_t)(rate.as + ANIM_RATE), &want, 4);
+    rate.written = want;
+}
+
+static void mask_frame(uint64_t now) {
+    if (!k_head) k_head = dbg_flag_key("PlayerStatus.EquipHeadArmor"), k_event = dbg_flag_key("Sequence_ControlInEvent");
+    if (now - mask_checked > 250000000ull) {
+        char head[64];
+        mask_worn = dbg_flag_get_string(k_head, head) ? mask_of(head) : MASK_NONE;
+        if (!mask_enabled(mask_worn)) mask_worn = MASK_NONE;
+        mask_checked = now;
+        mask_apply(mask_worn);
+    }
+    float want = 1.0f;
+    if (mask_worn && dbg_flag_get_bool(k_event) != 1) {
+        if (mask_worn == MASK_BUNNY && dbg_ground_speed() > BUNNY_MOVING_MS) want = atomic_load(&bunny_factor);
+        else if (mask_worn == MASK_GORON && body_state_is("Rolling")) want = GORON_ROLL_RATE;
+    }
+    if (want != 1.0f || (rate.written != 0 && rate.written != 1.0f)) rate_set(want);
+}
+
 void dbg_move_frame(struct Cpu *c) {
     uint64_t now = plat_now_ns();
     float dt = last_ns ? (float)(now - last_ns) * 1e-9f : 0.0f;
     last_ns = now;
     if (dt > FRAME_DT_MAX) dt = 0.0f;
+    ragdoll_frame(c, dt);
     boots_frame();
     bomb_frame();
+    mask_frame(now);
     float p[3];
     if (!dbg_player_pos(p)) {
         air_mode = 0;

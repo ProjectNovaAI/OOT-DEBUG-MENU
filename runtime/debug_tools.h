@@ -261,6 +261,11 @@ void dbg_warp_cancel(void);
 // tries them in turn, the note says how it went). 1 when started.
 int dbg_warp_now(void);
 int dbg_warp_armed(void);              // the armed destination, -1 if none
+// Boss warps: an instant warp to the boss's dungeon, then a teleport into the boss's room once it has loaded (at the
+// start position the game uses there after the fight). The boss appears as when the player walks in, while it lives.
+int dbg_boss_count(void);
+const char *dbg_boss_name(int i);
+int dbg_boss_warp(int i);
 // Age on arrival for the warps: DBG_AGE_ANY lets the area choose (its file's age), child or adult is held over the
 // area's choice while it loads, so also in areas made for the other age.
 void dbg_warp_set_age(int age);
@@ -302,9 +307,16 @@ void dbg_game_frame(struct Cpu *c);    // the frame hook, game thread
 // Game thread only (from the frame hook): the game's actor warp of the player to pos now. face, when not NULL, is a
 // horizontal direction to turn the player to; else the player keeps its rotation.
 void dbg_frame_teleport(struct Cpu *c, const float pos[3], const float *face);
+// Game thread only (from the frame hook): a guest function called with the hook's registers kept, as the hook sits in
+// the middle of the framework's update. Returns x0.
+uint64_t dbg_frame_call(struct Cpu *c, uint64_t fn, const uint64_t a[8]);
 // Actors of the generic actor class by name (a heap scan of about a second: helper threads only), and the check that
 // an address still holds such an actor.
 int dbg_find_actors(const char *name, uint64_t *out, int max);
+// Objects of any class laid out as an actor (method table at +0, name at +0x20) by name: thrown bombs, which the
+// generic class does not cover. Two heap passes, a second or two: helper threads only.
+int dbg_find_named(const char *name, uint64_t *out, int max);
+int dbg_find_near(const float at[3], float r, uint64_t *out, int max);   // by actor position, any class
 int dbg_actor_named(uint64_t actor, const char *name);
 // Every actor of that class with its name; fn returns 0 to stop. Helper threads only (a heap scan).
 int dbg_each_actor(int (*fn)(uint64_t actor, const char *name, void *ctx), void *ctx);
@@ -440,6 +452,22 @@ int dbg_hover_boots_on(void);
 // debug_game.c debug_abyss_hits reads it (recomp/patches-v111.txt, set dbgframe).
 void dbg_no_void_out(int on);
 int dbg_no_void_out_on(void);
+// Bunny Hood (debug_move.c mask_frame): while it is worn, the player's animations play bunny_speed times faster as the
+// player moves along the ground (running is the animation's own motion) and jumps go that much further (1 to 3, 1.5 at
+// first). Kept as debug_bunny and debug_bunny_speed. Mask abilities: the Zora Mask swims and dives fast, the Goron Mask
+// rolls twice as fast. Kept as debug_mask_powers.
+// The player's game parameters (debug_move.c): dbg_player_param notes a PlayerGameParam block as the game fills it
+// (patch site, debug_game.c); get and set read and write a float field of the current age's block by its offset.
+void dbg_player_param(uint64_t block);
+uint64_t dbg_player_param_block(void);
+int dbg_player_param_get(uint32_t off, float *v);
+int dbg_player_param_set(uint32_t off, float v);
+void dbg_bunny(int on);
+int dbg_bunny_on(void);
+float dbg_bunny_speed(void);
+void dbg_set_bunny_speed(float f);
+void dbg_mask_powers(int on);
+int dbg_mask_powers_on(void);
 // PastyPixel's Bomb T-Pose (debug_move.c; kept from one start to the next; the cause is in docs/bomb-t-pose.md): while on,
 // every bomb pulled out while moving comes out held to the right side before going over the head, the game's own bug
 // after the ocarina. bomb_frame finds the player's face layer on every frame; dbg_bomb_layers, called from the animation
@@ -447,8 +475,30 @@ int dbg_no_void_out_on(void);
 // mask on that layer at all times, and puts the game's mask back when the option goes off.
 void dbg_bomb_bug(int on);
 int dbg_bomb_bug_on(void);
+// Ragdoll (debug_move.c): the game's own ragdoll of the player, the one the Wallmaster's drop starts. dbg_ragdoll
+// asks for it (1), for its end (0) or for the other of the two (-1) on the next game frame, and returns 0 without a
+// player. One it starts ends by itself a second after the player lies still. dbg_ragdoll_on: the player's ragdoll
+// runs, whoever started it.
+int dbg_ragdoll(int how);
+int dbg_ragdoll_on(void);
 void dbg_bomb_layers(struct Cpu *c, uint64_t list);
 void dbg_move_frame(struct Cpu *c);
+
+// Bomb paths (debug_bombs.c; NX2NAVI_DEBUG_VIEW_BOMBS): while on, each bomb or Bombchu thrown, dropped or set down
+// leaves its path, from the player's hands to where it lay still (where it went off), with the points where it hit
+// something while falling. The newest DBG_BOMB_PATHS are kept. dbg_bombs_frame runs on the game thread (the frame hook);
+// dbg_bomb_paths copies them out, newest first.
+enum { DBG_BOMB_PATHS = 8, DBG_BOMB_POINTS = 1024, DBG_BOMB_BOUNCES = 32 };
+typedef struct {
+    float pt[DBG_BOMB_POINTS][3];
+    float bounce[DBG_BOMB_BOUNCES][3];
+    float end[3];
+    int n, bounces, ended, used;
+    uint32_t serial;   // counts up with each new path
+} DbgBombPath;
+void dbg_bombs_frame(void);
+int dbg_bomb_paths(DbgBombPath *out, int max);
+void dbg_bomb_paths_clear(void);   // forgets the paths that have ended
 
 // Call tracing on the lifted code's function-entry hook (debug_fntrace.c; the console's ftrace and fcount). Watch:
 // every entry of one of up to 16 guest functions goes into a ring of 4096 with its return address and x0

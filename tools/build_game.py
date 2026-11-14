@@ -1009,6 +1009,9 @@ def main():
         return
     for dll in dlls:   # dynamic SDL3 (zlib) and its libiconv (LGPL, unmodified DLL), found next to nx2navi.exe
         shutil.copy2(dll, exe.parent / dll.name)
+    # the Randomizer tab runs this generator from the game's folder (runtime/randomizer.c find_tool)
+    (exe.parent / 'tools').mkdir(exist_ok=True)
+    shutil.copy2(ROOT / 'tools' / 'randomizer.py', exe.parent / 'tools' / 'randomizer.py')
     sections, image = pe_sections(exe) if WIN else elf_sections(exe)
     print(f'{below_root(exe)}: file {mib(exe.stat().st_size)}, '
           f'image {mib(image)}; ' + ', '.join(f'{k} {mib(v)}' for k, v in sections.items() if k.startswith('.') and v))

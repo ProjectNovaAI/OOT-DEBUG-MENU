@@ -15,6 +15,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -431,6 +432,84 @@ int dbg_warp_arm_to(const char *banc, const char *start) {
     return dbg_warp_arm(CUSTOM);
 }
 
+// ---- boss warps
+
+// Each boss's dungeon (its first entrance in the list, start NULL) and where in the boss's room to put the player once
+// the dungeon has loaded (has_pos). An arrival straight at a start position inside the room does not work: the room's
+// start positions are StartPos actors, and the arrival event (Dm_SY_BancChangeArrive) waits for an entrance actor of
+// that name, so the screen stays black. The places are those StartPos actors (the game's own, used after the fight for
+// the sage's or the spiritual stone's scene), 0.5 m up, read from the area files next to the Enemy_DungeonBoss_* actor.
+static const struct Boss {
+    const char *name, *banc, *start;
+    int has_pos;
+    float pos[3];
+} bosses[] = {
+    {"Gohma (Inside the Deku Tree)", "InsideTheDekuTree", NULL, 1, {11.5f, 47.5f, 67.6f}},
+    {"King Dodongo (Dodongo's Cavern)", "DodongoCavern", NULL, 1, {24.0f, 73.9f, -77.6f}},
+    {"Barinade (Inside Jabu-Jabu's Belly)", "InsideJabuJabuBelly", NULL, 1, {42.4f, 102.5f, -98.1f}},
+    {"Phantom Ganon (Forest Temple)", "ForestTemple", NULL, 1, {-6.0f, 75.2f, -66.0f}},
+    {"Volvagia (Fire Temple)", "FireTemple", NULL, 1, {-71.2f, 103.0f, 0.0f}},
+    {"Morpha (Water Temple)", "WaterTemple", NULL, 1, {-4.5f, 131.9f, -75.3f}},
+    {"Bongo Bongo (Shadow Temple)", "ShadowTemple", NULL, 1, {-138.3f, -11.0f, 22.0f}},
+    // Its StartPos is outside the boss door: the floor past the door instead (probed in game, y 135.0 at z -110).
+    {"Twinrova (Spirit Temple)", "SpiritTemple", NULL, 1, {0.0f, 135.5f, -110.0f}},
+    {"Ganondorf (Ganon's Tower)", "InsideGanonCastle", NULL, 1, {0.0f, 171.6f, -11.3f}},
+    // The final battle's own area: its entrance is the arena.
+    {"Ganon (the final battle)", "FinalBattleField", "FinalBattleField_Entrance", 0, {0}},
+};
+#define NBOSSES ((int)(sizeof bosses / sizeof bosses[0]))
+
+int dbg_boss_count(void) { return NBOSSES; }
+const char *dbg_boss_name(int i) { return i >= 0 && i < NBOSSES ? bosses[i].name : NULL; }
+
+static _Atomic int boss_pending = -1;
+
+// After a boss warp with a position: waits for the arrival, then for the player of the new area, then puts it there.
+static void boss_thread(void *arg) {
+    (void)arg;
+    int i = atomic_load(&boss_pending);
+    if (i < 0 || i >= NBOSSES) return;
+    const struct Boss *b = &bosses[i];
+    uint64_t t0 = plat_now_ns();
+    char cur[64];
+    while (plat_now_ns() - t0 < 60000000000ull && atomic_load(&boss_pending) == i) {
+        if (atomic_load(&warp_state) == W_IDLE && dbg_current_area(cur) && !strcmp(cur, b->banc)) break;
+        plat_sleep_ns(50000000ull);
+    }
+    if (atomic_load(&boss_pending) != i || !dbg_current_area(cur) || strcmp(cur, b->banc)) {
+        atomic_compare_exchange_strong(&boss_pending, &i, -1);
+        return;
+    }
+    // the arrival event walks the player in: wait for it to give the control back (up to 15 s)
+    plat_sleep_ns(1000000000ull);
+    for (uint64_t t1 = plat_now_ns(); plat_now_ns() - t1 < 15000000000ull && dbg_flag_get_bool(K_CONTROL) == 1;)
+        plat_sleep_ns(100000000ull);
+    plat_sleep_ns(500000000ull);
+    float face[3] = {0, 0, -1};
+    for (int tries = 0; tries < 20 && !dbg_player_teleport_face(b->pos, face); tries++) plat_sleep_ns(250000000ull);
+    snprintf(warp_note, sizeof warp_note, "At %s", b->name);
+    atomic_compare_exchange_strong(&boss_pending, &i, -1);
+}
+
+int dbg_boss_warp(int i) {
+    if (i < 0 || i >= NBOSSES) return 0;
+    char cur[64];
+    if (bosses[i].has_pos && dbg_current_area(cur) && !strcmp(cur, bosses[i].banc)) {   // already in the dungeon
+        float face[3] = {0, 0, -1};
+        int ok = dbg_player_teleport_face(bosses[i].pos, face);
+        snprintf(warp_note, sizeof warp_note, ok ? "At %s" : "Could not move the player to %s", bosses[i].name);
+        return ok;
+    }
+    if (!dbg_warp_arm_to(bosses[i].banc, bosses[i].start)) return 0;
+    if (bosses[i].has_pos) {
+        atomic_store(&boss_pending, i);
+        if (!plat_thread_spawn(boss_thread, NULL, "debug-boss", 0)) atomic_store(&boss_pending, -1);
+    } else {
+        atomic_store(&boss_pending, -1);
+    }
+    return dbg_warp_now();
+}
+
 void dbg_warp_cancel(void) {
     atomic_store(&warp_state, W_IDLE);
     snprintf(warp_note, sizeof warp_note, "Warp cancelled");
@@ -560,6 +639,8 @@ static uint64_t call_saved(Cpu *c, uint64_t fn, const uint64_t a[8]) {
     return r;
 }
 
+uint64_t dbg_frame_call(Cpu *c, uint64_t fn, const uint64_t a[8]) { return call_saved(c, fn, a); }
+
 // Teleport: the game's own warp of an actor to a pose (the routine its "warp to target position" event nodes call), so
 // the physics body moves with the actor and the game does not pull it back. The pose is a 3x4 row-major matrix, the
 // translation in the last column; the rotation is left upright.
@@ -685,6 +766,88 @@ int dbg_each_actor(int (*fn)(uint64_t actor, const char *name, void *ctx), void 
     return n;
 }
 
+// Objects of any class laid out as an actor (a method table in the executable at +0, a pointer to the name at +0x20)
+// with this name, as dbg_find_actors finds those of the generic class: thrown bombs are of another. Two passes over
+// the heap (a helper thread's job, a second or two): the copies of the name, then the objects that point to one.
+#define NAMED_COPIES 512
+static int cmp_u64(const void *a, const void *b) {
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : x > y;
+}
+#define EXE_DATA_FROM 0x3c47000ull   // the executable's read-only data and data, where the method tables are
+int dbg_find_named(const char *name, uint64_t *out, int max) {
+    enum { CHUNK = 1 << 20 };
+    static uint8_t buf[CHUNK + 8];
+    static uint64_t copy[NAMED_COPIES];
+    static PlatMutex lock;
+    size_t len = strlen(name) + 1;
+    int nc = 0, n = 0;
+    if (max <= 0 || len < 4 || len > 64) return 0;
+    plat_mutex_lock(&lock);
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass == 1) {
+            if (!nc) break;
+            qsort(copy, (size_t)nc, 8, cmp_u64);
+        }
+        for (uint64_t addr = HEAP_FROM; addr < HEAP_TO;) {
+            uint64_t end = 0;
+            int st = plat_mem_state(addr, HEAP_TO, &end);
+            if (end <= addr) break;
+            for (uint64_t at = addr; st == PLAT_PROT_RW && at < end; at += CHUNK) {
+                uint64_t got = end - at < CHUNK ? end - at : CHUNK;
+                if (!plat_mem_read(at, buf, got)) continue;
+                if (pass == 0) {   // a copy of the name, standing alone (a 0 before it)
+                    for (uint64_t i = 1; i + len <= got && nc < NAMED_COPIES; i++)
+                        if (buf[i] == (uint8_t)name[0] && !buf[i - 1] && !memcmp(buf + i, name, len)) copy[nc++] = at + i;
+                    continue;
+                }
+                for (uint64_t i = 0x20; i + 8 <= got && n < max; i += 8) {
+                    uint64_t q, vt = 0;
+                    memcpy(&q, buf + i, 8);
+                    if (q < copy[0] || q > copy[nc - 1] || !bsearch(&q, copy, (size_t)nc, 8, cmp_u64)) continue;
+                    memcpy(&vt, buf + i - 0x20, 8);
+                    if (vt >= MOD_MAIN_BASE + EXE_DATA_FROM && vt < MOD_MAIN_BASE + MOD_MAIN_SIZE) out[n++] = at + i - 0x20;
+                }
+            }
+            addr = end;
+        }
+    }
+    plat_mutex_unlock(&lock);
+    return n;
+}
+
+// Objects whose first word is a method table in the executable and whose actor position (+0x31c) lies within r of at
+// (a helper thread's job: a pass over the heap). Finds actors of any class by where they are.
+int dbg_find_near(const float at[3], float r, uint64_t *out, int max) {
+    enum { CHUNK = 1 << 20 };
+    static uint64_t buf[CHUNK / 8 + 0x80];
+    static PlatMutex lock;
+    int n = 0;
+    plat_mutex_lock(&lock);
+    for (uint64_t addr = HEAP_FROM; addr < HEAP_TO && n < max;) {
+        uint64_t end = 0;
+        int st = plat_mem_state(addr, HEAP_TO, &end);
+        if (end <= addr) break;
+        for (uint64_t at8 = addr; st == PLAT_PROT_RW && at8 < end && n < max; at8 += CHUNK) {
+            uint64_t got = end - at8 < CHUNK ? end - at8 : CHUNK;
+            if (!plat_mem_read(at8, buf, got)) continue;
+            for (uint64_t i = 0; i < got / 8 && n < max; i++) {
+                uint64_t vt = buf[i];
+                if (vt < MOD_MAIN_BASE + EXE_DATA_FROM || vt >= MOD_MAIN_BASE + MOD_MAIN_SIZE) continue;
+                float p[3];
+                if ((i * 8 + 0x31c + 12 <= got) ? (memcpy(p, (uint8_t *)buf + i * 8 + 0x31c, 12), 0)
+                                                : !plat_mem_read(at8 + i * 8 + 0x31c, p, 12))
+                    continue;
+                float dx = p[0] - at[0], dy = p[1] - at[1], dz = p[2] - at[2];
+                if (dx * dx + dy * dy + dz * dz <= r * r) out[n++] = at8 + i * 8;
+            }
+        }
+        addr = end;
+    }
+    plat_mutex_unlock(&lock);
+    return n;
+}
+
 struct find_ctx {
     const char *name;
     uint64_t *out;
@@ -739,32 +902,75 @@ static float dist2(const float a[3], const float b[3]) {
     return d;
 }
 
-static void warp_now_thread(void *arg) {
-    (void)arg;
-    static float zone[ZONES_MAX][3];
-    float home[3];
-    int n = dbg_player_pos(home) ? find_zones(zone) : 0;
-    for (int i = 0; i < n; i++)   // nearest first
+static void sort_near(float (*p)[3], int n, const float to[3]) {
+    for (int i = 0; i < n; i++)
         for (int k = i + 1; k < n; k++)
-            if (dist2(zone[k], home) < dist2(zone[i], home)) {
+            if (dist2(p[k], to) < dist2(p[i], to)) {
                 float t[3];
-                memcpy(t, zone[i], sizeof t);
-                memcpy(zone[i], zone[k], sizeof t);
-                memcpy(zone[k], t, sizeof t);
+                memcpy(t, p[i], sizeof t);
+                memcpy(p[i], p[k], sizeof t);
+                memcpy(p[k], t, sizeof t);
             }
-    int started = 0, tried = 0;
-    for (int i = 0; i < n && !started && atomic_load(&warp_state) == W_ARMED; i++) {
+}
+
+static int warp_started(void) { return atomic_load(&warp_state) != W_ARMED; }
+
+// Tries the live loading zones within max_d metres of `near` (all of them when max_d is 0), nearest first: 1 when one
+// started the change. *tried counts the teleports made.
+static int try_zones(const float near[3], float max_d, int *tried) {
+    static float zone[ZONES_MAX][3];
+    int n = find_zones(zone), started = 0;
+    sort_near(zone, n, near);
+    for (int i = 0; i < n && !started && !warp_started(); i++) {
+        if (max_d > 0 && dist2(zone[i], near) > max_d * max_d) break;
         if (!dbg_player_teleport(zone[i])) break;
-        tried++;
+        ++*tried;
         snprintf(warp_note, sizeof warp_note, "Trying loading zone %d of %d", i + 1, n);
         for (uint64_t t0 = plat_now_ns(); plat_now_ns() - t0 < ZONE_TRY_NS && !started; plat_sleep_ns(20000000ull))
-            started = atomic_load(&warp_state) != W_ARMED;
+            started = warp_started();
     }
-    if (!started) {
+    return started || warp_started();
+}
+
+// The entrances of the current area from its own stage files: where the player arrives by each loading zone, the zone's
+// trigger a few metres away. Only the actors near the player are live, so a zone far away is reached by going there
+// first and letting the area's actors around it load.
+enum { ENTRANCES_MAX = 32 };
+struct Entrances {
+    float p[ENTRANCES_MAX][3];
+    int n;
+};
+static int entrance_cb(const DbgPlacement *pl, void *ctx) {
+    struct Entrances *e = ctx;
+    if (!strcmp(pl->name, ENTRANCE_NAME) && e->n < ENTRANCES_MAX) memcpy(e->p[e->n++], pl->pos, sizeof pl->pos);
+    return 1;
+}
+#define ENTRANCE_LOAD_NS 1500000000ull   // for the actors round a far entrance to load
+#define ENTRANCE_ZONE_M 40.0f            // a zone's trigger is this close to its entrance
+
+static void warp_now_thread(void *arg) {
+    (void)arg;
+    float home[3];
+    int tried = 0, started = dbg_player_pos(home) && try_zones(home, 0, &tried);
+    if (!started && !warp_started()) {
+        static struct Entrances ent;
+        char cur[64];
+        ent.n = 0;
+        if (dbg_current_area(cur)) dbg_place_each(cur, entrance_cb, &ent);
+        sort_near(ent.p, ent.n, home);
+        for (int i = 0; i < ent.n && !started && !warp_started(); i++) {
+            float at[3] = {ent.p[i][0], ent.p[i][1] + TRIGGER_RAISE_M, ent.p[i][2]};
+            snprintf(warp_note, sizeof warp_note, "Going to entrance %d of %d", i + 1, ent.n);
+            if (!dbg_player_teleport(at)) break;
+            tried++;
+            for (uint64_t t0 = plat_now_ns(); plat_now_ns() - t0 < ENTRANCE_LOAD_NS && !warp_started();) plat_sleep_ns(20000000ull);
+            started = try_zones(at, ENTRANCE_ZONE_M, &tried);
+        }
+    }
+    if (!started && !warp_started()) {
         if (tried) dbg_player_teleport(home);
-        if (atomic_load(&warp_state) == W_ARMED)
-            snprintf(warp_note, sizeof warp_note, "%s; the warp stays armed",
-                     n ? "No loading zone here started an area change" : "No loading zone found here");
+        snprintf(warp_note, sizeof warp_note, "%s; the warp stays armed",
+                 tried ? "No loading zone here started an area change" : "No loading zone found here");
     }
     atomic_store(&now_on, 0);
 }
@@ -876,4 +1082,5 @@ void dbg_game_frame(Cpu *c) {
     keys_init();
     if (dbg_flag_addr(DBG_FLAG_STRING, K_START)) remember_start();
     dbg_move_frame(c);
+    dbg_bombs_frame();
 }

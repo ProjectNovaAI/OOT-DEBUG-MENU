@@ -17,6 +17,7 @@
 #include "input.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "randomizer.h"
 #include "save_slots.h"
 #include "vk_debug_cam.h"
 
@@ -486,9 +487,28 @@ static void run_command(char *line) {
         float p[3];
         if (dbg_player_pos(p)) out_put("player %.3f %.3f %.3f speed %.2f vert %.2f\n", p[0], p[1], p[2], dbg_ground_speed(), dbg_vertical_speed());
         else out_put("no player\n");
-    } else if (!strcmp(cmd, "teleport") && a1 && a2 && a3) {
+    } else if (!strcmp(cmd, "teleport") && a1 && a2 && a3) {   // teleport X Y Z [FX FZ]: FX FZ a direction to face
         float p[3] = {strtof(a1, NULL), strtof(a2, NULL), strtof(a3, NULL)};
-        out_put("%s\n", dbg_player_set_pos(p) ? "moved" : "failed");
+        char *fx = strtok(NULL, " \t\r\n"), *fz = fx ? strtok(NULL, " \t\r\n") : NULL;
+        float f[3] = {fx ? strtof(fx, NULL) : 0, 0, fz ? strtof(fz, NULL) : 0};
+        out_put("%s\n", (fz ? dbg_player_teleport_face(p, f) : dbg_player_set_pos(p)) ? "moved" : "failed");
+    } else if (!strcmp(cmd, "colldump") && a1 && a2) {
+        // colldump RANGE FILE: the collision polygons within RANGE of the player, one a line ("n x y z ..."), to FILE
+        static DbgHookPoly cp[200000];
+        dbg_view_kinds();
+        int n = dbg_hook_polys(cp, 200000, strtof(a1, NULL), DBG_POLY_COLLISION);
+        FILE *f = fopen(a2, "w");
+        if (!f) {
+            out_put("cannot write %s\n", a2);
+            return;
+        }
+        for (int i = 0; i < n; i++) {
+            fprintf(f, "%d", cp[i].n);
+            for (int k = 0; k < cp[i].n; k++) fprintf(f, " %.3f %.3f %.3f", cp[i].p[k][0], cp[i].p[k][1], cp[i].p[k][2]);
+            fprintf(f, "\n");
+        }
+        fclose(f);
+        out_put("%d polygons to %s\n", n, a2);
     } else if (!strcmp(cmd, "health")) {
         int c, m;
         if (dbg_health_get(&c, &m)) out_put("health %d of %d quarter hearts, invulnerable %d\n", c, m, dbg_invulnerable_on());
@@ -590,6 +610,13 @@ static void run_command(char *line) {
         out_put("warp %d: %s\n", i, dbg_warp_arm(i) ? "armed" : "failed");
         if (a2 && !strcmp(a2, "now")) out_put("instant: %s\n", dbg_warp_now() ? "requested" : "failed");
         out_put("%s\n", dbg_warp_note());
+    } else if (!strcmp(cmd, "warpto") && a1 && a2) {   // warpto BANC START [now]: arm a warp to any area file and start
+        out_put("warpto %s %s: %s\n", a1, a2, dbg_warp_arm_to(a1, a2) ? "armed" : "failed");
+        if (a3 && !strcmp(a3, "now")) out_put("instant: %s\n", dbg_warp_now() ? "requested" : "failed");
+        out_put("%s\n", dbg_warp_note());
+    } else if (!strcmp(cmd, "boss") && a1) {   // boss INDEX: the Debug tab's boss warp (dbg_boss_warp)
+        out_put("boss %s: %s\n", dbg_boss_name(atoi(a1)) ? dbg_boss_name(atoi(a1)) : "-", dbg_boss_warp(atoi(a1)) ? "requested" : "failed");
+        out_put("%s\n", dbg_warp_note());
     } else if (!strcmp(cmd, "warpcancel")) {
         dbg_warp_cancel();
         out_put("%s\n", dbg_warp_note());
@@ -605,9 +632,90 @@ static void run_command(char *line) {
         if (a1) (cmd[0] == 'f' ? dbg_fly : !strcmp(cmd, "hover") ? dbg_hover : dbg_hover_boots)(atoi(a1));
         if (a2 && cmd[0] == 'f') dbg_set_fly_speed((float)atof(a2));   // fly 1 SPEED
         out_put("fly %d (%.1f m/s), hover %d, infinite hover boots %d\n", dbg_fly_on(), dbg_fly_speed(), dbg_hover_on(), dbg_hover_boots_on());
+    } else if (!strcmp(cmd, "pparam")) {   // pparam [OFF [VALUE]]: a float of the player's PlayerGameParam block
+        float v = 0;
+        if (!a1) {
+            out_put("block 0x%llx\n", (unsigned long long)dbg_player_param_block());
+        } else {
+            uint32_t off = (uint32_t)num(a1);
+            if (a2) out_put("set: %s\n", dbg_player_param_set(off, strtof(a2, NULL)) ? "done" : "failed");
+            if (dbg_player_param_get(off, &v)) out_put("+%#x = %g\n", off, v);
+            else out_put("no block\n");
+        }
+    } else if (!strcmp(cmd, "bunny")) {   // bunny [0|1] [FACTOR]: the Bunny Hood's speed
+        if (a1) dbg_bunny(atoi(a1));
+        if (a2) dbg_set_bunny_speed(strtof(a2, NULL));
+        out_put("bunny %d, %.2fx\n", dbg_bunny_on(), dbg_bunny_speed());
+    } else if (!strcmp(cmd, "maskpowers")) {   // maskpowers [0|1]: the Zora and Goron Masks' abilities
+        if (a1) dbg_mask_powers(atoi(a1));
+        out_put("mask powers %d\n", dbg_mask_powers_on());
+    } else if (!strcmp(cmd, "rando")) {   // rando [gen | seed TEXT | KEY VALUE]: the Randomizer tab's generator
+        if (a1 && !strcmp(a1, "gen")) rando_generate();
+        else if (a1 && !strcmp(a1, "seed") && a2) cfg_set("NX2NAVI_RANDO_SEED", a2);
+        else if (a1 && a2) {
+            char key[64];
+            snprintf(key, sizeof key, "NX2NAVI_RANDO_%s", a1);
+            for (char *c = key; *c; c++) *c = (char)toupper((unsigned char)*c);
+            cfg_set(key, a2);
+        }
+        rando_tick();
+        out_put("rando state %d, seed %s, mod %d: %s\n", rando_state(), rando_seed(), rando_mod_present(), rando_note());
+        for (int i = 0; i < rando_noptions; i++)
+            out_put("  %s = %s\n", rando_options[i].key, rando_options[i].values[rando_option_index(i)]);
     } else if (!strcmp(cmd, "novoid")) {   // novoid [0|1]: no void-out
         if (a1) dbg_no_void_out(atoi(a1));
         out_put("novoid %d\n", dbg_no_void_out_on());
+    } else if (!strcmp(cmd, "named") && a1) {   // named NAME [MAX]: objects of any actor-like class by name (dbg_find_named)
+        uint64_t o[64];
+        int max = a2 ? atoi(a2) : 16;
+        max = max < 1 ? 1 : max > 64 ? 64 : max;
+        uint64_t t0 = plat_now_ns();
+        int n = dbg_find_named(a1, o, max);
+        out_put("%d named %s (%.2f s)\n", n, a1, (double)(plat_now_ns() - t0) * 1e-9);
+        for (int i = 0; i < n; i++) {
+            uint64_t vt = 0;
+            float p[3] = {0};
+            plat_mem_read(o[i], &vt, 8), plat_mem_read(o[i] + 0x31c, p, sizeof p);
+            out_put("  0x%llx  class main+0x%llx  at %.2f %.2f %.2f\n", (unsigned long long)o[i],
+                    (unsigned long long)(vt - MOD_MAIN_BASE), p[0], p[1], p[2]);
+        }
+    } else if (!strcmp(cmd, "objnear") && a1 && a2 && a3) {   // objnear X Y Z [R]: objects whose actor position is near
+        float at[3] = {strtof(a1, NULL), strtof(a2, NULL), strtof(a3, NULL)};
+        char *a4 = strtok(NULL, " \t\r\n");
+        uint64_t o[64];
+        uint64_t t0 = plat_now_ns();
+        int n = dbg_find_near(at, a4 ? strtof(a4, NULL) : 1.0f, o, 64);
+        out_put("%d objects (%.2f s)\n", n, (double)(plat_now_ns() - t0) * 1e-9);
+        for (int i = 0; i < n; i++) {
+            uint64_t vt = 0, np = 0;
+            float p[3] = {0};
+            char name[48] = "";
+            plat_mem_read(o[i], &vt, 8), plat_mem_read(o[i] + 0x31c, p, sizeof p), plat_mem_read(o[i] + 0x20, &np, 8);
+            if (np && plat_mem_read(np, name, sizeof name - 1))
+                for (char *q = name; *q; q++)
+                    if (*q < 32 || *q > 126) { *q = 0; break; }
+            out_put("  0x%llx  class main+0x%llx  at %.2f %.2f %.2f  %s\n", (unsigned long long)o[i],
+                    (unsigned long long)(vt - MOD_MAIN_BASE), p[0], p[1], p[2], name);
+        }
+    } else if (!strcmp(cmd, "bombs")) {   // bombs [on|off|clear]: the bomb paths, newest first
+        if (a1 && !strcmp(a1, "clear")) dbg_bomb_paths_clear();
+        else if (a1) cfg_set("NX2NAVI_DEBUG_VIEW_BOMBS", strcmp(a1, "off") ? "1" : "0");
+        static DbgBombPath bp[DBG_BOMB_PATHS];
+        int n = dbg_bomb_paths(bp, DBG_BOMB_PATHS);
+        out_put("bomb paths %s, %d kept\n", cfg_bool("NX2NAVI_DEBUG_VIEW_BOMBS") ? "on" : "off", n);
+        for (int i = 0; i < n; i++) {
+            const DbgBombPath *p = &bp[i];
+            out_put("#%u: %d points, from %.2f %.2f %.2f", p->serial, p->n, p->pt[0][0], p->pt[0][1], p->pt[0][2]);
+            if (p->ended) out_put(", end %.2f %.2f %.2f", p->end[0], p->end[1], p->end[2]);
+            else out_put(", still moving");
+            out_put("\n");
+            for (int k = 0; k < p->bounces; k++)
+                out_put("    bounce %d at %.2f %.2f %.2f\n", k + 1, p->bounce[k][0], p->bounce[k][1], p->bounce[k][2]);
+        }
+    } else if (!strcmp(cmd, "ragdoll")) {   // ragdoll [0|1]: end or start the player's ragdoll; no argument: the other one
+        int ok = dbg_ragdoll(a1 ? atoi(a1) != 0 : -1);
+        plat_sleep_ns(100000000ull);
+        out_put("ragdoll %s, now %d\n", ok ? "asked" : "no player", dbg_ragdoll_on());
     } else if (!strcmp(cmd, "bombbug")) {   // bombbug [0|1]: every lifted bomb is held out to the side
         if (a1) dbg_bomb_bug(atoi(a1));
         out_put("bombbug %d\n", dbg_bomb_bug_on());

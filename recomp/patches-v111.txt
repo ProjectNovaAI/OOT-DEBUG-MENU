@@ -344,6 +344,12 @@ site dbgframe main 82c690 b9191e68 9519d1e0   # str w8, [x19, #0x191c] -> bl pag
 # returns.
 site dbgframe main 29e548 b9801a68 95300a5e   # ldrsw x8, [x19, #0x18] -> bl page+0xec0
 
+# Player parameters (runtime/debug_game.c debug_player_param, debug_move.c): the reader of the player's game parameters
+# (PlayerGameParam, main+0x3009910, x0 the parameter block it fills; called once for the child's and once for the adult's
+# when a save loads) calls page+0xe60 in place of its `add x8, x0, #0x2a0`, after its prologue has saved x30. The host
+# function notes the block and makes the add (the site's result is x8: the generated C reloads it after the call). The masks' abilities change fields of the noted blocks while a mask is worn.
+site dbgframe main 3009934 910a8008 947a5d4b   # add x8, x0, #0x2a0 -> bl page+0xe60
+
 # Occlusion queries off, an experiment (patch_occlusion_off = 1; off by default). main+0x11ac790 copies the values of a
 # parameter object (x20) into a list of options (x21): an option is found by the CRC-32 of its name (vtable +0x38) and
 # keeps its value at +0x18. Two of the parameters are CreateZPrePassOcclusionQuery (the byte main+0xf5acc0 returns:

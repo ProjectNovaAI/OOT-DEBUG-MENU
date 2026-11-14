@@ -46,6 +46,10 @@ static void a_hover(void) { dbg_hover(!dbg_hover_on()), say("Hover", dbg_hover_o
 static void a_boots(void) { dbg_hover_boots(!dbg_hover_boots_on()), say("Infinite Hover Boots", dbg_hover_boots_on()); }
 static void a_novoid(void) { dbg_no_void_out(!dbg_no_void_out_on()), say("No void-out", dbg_no_void_out_on()); }
 static void a_bombbug(void) { dbg_bomb_bug(!dbg_bomb_bug_on()), say("PastyPixel's Bomb T-Pose", dbg_bomb_bug_on()); }
+static void a_ragdoll(void) {
+    int on = dbg_ragdoll_on();
+    dbg_toast_show(!dbg_ragdoll(1) ? "No player to ragdoll" : on ? "Already in ragdoll" : "Ragdoll");
+}
 static void a_god(void) { dbg_invulnerable(!dbg_invulnerable_on()), say("Invulnerable", dbg_invulnerable_on()); }
 static void a_onehit(void) { dbg_one_hit(!dbg_one_hit_on()), say("One-hit kills", dbg_one_hit_on()); }
 static void a_magic(void) { dbg_magic_infinite(!dbg_magic_infinite_on()), say("Infinite magic", dbg_magic_infinite_on()); }
@@ -58,6 +62,7 @@ static void a_triggers(void) { say("Trigger zones", flip_setting("NX2NAVI_DEBUG_
 static void a_hidden(void) { say("Hidden things", flip_setting("NX2NAVI_DEBUG_VIEW_HIDDEN")); }
 static void a_death(void) { say("Death barriers", flip_setting("NX2NAVI_DEBUG_VIEW_DEATH")); }
 static void a_hook(void) { say("Hookshot targets", flip_setting("NX2NAVI_DEBUG_VIEW_HOOKSHOT")); }
+static void a_bombs(void) { say("Bomb paths", flip_setting("NX2NAVI_DEBUG_VIEW_BOMBS")); }
 static void a_coll(void) { say("Collision", flip_setting("NX2NAVI_DEBUG_VIEW_COLLISION")); }
 static void a_hide(void) { say("Hide meshes", flip_setting("NX2NAVI_DEBUG_HIDE_MESHES")); }
 static void a_health(void) { say("Enemy health", flip_setting("NX2NAVI_DEBUG_VIEW_HEALTH")); }
@@ -103,6 +108,7 @@ static const Action actions[] = {
     {{"hoverboots", "Infinite Hover Boots", "Switches Infinite Hover Boots on and off."}, a_boots},
     {{"novoid", "No void-out", "Switches No void-out on and off."}, a_novoid},
     {{"bombbug", "PastyPixel's Bomb T-Pose", "Switches PastyPixel's Bomb T-Pose on and off."}, a_bombbug},
+    {{"ragdoll", "Ragdoll", "Drops Link into the game's own ragdoll; he gets back up a second after he lies still."}, a_ragdoll},
     {{"god", "Invulnerable", "Switches Invulnerable on and off."}, a_god},
     {{"onehit", "One-hit kills", "Switches One-hit kills on and off."}, a_onehit},
     {{"infmagic", "Infinite magic", "Switches Infinite magic on and off."}, a_magic},
@@ -123,6 +129,7 @@ static const Action actions[] = {
     {{"hidden", "Show hidden things", "Switches the hidden things overlay. Saved in the settings."}, a_hidden},
     {{"death", "Show death barriers", "Switches the death barriers and void-out zones overlay. Saved in the settings."}, a_death},
     {{"hookshot", "Show hookshot targets", "Switches the hookshot targets overlay. Saved in the settings."}, a_hook},
+    {{"bombpaths", "Show bomb paths", "Switches the bomb paths overlay. Saved in the settings."}, a_bombs},
     {{"collision", "Show collision", "Switches the collision overlay. Saved in the settings."}, a_coll},
     {{"hidemeshes", "Hide meshes", "Hides the level, characters and sky, or shows them again. Saved in the settings."}, a_hide},
     {{"health", "Show enemy health", "Switches the enemy health overlay. Saved in the settings."}, a_health},
